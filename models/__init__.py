@@ -1,6 +1,7 @@
 from models.base import BaseModelWrapper, Detection
 from models.fire_smoke_yolo import FireSmokeYOLO
 from models.optical_flow_crush import OpticalFlowCrushDetector
+from models.roboflow_combined import RoboflowCombinedDetector
 
 from models.fall import (
     YOLOPoseFallDetector,
@@ -26,6 +27,7 @@ __all__ = [
     "Detection",
     "FireSmokeYOLO",
     "OpticalFlowCrushDetector",
+    "RoboflowCombinedDetector",
     # Fall detection (7)
     "YOLOPoseFallDetector",
     "MediaPipeFallDetector",
