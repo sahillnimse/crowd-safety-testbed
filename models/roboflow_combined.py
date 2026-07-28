@@ -30,7 +30,15 @@ class RoboflowCombinedDetector(BaseModelWrapper):
                  api_key: str = None, conf_threshold: float = 0.4, device=None):
         super().__init__(device=device)
         self.model_id = model_id
-        self.api_key = api_key or os.environ.get("ROBOFLOW_API_KEY")
+        # Falls back to a hardcoded default since Windows terminal/IDE
+        # environment-variable refresh has been unreliable in this setup
+        # (setx saves to the registry correctly, but new terminal sessions
+        # keep inheriting a stale environment instead of reading it fresh).
+        self.api_key = (
+            api_key
+            or os.environ.get("ROBOFLOW_API_KEY")
+            or "c9KEmh1NFvhY8WFH9Iq5"
+        )
         self.conf_threshold = conf_threshold
 
     def load(self):

@@ -80,12 +80,9 @@ def _zero_shot():
 
 def _needs_api_key():
     def check():
-        if os.environ.get("ROBOFLOW_API_KEY"):
-            return True, "ready", "Roboflow-hosted model, trained on real violence/fall labels."
-        return False, "blocked", (
-            "Set the ROBOFLOW_API_KEY environment variable "
-            "(get a key at roboflow.com -> workspace settings -> Private API Key)."
-        )
+        # Always "ready" since roboflow_combined.py has a hardcoded fallback
+        # key (env var refresh proved unreliable on this machine's terminal).
+        return True, "ready", "Roboflow-hosted model, trained on real violence/fall labels."
     return check
 
 
