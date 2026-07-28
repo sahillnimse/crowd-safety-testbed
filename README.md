@@ -114,6 +114,25 @@ this sharpens the signal rather than inflating every score. It costs one
 YOLOv8-nano pass per clip inference. Disable with `use_person_roi=False`
 if your footage is already tightly framed on the subjects.
 
+## Traffic models: use a low frame stride
+
+The traffic detectors classify each tracked vehicle as `vehicle_moving` or
+`vehicle_parked` from how far its centroid drifts over a time window. Two
+things follow:
+
+**Set "Frame sampling" to every 1st or 2nd frame for traffic.** The
+parked/moving window itself is measured in seconds and is stride-independent,
+but ByteTrack is not — it associates boxes between the frames it is actually
+given, so a large stride makes vehicles jump too far to match. On the test
+clip, stride 5 more than halved the distinct track count (14 → 6). The
+models print a warning when the effective rate drops below ~10 fps.
+
+**`mog2_parked` cannot see a vehicle that was already parked when the clip
+started.** It works by contrasting a fast- and a slow-adapting background
+model, so it detects the *transition* into being parked. A car parked from
+frame 0 is simply part of the background. Use it as a cross-check on the
+detector-based models, not as a standalone parked-vehicle census.
+
 ## Design notes
 
 - **Frame-based models** (fire/smoke YOLO, pose YOLO) run per-frame, stateless.

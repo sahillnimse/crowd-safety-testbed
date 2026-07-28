@@ -20,15 +20,25 @@ class YoloTrafficDetector(BaseModelWrapper):
     gpu_accelerated = True
 
     def __init__(self, weights: str = "yolo11n.pt", conf_threshold: float = 0.35,
-                 fps: float = 30.0, device=None):
+                 parked_window_sec: float = 3.0, parked_radius_px: float = 15.0,
+                 device=None):
         super().__init__(device=device)
         self.weights = weights
         self.conf_threshold = conf_threshold
-        self._classifier = ParkedMovingClassifier(fps=fps)
+        # No fps argument: the classifier works off the runner's
+        # timestamp_sec, so it needs no assumption about frame rate or how
+        # densely the video is being sampled.
+        self._classifier = ParkedMovingClassifier(
+            parked_window_sec=parked_window_sec,
+            parked_radius_px=parked_radius_px,
+            model_name=self.name,
+        )
 
     def load(self):
         from ultralytics import YOLO
         self._model = YOLO(self.weights)
+        self._model.to(self.device)
+        self._classifier.reset()
 
     def predict(self, frame, frame_index: int, timestamp_sec: float) -> list[Detection]:
         results = self._model.track(
@@ -60,7 +70,7 @@ class YoloTrafficDetector(BaseModelWrapper):
                 "confidence": float(conf),
             })
 
-        classified = self._classifier.update(frame_index, raw_tracks)
+        classified = self._classifier.update(timestamp_sec, raw_tracks)
 
         detections = []
         for t in classified:

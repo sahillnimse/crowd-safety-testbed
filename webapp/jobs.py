@@ -32,8 +32,15 @@ ANNOTATED_DIR = os.path.join(OUTPUT_DIR, "annotated")
 
 # Labels that count as a positive event, per category. Everything else a
 # model emits ("standing", "non_violence") is context, not a detection.
+#
+# Traffic is the odd one out: every vehicle row is a real detection, there
+# is no "nothing happening" counterpart label, so both statuses count.
+# Without them the Events column read 0 for every traffic run and the
+# detections modal (positives-only by default) came back empty, making a
+# working detector look like it had found nothing.
 POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
-                   "turbulence", "convergence", "crush_risk"}
+                   "turbulence", "convergence", "crush_risk",
+                   "vehicle_moving", "vehicle_parked"}
 
 
 @dataclass

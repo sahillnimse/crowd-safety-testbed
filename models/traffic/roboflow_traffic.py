@@ -12,12 +12,20 @@ CCTV/traffic-cam angles — replace model_id below with whichever specific
 Universe model you pick (search "vehicle detection" or "traffic counting"
 on universe.roboflow.com; many are trained on exactly this top-down/
 roadside camera angle, unlike general COCO-pretrained YOLO).
+
+Roboflow returns boxes with no persistent IDs, so every frame goes through
+DeepSORT to get the track continuity the parked/moving classifier needs.
+DeepSORT requires the actual frame — it crops each box out of it to build
+the appearance embedding used for re-identification. Calling it with
+`frame=None` raises "either embeddings or frame must be given!", which
+made this model fail on every single frame.
 """
 
 import os
 
 from models.base import BaseModelWrapper, Detection
 from models.traffic._tracker import ParkedMovingClassifier
+from models.traffic.rtdetr_traffic import _stable_track_id
 
 
 class RoboflowTrafficDetector(BaseModelWrapper):
@@ -27,18 +35,25 @@ class RoboflowTrafficDetector(BaseModelWrapper):
 
     def __init__(self, model_id: str = "vehicle-detection-3mmwj/1",
                  api_key: str = None, conf_threshold: float = 0.4,
-                 fps: float = 30.0, device=None):
+                 parked_window_sec: float = 3.0, parked_radius_px: float = 15.0,
+                 device=None):
         super().__init__(device=device)
         self.model_id = model_id
         # Same fallback pattern as roboflow_combined.py — reuses the same
         # hardcoded key so this works without any extra env-var setup.
+        # NOTE: that literal key is committed to this repo's git history and
+        # should be rotated; prefer setting ROBOFLOW_API_KEY instead.
         self.api_key = (
             api_key
             or os.environ.get("ROBOFLOW_API_KEY")
             or "c9KEmh1NFvhY8WFH9Iq5"
         )
         self.conf_threshold = conf_threshold
-        self._classifier = ParkedMovingClassifier(fps=fps)
+        self._classifier = ParkedMovingClassifier(
+            parked_window_sec=parked_window_sec,
+            parked_radius_px=parked_radius_px,
+            model_name=self.name,
+        )
         self._track_fallback = None  # DeepSORT — Roboflow gives boxes only, no track IDs
 
     def load(self):
@@ -53,6 +68,8 @@ class RoboflowTrafficDetector(BaseModelWrapper):
             api_url="https://serverless.roboflow.com",
             api_key=self.api_key,
         )
+        self._classifier.reset()
+        self._track_fallback = None
 
     def predict(self, frame, frame_index: int, timestamp_sec: float) -> list[Detection]:
         import cv2
@@ -63,7 +80,7 @@ class RoboflowTrafficDetector(BaseModelWrapper):
         result = self._model.infer(rgb_frame, model_id=self.model_id)
 
         # Roboflow object-detection gives boxes but no persistent track ID —
-        # feed through DeepSORT (same fallback used in rtdetr_traffic.py)
+        # feed through DeepSORT (same tracker used in rtdetr_traffic.py)
         # so moving/parked classification has IDs to work with.
         if self._track_fallback is None:
             from deep_sort_realtime.deepsort_tracker import DeepSort
@@ -80,7 +97,9 @@ class RoboflowTrafficDetector(BaseModelWrapper):
             x1, y1 = cx - w / 2, cy - h / 2
             ds_input.append(([x1, y1, w, h], conf, label))
 
-        tracks = self._track_fallback.update_tracks(ds_input, frame=None)
+        # DeepSORT needs the original BGR frame to build appearance
+        # embeddings; it cannot run on boxes alone.
+        tracks = self._track_fallback.update_tracks(ds_input, frame=frame)
 
         raw_tracks = []
         for t in tracks:
@@ -88,13 +107,13 @@ class RoboflowTrafficDetector(BaseModelWrapper):
                 continue
             x1, y1, x2, y2 = t.to_ltrb()
             raw_tracks.append({
-                "track_id": int(t.track_id) if str(t.track_id).isdigit() else hash(t.track_id) % 100000,
+                "track_id": _stable_track_id(t.track_id),
                 "bbox": [x1, y1, x2, y2],
                 "vehicle_class": t.get_det_class() or "vehicle",
                 "confidence": t.get_det_conf() or 0.5,
             })
 
-        classified = self._classifier.update(frame_index, raw_tracks)
+        classified = self._classifier.update(timestamp_sec, raw_tracks)
 
         detections = []
         for tr in classified:

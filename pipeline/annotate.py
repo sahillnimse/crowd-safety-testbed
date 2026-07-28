@@ -37,6 +37,10 @@ COLOR_MAP = {
     "crush_risk": (0, 0, 139),   # converging *and* turbulent — the worst case
     "violence": (0, 0, 255),
     "non_violence": (0, 200, 0),
+    # Traffic: distinct colours so moving vs parked is readable at a glance
+    # in the annotated video rather than both falling through to yellow.
+    "vehicle_moving": (255, 191, 0),   # cyan-blue
+    "vehicle_parked": (0, 140, 255),   # orange
 }
 DEFAULT_COLOR = (255, 255, 0)
 

@@ -60,6 +60,9 @@ inference-sdk>=0.9.0
 # Traffic detection/counting
 # YOLOv8/11 and RT-DETR both ship inside ultralytics>=8.1.0 (already above) — no new package.
 deep-sort-realtime>=1.3.2
+# ByteTrack's assignment step needs lap; ultralytics only auto-installs it
+# at first .track() call, which fails offline / in CI.
+lap>=0.5.12
 
 # Utilities
 pyyaml>=6.0.1
