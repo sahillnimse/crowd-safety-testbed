@@ -1,0 +1,36 @@
+# ground_truth entries (used by scripts/compare_models.py) should be a list
+# of {start_sec, end_sec} windows marking when the target event actually
+# occurs in the video, e.g.:
+#   ground_truth:
+#     - {start_sec: 42.0, end_sec: 47.5}
+#     - {start_sec: 118.0, end_sec: 121.0}
+videos:
+  - url: "https://youtu.be/chzr4s3rWCM?si=5jNH0qtQip4nGosd"
+    category: all_models_dense_crowd
+    models:
+      # Fall detection (5 — fall_alphapose_lstm and fall_posec3d skipped:
+      # both need from-source builds (AlphaPose has no maintained pip
+      # package; PoseC3D needs mmcv, which needs the full CUDA Toolkit +
+      # MSVC to compile on Windows). All 5 remaining models confirmed
+      # working on real footage.
+      - fall_yolo_pose
+      - fall_mediapipe_pose
+      - fall_stgcn
+      - fall_movenet
+      - fall_optical_flow
+      # Crowd-crush (kept alongside fall models — same category as before)
+      - optical_flow_crush
+    ground_truth: []
+
+  - url: "https://youtu.be/pG4HqTGkHPg?si=tBniURkEF0k_qFPx"
+    category: violence_altercation_test
+    models:
+      # Violence / altercation detection (7)
+      - violence_x3d
+      - violence_slowfast
+      - violence_videomae
+      - violence_i3d
+      - violence_c3d
+      - violence_tsm
+      - violence_mmaction_slowonly
+    ground_truth: []

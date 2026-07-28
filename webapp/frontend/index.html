@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crowd Safety Testbed</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ LEFT SIDEBAR: model selection ============ -->
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <h1>Crowd Safety<span>Testbed</span></h1>
+      <div id="device-badge" class="device-badge">detecting device…</div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="link-btn" data-select="all">Select all</button>
+      <button class="link-btn" data-select="none">Clear</button>
+      <button class="link-btn" data-select="ready">Runnable only</button>
+    </div>
+
+    <div id="model-list" class="model-list">
+      <div class="loading">Loading models…</div>
+    </div>
+
+    <div class="sidebar-foot">
+      <span id="selected-count">0 selected</span>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN PANEL ============ -->
+  <main class="main">
+
+    <section class="panel">
+      <h2>1 · Source video</h2>
+
+      <div class="tabs" id="source-tabs">
+        <button class="tab active" data-tab="url">YouTube URL</button>
+        <button class="tab" data-tab="local">Already downloaded</button>
+        <button class="tab" data-tab="upload">Upload file</button>
+      </div>
+
+      <div class="tab-body" data-body="url">
+        <input id="video-url" type="text" placeholder="https://www.youtube.com/watch?v=…" />
+        <p class="hint">Downloaded once into <code>test_videos/</code> and cached by video ID.</p>
+      </div>
+
+      <div class="tab-body hidden" data-body="local">
+        <select id="video-select"><option>Loading…</option></select>
+        <p class="hint">No download — runs straight off the local file.</p>
+      </div>
+
+      <div class="tab-body hidden" data-body="upload">
+        <input id="video-file" type="file" accept="video/*" />
+        <p class="hint" id="upload-status">Saved into <code>test_videos/</code>.</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>2 · Settings</h2>
+      <div class="settings">
+        <label>
+          <span>Frame sampling</span>
+          <select id="stride">
+            <option value="1">Every frame — slowest, full resolution</option>
+            <option value="3">Every 3rd frame</option>
+            <option value="5" selected>Every 5th frame — balanced</option>
+            <option value="10">Every 10th frame</option>
+            <option value="20">Every 20th frame — quick smoke test</option>
+          </select>
+        </label>
+        <label>
+          <span>Device</span>
+          <select id="device">
+            <option value="">Auto-detect</option>
+            <option value="cuda">Force CUDA (fail if absent)</option>
+            <option value="cpu">Force CPU</option>
+          </select>
+        </label>
+        <label>
+          <span>YOLO-pose size</span>
+          <select id="pose-size">
+            <option value="n">n — fastest</option>
+            <option value="s" selected>s — balanced</option>
+            <option value="m">m</option>
+            <option value="l">l</option>
+            <option value="x">x — most accurate</option>
+          </select>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="export-video" checked />
+          <span>Write annotated video <em>(slower, large files)</em></span>
+        </label>
+      </div>
+
+      <div class="run-row">
+        <button id="run-btn" class="primary">Run selected models</button>
+        <button id="clear-outputs" class="danger-ghost">Delete all outputs</button>
+        <span id="run-error" class="run-error"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>3 · Runs (this session)</h2>
+        <button id="refresh-jobs" class="link-btn">Refresh</button>
+      </div>
+      <div id="jobs"><div class="empty">No runs yet.</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>4 · Saved results <span class="subtle">— everything in outputs/</span></h2>
+        <button id="refresh-history" class="link-btn">Refresh</button>
+      </div>
+      <p class="hint">Read from disk, so these survive a server restart and
+        include runs started from the command line.</p>
+      <div id="history"><div class="empty">Nothing in outputs/ yet.</div></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- detection detail / video modal -->
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="modal-title">Results</h3>
+      <button id="modal-close" class="link-btn">Close</button>
+    </div>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

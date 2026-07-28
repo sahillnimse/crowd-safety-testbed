@@ -1,0 +1,240 @@
+"""
+FastAPI backend for the crowd-safety testbed UI.
+
+Run it:
+    python -m webapp            (or: uvicorn webapp.app:app --reload)
+
+Then open http://127.0.0.1:8000
+
+Endpoints are deliberately thin — all the work lives in webapp/jobs.py and
+webapp/registry.py. Torch is never imported at startup, so the page loads
+instantly and the first model import happens inside a job thread.
+"""
+
+import os
+import shutil
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from webapp import registry
+from webapp.jobs import ANNOTATED_DIR, LOG_DIR, MANAGER, PROJECT_ROOT
+
+TEST_VIDEOS_DIR = os.path.join(PROJECT_ROOT, "test_videos")
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
+VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov")
+
+app = FastAPI(title="Crowd Safety Testbed", version="1.0")
+
+
+class JobRequest(BaseModel):
+    source: str = Field(..., description="YouTube URL, or a filename in test_videos/")
+    models: list[str] = Field(..., min_length=1)
+    sample_every_n_frames: int = 5
+    device: str | None = None          # None = auto-detect
+    export_video: bool = True
+    pose_size: str = "s"
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/api/models")
+def get_models():
+    return {
+        "categories": registry.CATEGORY_LABELS,
+        "models": registry.list_models(),
+    }
+
+
+@app.get("/api/device")
+def get_device():
+    """Report GPU availability so the UI can warn before a job OOMs."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            return {
+                "cuda": True,
+                "name": props.name,
+                "total_gb": round(props.total_memory / (1024 ** 3), 1),
+                "torch": torch.__version__,
+            }
+        return {"cuda": False, "name": None, "torch": torch.__version__}
+    except Exception as e:  # noqa: BLE001
+        return {"cuda": False, "name": None, "error": str(e)}
+
+
+@app.get("/api/videos")
+def list_videos():
+    """Local clips already in test_videos/, so a re-run needs no download."""
+    if not os.path.isdir(TEST_VIDEOS_DIR):
+        return {"videos": []}
+    out = []
+    for name in sorted(os.listdir(TEST_VIDEOS_DIR)):
+        if not name.lower().endswith(VIDEO_EXTS):
+            continue
+        path = os.path.join(TEST_VIDEOS_DIR, name)
+        out.append({
+            "name": name,
+            "size_mb": round(os.path.getsize(path) / (1024 ** 2), 1),
+        })
+    return {"videos": out}
+
+
+@app.post("/api/videos/upload")
+async def upload_video(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(VIDEO_EXTS):
+        raise HTTPException(400, f"Unsupported file type: {file.filename}")
+    os.makedirs(TEST_VIDEOS_DIR, exist_ok=True)
+    dest = os.path.join(TEST_VIDEOS_DIR, os.path.basename(file.filename))
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"name": os.path.basename(dest),
+            "size_mb": round(os.path.getsize(dest) / (1024 ** 2), 1)}
+
+
+@app.post("/api/jobs")
+def create_job(req: JobRequest):
+    unknown = [m for m in req.models if m not in registry.BY_KEY]
+    if unknown:
+        raise HTTPException(400, f"Unknown model(s): {', '.join(unknown)}")
+
+    # A local filename in test_videos/ skips the download path entirely.
+    local_path = None
+    candidate = os.path.join(TEST_VIDEOS_DIR, os.path.basename(req.source))
+    if os.path.exists(candidate) and req.source.lower().endswith(VIDEO_EXTS):
+        local_path = candidate
+    elif os.path.exists(req.source):
+        local_path = os.path.abspath(req.source)
+    elif not req.source.lower().startswith(("http://", "https://")):
+        raise HTTPException(
+            400,
+            f"'{req.source}' is neither a URL nor a file in test_videos/.",
+        )
+
+    job = MANAGER.create(
+        source=req.source,
+        model_keys=req.models,
+        sample_every_n_frames=req.sample_every_n_frames,
+        device=req.device or None,
+        export_video=req.export_video,
+        pose_size=req.pose_size,
+        local_path=local_path,
+    )
+    return job.to_dict()
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    return {"jobs": MANAGER.list()}
+
+
+@app.get("/api/history")
+def list_history():
+    """Completed runs reconstructed from outputs/ on disk.
+
+    Survives server restarts and includes runs launched from the CLI —
+    neither of which the in-memory job list can show.
+    """
+    from webapp import history
+    return {"history": history.scan()}
+
+
+@app.get("/api/history/{video}/{model_key}/detections")
+def history_detections(video: str, model_key: str, limit: int = 500,
+                       positives_only: bool = True):
+    """Detection rows for a past run, read straight off disk."""
+    import json
+
+    from webapp.jobs import POSITIVE_LABELS
+
+    name = f"{os.path.basename(video)}_{os.path.basename(model_key)}.json"
+    path = os.path.join(LOG_DIR, name)
+    if not os.path.exists(path):
+        raise HTTPException(404, f"No log named {name}")
+
+    with open(path, encoding="utf-8") as f:
+        rows = json.load(f)
+    if positives_only:
+        rows = [r for r in rows if r.get("label") in POSITIVE_LABELS]
+    return {"total": len(rows), "rows": rows[:limit]}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    job = MANAGER.get(job_id)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    return job.to_dict()
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    if not MANAGER.cancel(job_id):
+        raise HTTPException(409, "Job is not cancellable (already finished?)")
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/detections/{model_key}")
+def get_detections(job_id: str, model_key: str, limit: int = 500,
+                   positives_only: bool = True):
+    """Detection rows for the results table, newest-first is not useful here
+    so they stay in timestamp order."""
+    import json
+
+    job = MANAGER.get(job_id)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    stage = job.stages.get(model_key)
+    if stage is None or not stage.log_json:
+        raise HTTPException(404, "No results for that model yet")
+
+    with open(os.path.join(LOG_DIR, stage.log_json)) as f:
+        rows = json.load(f)
+
+    from webapp.jobs import POSITIVE_LABELS
+    if positives_only:
+        rows = [r for r in rows if r["label"] in POSITIVE_LABELS]
+
+    return {"total": len(rows), "rows": rows[:limit]}
+
+
+@app.get("/api/files/logs/{name}")
+def download_log(name: str):
+    path = os.path.join(LOG_DIR, os.path.basename(name))
+    if not os.path.exists(path):
+        raise HTTPException(404, "No such log")
+    return FileResponse(path, filename=os.path.basename(path))
+
+
+@app.get("/api/files/annotated/{name}")
+def stream_annotated(name: str):
+    path = os.path.join(ANNOTATED_DIR, os.path.basename(name))
+    if not os.path.exists(path):
+        raise HTTPException(404, "No such video")
+    return FileResponse(path, media_type="video/mp4")
+
+
+@app.delete("/api/outputs")
+def clear_outputs():
+    """Wipe generated artifacts. Only ever touches outputs/, never the
+    source videos in test_videos/."""
+    removed = 0
+    for d in (LOG_DIR, ANNOTATED_DIR):
+        if not os.path.isdir(d):
+            continue
+        for name in os.listdir(d):
+            path = os.path.join(d, name)
+            if os.path.isfile(path):
+                os.remove(path)
+                removed += 1
+    return {"removed": removed}
+
+
+# Static frontend last, so it doesn't shadow /api routes.
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
