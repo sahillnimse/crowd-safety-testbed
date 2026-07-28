@@ -11,8 +11,10 @@ webapp/registry.py. Torch is never imported at startup, so the page loads
 instantly and the first model import happens inside a job thread.
 """
 
+import asyncio
 import os
 import shutil
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
@@ -26,7 +28,39 @@ TEST_VIDEOS_DIR = os.path.join(PROJECT_ROOT, "test_videos")
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov")
 
-app = FastAPI(title="Crowd Safety Testbed", version="1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Silence the benign disconnect spam Windows' Proactor loop emits.
+
+    Closing the video preview mid-download, reloading the page, or switching
+    tabs aborts an in-flight response. On Windows asyncio then logs a full
+    ConnectionResetError traceback from _call_connection_lost even though
+    the request is already finished and nothing failed.
+
+    That matters here beyond tidiness: per-frame model errors are reported
+    only on this terminal, so burying it in tracebacks for events that are
+    not errors actively hides the ones that are. Only ConnectionResetError
+    and friends are dropped; every other loop exception still surfaces.
+    """
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def handler(active_loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return
+        if previous is not None:
+            previous(active_loop, context)
+        else:
+            active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+    yield
+    loop.set_exception_handler(previous)
+
+
+app = FastAPI(title="Crowd Safety Testbed", version="1.0", lifespan=lifespan)
 
 
 class JobRequest(BaseModel):
