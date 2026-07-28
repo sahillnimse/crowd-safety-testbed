@@ -78,6 +78,17 @@ def _zero_shot():
     return check
 
 
+def _needs_api_key():
+    def check():
+        if os.environ.get("ROBOFLOW_API_KEY"):
+            return True, "ready", "Roboflow-hosted model, trained on real violence/fall labels."
+        return False, "blocked", (
+            "Set the ROBOFLOW_API_KEY environment variable "
+            "(get a key at roboflow.com -> workspace settings -> Private API Key)."
+        )
+    return check
+
+
 MODELS: list[ModelSpec] = [
     # ---------------- Fall detection ----------------
     ModelSpec("fall_yolo_pose", "YOLOv8-Pose", "fall",
@@ -112,6 +123,10 @@ MODELS: list[ModelSpec] = [
               tags=["skeleton", "gpu"]),
 
     # ---------------- Violence detection ----------------
+    ModelSpec("roboflow_combined", "Roboflow (violence/fall)", "violence",
+              "Hosted model trained on real violence/fall/non-violence labels "
+              "(not Kinetics zero-shot). Runs on Roboflow's servers.",
+              check=_needs_api_key(), tags=["hosted", "cloud"]),
     ModelSpec("violence_x3d", "X3D", "violence",
               "Lightweight 3D-CNN. Best speed/accuracy trade-off here.",
               check=_zero_shot(), tags=["clip", "gpu"]),
@@ -179,6 +194,7 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s"):
     API can list models without paying torch's import cost."""
     from models.fire_smoke_yolo import FireSmokeYOLO
     from models.optical_flow_crush import OpticalFlowCrushDetector
+    from models.roboflow_combined import RoboflowCombinedDetector
     from models.fall import (
         AlphaPoseFallDetector, MediaPipeFallDetector, MoveNetFallDetector,
         OpticalFlowFallDetector, PoseC3DFallDetector, STGCNFallDetector,
@@ -193,6 +209,7 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s"):
     factories = {
         "fire_smoke_yolo": lambda: FireSmokeYOLO(device=device),
         "optical_flow_crush": lambda: OpticalFlowCrushDetector(device=device),
+        "roboflow_combined": lambda: RoboflowCombinedDetector(device=device),
         "fall_yolo_pose": lambda: YOLOPoseFallDetector(model_size=pose_size, device=device),
         "fall_mediapipe_pose": lambda: MediaPipeFallDetector(device=device),
         "fall_alphapose_lstm": lambda: AlphaPoseFallDetector(device=device),
@@ -207,6 +224,7 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s"):
         "violence_c3d": lambda: C3DViolenceClassifier(device=device),
         "violence_tsm": lambda: TSMViolenceClassifier(device=device),
         "violence_mmaction_slowonly": lambda: MMActionSlowOnlyClassifier(device=device),
+        "roboflow_combined": lambda: RoboflowCombinedDetector(device=device),
     }
     if key not in factories:
         raise KeyError(f"Unknown model: {key}")
