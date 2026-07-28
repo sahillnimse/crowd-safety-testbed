@@ -2,7 +2,7 @@
    Plain JS, no build step: the whole point is that `python -m webapp` is
    the only command needed to get a working UI. */
 
-const $  = (sel) => document.querySelector(sel);
+const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const state = {
@@ -53,7 +53,7 @@ async function loadDevice() {
       badge.className = 'device-badge cuda';
       if (d.total_gb < 6) {
         badge.title = 'Under 6 GB: SlowFast and I3D may run out of memory. ' +
-                      'Force CPU for those if a run fails.';
+          'Force CPU for those if a run fails.';
         badge.textContent += ' ⚠';
       }
     } else {
@@ -79,7 +79,7 @@ async function loadModels() {
 
 function renderModels() {
   const host = $('#model-list');
-  const order = ['fall', 'violence', 'other'];
+  const order = ['fall', 'violence', 'traffic', 'other'];
   host.innerHTML = '';
 
   order.forEach((cat) => {
@@ -95,7 +95,7 @@ function renderModels() {
       const checked = state.selected.has(m.key);
       const el = document.createElement('label');
       el.className = 'model' + (checked ? ' checked' : '') +
-                     (m.status === 'blocked' ? ' blocked' : '');
+        (m.status === 'blocked' ? ' blocked' : '');
       el.innerHTML = `
         <input type="checkbox" ${checked ? 'checked' : ''}
                ${m.status === 'blocked' ? 'disabled' : ''} data-key="${m.key}" />
@@ -163,7 +163,7 @@ function stageRow(job, s) {
   const fallbackTag = s.scoring_modes && s.scoring_modes.geometric_fallback
     ? '<div class="scoring-tag">geometric fallback</div>'
     : (s.scoring_modes && s.scoring_modes.kinetics_zeroshot
-        ? '<div class="scoring-tag">kinetics zero-shot</div>' : '');
+      ? '<div class="scoring-tag">kinetics zero-shot</div>' : '');
 
   const links = [];
   if (s.annotated) {
@@ -231,7 +231,7 @@ async function refreshJobs() {
   host.querySelectorAll('[data-toggle]').forEach((el) => {
     el.addEventListener('click', (ev) => {
       if (ev.target.dataset.cancel || ev.target.dataset.video ||
-          ev.target.dataset.detections) return;
+        ev.target.dataset.detections) return;
       const id = el.dataset.toggle;
       state.openJobs.has(id) ? state.openJobs.delete(id) : state.openJobs.add(id);
       refreshJobs();
@@ -241,7 +241,7 @@ async function refreshJobs() {
   host.querySelectorAll('[data-cancel]').forEach((el) => {
     el.addEventListener('click', async (ev) => {
       ev.stopPropagation();
-      try { await postJSON(`/api/jobs/${el.dataset.cancel}/cancel`, {}); } catch {}
+      try { await postJSON(`/api/jobs/${el.dataset.cancel}/cancel`, {}); } catch { }
       refreshJobs();
     });
   });
@@ -297,7 +297,7 @@ function historyCard(group) {
     const tag = s.scoring_modes && s.scoring_modes.geometric_fallback
       ? '<div class="scoring-tag">geometric fallback</div>'
       : (s.scoring_modes && s.scoring_modes.kinetics_zeroshot
-          ? '<div class="scoring-tag">kinetics zero-shot</div>' : '');
+        ? '<div class="scoring-tag">kinetics zero-shot</div>' : '');
 
     const labels = Object.entries(s.label_counts || {})
       .map(([k, v]) => `${esc(k)} ${v}`).join(', ') || '—';
@@ -366,7 +366,7 @@ async function refreshHistory() {
       openModal(el.dataset.title, '<div class="loading">Loading detections…</div>');
       try {
         const d = await api(`/api/history/${encodeURIComponent(el.dataset.histVideo)}` +
-                            `/${encodeURIComponent(el.dataset.histModel)}/detections?limit=500`);
+          `/${encodeURIComponent(el.dataset.histModel)}/detections?limit=500`);
         renderDetections(d);
       } catch (e) {
         $('#modal-body').innerHTML = `<div class="err">${esc(e.message)}</div>`;
@@ -407,7 +407,7 @@ function closeModal() {
 
 /* ------------------------------------------------------------------- run */
 function currentSource() {
-  if (state.sourceTab === 'url')   return $('#video-url').value.trim();
+  if (state.sourceTab === 'url') return $('#video-url').value.trim();
   if (state.sourceTab === 'local') return $('#video-select').value;
   return $('#video-file').dataset.uploaded || '';
 }
@@ -477,7 +477,7 @@ function wire() {
 
   $('#clear-outputs').addEventListener('click', async () => {
     if (!confirm('Delete every generated log and annotated video in outputs/?\n' +
-                 'Source videos in test_videos/ are not touched.')) return;
+      'Source videos in test_videos/ are not touched.')) return;
     const r = await api('/api/outputs', { method: 'DELETE' });
     $('#run-error').textContent = `Deleted ${r.removed} file(s).`;
     state.openHistory.clear();

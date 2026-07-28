@@ -159,6 +159,25 @@ MODELS: list[ModelSpec] = [
                        "built from config alone has an untrained head."),
               tags=["clip", "gpu"]),
 
+    # ---------------- Traffic / vehicle counting ----------------
+    ModelSpec("yolo_traffic", "YOLOv11 Traffic", "traffic",
+              "COCO-pretrained vehicle detector + ByteTrack; classifies each "
+              "tracked vehicle as moving or parked from centroid drift.",
+              tags=["frame", "gpu"]),
+    ModelSpec("rtdetr_traffic", "RT-DETR Traffic", "traffic",
+              "Transformer detector, stronger on small/occluded vehicles. "
+              "Falls back to DeepSORT if ByteTrack IDs don't come through.",
+              tags=["frame", "gpu"]),
+    ModelSpec("roboflow_traffic", "Roboflow (traffic)", "traffic",
+              "Hosted model trained on real traffic-camera footage rather "
+              "than general COCO images. Runs on Roboflow's servers.",
+              check=_needs_api_key(), tags=["hosted", "cloud"]),
+    ModelSpec("mog2_parked", "MOG2 Background Subtraction", "traffic",
+              "Classical CV, no GPU/weights: flags regions whose pixels "
+              "stop changing as parked. Independent cross-check, not a "
+              "vehicle classifier.",
+              tags=["flow", "cpu"]),
+
     # ---------------- Other ----------------
     ModelSpec("optical_flow_crush", "Optical Flow (crowd crush)", "other",
               "Circular-variance turbulence + convergence. Classical CV.",
@@ -178,6 +197,7 @@ BY_KEY = {m.key: m for m in MODELS}
 CATEGORY_LABELS = {
     "fall": "Fall detection",
     "violence": "Violence / altercation",
+    "traffic": "Traffic / vehicle counting",
     "other": "Other detectors",
 }
 
@@ -202,6 +222,10 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s"):
         SlowFastViolenceClassifier, TSMViolenceClassifier,
         VideoMAEViolenceClassifier, X3DViolenceClassifier,
     )
+    from models.traffic import (
+        YoloTrafficDetector, RtdetrTrafficDetector,
+        RoboflowTrafficDetector, Mog2ParkedDetector,
+    )   
 
     factories = {
         "fire_smoke_yolo": lambda: FireSmokeYOLO(device=device),
@@ -222,6 +246,10 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s"):
         "violence_tsm": lambda: TSMViolenceClassifier(device=device),
         "violence_mmaction_slowonly": lambda: MMActionSlowOnlyClassifier(device=device),
         "roboflow_combined": lambda: RoboflowCombinedDetector(device=device),
+        "yolo_traffic": lambda: YoloTrafficDetector(device=device),
+        "rtdetr_traffic": lambda: RtdetrTrafficDetector(device=device),
+        "roboflow_traffic": lambda: RoboflowTrafficDetector(device=device),
+        "mog2_parked": lambda: Mog2ParkedDetector(device=device),
     }
     if key not in factories:
         raise KeyError(f"Unknown model: {key}")

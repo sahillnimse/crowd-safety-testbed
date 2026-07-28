@@ -21,6 +21,12 @@ from models.violence import (
     TSMViolenceClassifier,
     MMActionSlowOnlyClassifier,
 )
+from models.traffic import (
+    YoloTrafficDetector,
+    RtdetrTrafficDetector,
+    RoboflowTrafficDetector,
+    Mog2ParkedDetector,
+)
 
 __all__ = [
     "BaseModelWrapper",
@@ -44,4 +50,9 @@ __all__ = [
     "C3DViolenceClassifier",
     "TSMViolenceClassifier",
     "MMActionSlowOnlyClassifier",
+    # Traffic detection/counting (4)
+    "YoloTrafficDetector",
+    "RtdetrTrafficDetector",
+    "RoboflowTrafficDetector",
+    "Mog2ParkedDetector",
 ]
