@@ -174,6 +174,43 @@ table.stages td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .empty, .loading { color: var(--muted); font-size: 13px; padding: 14px 2px; }
 .subtle { color: var(--muted); font-weight: 400; font-size: 12px; }
+
+/* ---------------- ANPR gallery ---------------- */
+.gallery {
+  display: grid; gap: 12px; padding: 6px 0 4px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.vcard {
+  margin: 0; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 9px; overflow: hidden; display: flex; flex-direction: column;
+}
+.vcard.unread { opacity: .72; }
+.vcard img {
+  width: 100%; height: 130px; object-fit: cover; display: block;
+  background: #0b0d12;
+}
+.vcard .noimg {
+  height: 130px; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 12px; background: #0b0d12;
+}
+.vcard figcaption { padding: 8px 10px 10px; }
+.vname { font-size: 12.5px; font-weight: 600; text-transform: capitalize; }
+.plate {
+  margin-top: 5px; font-family: ui-monospace, Consolas, monospace;
+  font-size: 14px; font-weight: 700; letter-spacing: .06em;
+  background: #f4f4ef; color: #14161c; border-radius: 4px;
+  padding: 3px 6px; text-align: center; border: 1px solid #9aa0a6;
+}
+.plate.none {
+  background: transparent; color: var(--muted); border: 1px dashed var(--border);
+  font-family: inherit; font-size: 11.5px; font-weight: 500; letter-spacing: 0;
+}
+.vmeta { margin-top: 6px; font-size: 11px; color: var(--muted); }
+
+.warnbox {
+  background: #241d0f; border: 1px solid #4a3a15; color: var(--warn);
+  border-radius: 8px; padding: 10px 12px; font-size: 12.5px; margin: 8px 0 12px;
+}
 table.stages td.subtle { font-size: 11.5px; }
 
 /* ---------------- modal ---------------- */

@@ -114,6 +114,46 @@ this sharpens the signal rather than inflating every score. It costs one
 YOLOv8-nano pass per clip inference. Disable with `use_person_roi=False`
 if your footage is already tightly framed on the subjects.
 
+## ANPR (number plates)
+
+The `anpr` model captures every vehicle it tracks, reads its number plate,
+and writes a gallery to `outputs/anpr/<video>/`:
+
+```
+outputs/anpr/<video>/
+├── vehicles/vehicle_0007.jpg   # sharpest, largest view of that vehicle
+├── plates/plate_0007.jpg       # the plate crop it read from
+└── manifest.json               # plate, class, colour, timings per vehicle
+```
+
+The web UI renders this as a gallery: vehicle photo, with
+`white car` and `MH 15 DS 7121` underneath.
+
+**Plates must be big enough in frame — this is the binding constraint.**
+Roughly **90 px of plate width** is the floor; below that the characters
+are only a few pixels tall and no OCR recovers them. On this repo's own
+traffic clip plates peak at 60×18 px and read as nothing, so vehicles are
+reported with `plate_status: "too_small"` and the measured width rather
+than a blank or a guess. If every plate comes back `too_small`, the camera
+is too far from the traffic lane — that is a footage problem, not a model
+one.
+
+Two things make the readings reliable when plates *are* large enough:
+
+- **Multi-frame voting.** A vehicle is read on many frames and the most
+  agreed-on result wins, so one blurred frame can't corrupt the answer.
+- **Format-aware correction.** OCR confuses `5`/`S`, `0`/`O`, `1`/`I`,
+  `8`/`B` constantly — a rendered `MH15DS7121` came back as `MH1SDS7121`
+  in testing. Indian plates have a fixed layout (`LL DD L(1-3) DDDD`), so a
+  letter sitting in a digit slot is unambiguously an OCR error and gets
+  corrected. Delhi's letter-bearing RTO codes (`DL 8C AF 5030`) are handled
+  as a special case, and the parse that changes the fewest characters wins.
+
+Vehicle **make/model** ("Maruti Suzuki Dzire") is *not* produced — that
+needs either a registration-database lookup or a make/model classifier
+trained on Indian vehicles. What you get is class + colour ("white car").
+`_VehicleRecord` is where a resolver would slot in.
+
 ## Traffic models: use a low frame stride
 
 The traffic detectors classify each tracked vehicle as `vehicle_moving` or

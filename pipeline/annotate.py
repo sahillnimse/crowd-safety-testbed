@@ -20,7 +20,7 @@ browser.
 import csv
 import json
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import cv2
 
@@ -103,16 +103,169 @@ def _open_writer(output_path: str, fps: float, w: int, h: int):
     return writer, "mp4v"
 
 
-def export_annotated_video(video_path: str, detections: list[Detection], output_path: str):
-    """Re-reads the source video and burns in bboxes/labels per frame, then writes output."""
-    by_frame = defaultdict(list)
-    for d in detections:
-        by_frame[d.frame_index].append(d)
+def _detection_stride(detections: list[Detection]) -> int:
+    """Infer the runner's sample_every_n_frames from the detections themselves.
 
+    The renderer isn't told the stride, but it's recoverable: it's the most
+    common gap between consecutive frames that produced any detection.
+    Deriving it means the smoothing adapts to whatever stride the run used
+    instead of needing a matching argument threaded through the UI.
+    """
+    frames = sorted({d.frame_index for d in detections})
+    if len(frames) < 2:
+        return 1
+    gaps = Counter(b - a for a, b in zip(frames, frames[1:]) if b > a)
+    return max(1, gaps.most_common(1)[0][0]) if gaps else 1
+
+
+def _track_key(d: Detection):
+    """Identity a box can be followed by across frames, or None if untracked."""
+    if isinstance(d.extra, dict):
+        tid = d.extra.get("track_id")
+        if tid is not None:
+            return (d.model_name, tid)
+    return None
+
+
+def _smooth_boxes(boxes: list, window: int) -> list:
+    """Centered moving average over a track's box coordinates.
+
+    Detector output jitters by a few pixels frame to frame even on a
+    perfectly still object, which reads as the box vibrating. A *centered*
+    window is used rather than an exponential average because this runs
+    offline over the whole track — there's no reason to accept the lag that
+    a causal filter would introduce, which would make boxes trail behind
+    moving vehicles.
+    """
+    if window < 2 or len(boxes) < 2:
+        return boxes
+    half = window // 2
+    n = len(boxes)
+    out = []
+    for i in range(n):
+        # Shrink the window symmetrically near the ends rather than
+        # truncating it on one side. A one-sided window averages a moving
+        # object's future (or past) positions into its current one, which
+        # drags the first and last boxes of every track toward the middle of
+        # its path — on a vehicle moving 4 px/frame that was a 20 px error,
+        # worse than the jitter being removed.
+        k = min(half, i, n - 1 - i)
+        if k == 0:
+            out.append(list(boxes[i]))
+            continue
+        chunk = boxes[i - k:i + k + 1]
+        out.append([sum(c[j] for c in chunk) / len(chunk) for j in range(4)])
+    return out
+
+
+def _lerp(a, b, t):
+    return [a[k] + (b[k] - a[k]) * t for k in range(4)]
+
+
+def build_render_plan(detections: list[Detection], fps: float,
+                      smooth_window: int = 5,
+                      hold_seconds: float = 0.25) -> dict:
+    """frame_index -> list of things to draw on that frame.
+
+    Three problems this solves, all of which made boxes strobe:
+
+    1. **Sampling gaps.** The runner only processes every Nth frame, so
+       detections exist only on those frames. Drawing them as-is means a box
+       is visible 1 frame in N — at the UI's default stride of 5 that's a
+       6 Hz flash. Boxes are interpolated between consecutive samples of the
+       same track, so they move smoothly through the frames in between.
+    2. **Detector jitter.** Coordinates wobble a few pixels per detection
+       even on a stationary object. A centered moving average removes it.
+    3. **Dropouts.** A detector missing an object for one sample punches a
+       hole in an otherwise continuous track. Gaps up to a few samples wide
+       are interpolated across rather than left blank.
+
+    Anything without a track_id (optical-flow cells, clip-level banners)
+    can't be interpolated — there's no identity to interpolate along — so it
+    is simply held on screen for `hold_seconds`.
+    """
+    plan: dict[int, list] = defaultdict(list)
+    if not detections:
+        return plan
+
+    stride = _detection_stride(detections)
+    hold = max(stride, int(round(fps * hold_seconds)))
+    # Bridge a couple of missed samples, but not so far that a departed
+    # object leaves a box hanging over empty road.
+    max_gap = stride * 3
+
+    tracked: dict[tuple, list] = defaultdict(list)
+    loose: list[Detection] = []
+
+    for d in detections:
+        key = _track_key(d)
+        if key is not None and d.bbox:
+            tracked[key].append(d)
+        else:
+            loose.append(d)
+
+    # ---- tracked boxes: smooth, then interpolate between samples ----
+    for key, dets in tracked.items():
+        dets.sort(key=lambda x: x.frame_index)
+        boxes = _smooth_boxes([list(map(float, x.bbox)) for x in dets], smooth_window)
+
+        for i, det in enumerate(dets):
+            f0, b0 = det.frame_index, boxes[i]
+
+            if i + 1 < len(dets):
+                f1, b1 = dets[i + 1].frame_index, boxes[i + 1]
+                span = f1 - f0
+                if 0 < span <= max_gap:
+                    for f in range(f0, f1):
+                        t = (f - f0) / span
+                        plan[f].append({
+                            "bbox": _lerp(b0, b1, t),
+                            "label": det.label,
+                            # Interpolating confidence too stops the printed
+                            # number from jumping every stride frames.
+                            "confidence": det.confidence
+                            + (dets[i + 1].confidence - det.confidence) * t,
+                            "model_name": det.model_name,
+                        })
+                    continue
+
+            # last sample of the track, or a gap too wide to bridge: hold
+            for f in range(f0, f0 + hold):
+                plan[f].append({
+                    "bbox": b0,
+                    "label": det.label,
+                    "confidence": det.confidence,
+                    "model_name": det.model_name,
+                })
+
+    # ---- untracked boxes and clip-level banners: hold ----
+    for d in loose:
+        for f in range(d.frame_index, d.frame_index + hold):
+            plan[f].append({
+                "bbox": list(map(float, d.bbox)) if d.bbox else None,
+                "label": d.label,
+                "confidence": d.confidence,
+                "model_name": d.model_name,
+            })
+
+    return plan
+
+
+def export_annotated_video(video_path: str, detections: list[Detection], output_path: str,
+                           smooth_window: int = 5, hold_seconds: float = 0.25):
+    """Re-reads the source video and burns in bboxes/labels per frame, then writes output.
+
+    Boxes are interpolated and smoothed across the frames the runner skipped
+    (see build_render_plan) so they track objects continuously instead of
+    flashing once per sampled frame.
+    """
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    plan = build_render_plan(detections, fps, smooth_window=smooth_window,
+                             hold_seconds=hold_seconds)
 
     writer, codec = _open_writer(output_path, fps, w, h)
 
@@ -122,17 +275,23 @@ def export_annotated_video(video_path: str, detections: list[Detection], output_
         if not ret:
             break
 
-        for d in by_frame.get(frame_index, []):
-            color = COLOR_MAP.get(d.label, DEFAULT_COLOR)
-            if d.bbox:
-                x1, y1, x2, y2 = map(int, d.bbox)
+        banner_slot = 0
+        for item in plan.get(frame_index, []):
+            color = COLOR_MAP.get(item["label"], DEFAULT_COLOR)
+            if item["bbox"]:
+                x1, y1, x2, y2 = (int(round(v)) for v in item["bbox"])
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{d.label} {d.confidence:.2f}", (x1, max(y1 - 8, 0)),
+                cv2.putText(frame, f"{item['label']} {item['confidence']:.2f}",
+                            (x1, max(y1 - 8, 0)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             else:
-                # clip-level detection with no bbox (e.g. violence classifier) -> banner text
-                cv2.putText(frame, f"[{d.model_name}] {d.label} {d.confidence:.2f}",
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                # clip-level detection with no bbox (e.g. violence classifier)
+                # -> banner text, stacked so two models don't overprint.
+                y = 30 + banner_slot * 26
+                banner_slot += 1
+                cv2.putText(frame,
+                            f"[{item['model_name']}] {item['label']} {item['confidence']:.2f}",
+                            (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
         writer.write(frame)
         frame_index += 1

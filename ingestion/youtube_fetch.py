@@ -42,32 +42,57 @@ def fetch_youtube_video(url: str, max_height: int = 720, force: bool = False) ->
     """
     os.makedirs(TEST_VIDEOS_DIR, exist_ok=True)
     video_id = _extract_video_id(url)
-    output_path = os.path.join(TEST_VIDEOS_DIR, f"{video_id}.mp4")
+    output_path = os.path.abspath(os.path.join(TEST_VIDEOS_DIR, f"{video_id}.mp4"))
 
     if os.path.exists(output_path) and not force:
         print(f"Using cached video: {output_path}")
         return output_path
 
     format_selector = f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]"
+
+    # Optional locations, only needed when the binaries aren't on PATH. These
+    # were previously hardcoded to one machine's WinGet paths, which made the
+    # downloader fail anywhere else.
+    optional: list[str] = []
+    ffmpeg_bin_dir = ffmpeg_dir()
+    if ffmpeg_bin_dir:
+        optional += ["--ffmpeg-location", ffmpeg_bin_dir]
+    deno = shutil.which("deno") or _known_deno_path()
+    if deno:
+        optional += ["--js-runtimes", f"deno:{deno}"]
+
+    # Assembled in one piece. Splicing the optional flags into a prebuilt
+    # list by negative index put them between "-o" and its value, so yt-dlp
+    # read "--ffmpeg-location" as the output filename template and failed.
     cmd = [
         "yt-dlp",
         "-f", format_selector,
         "--merge-output-format", "mp4",
         "--remote-components", "ejs:github",
+        *optional,
         "-o", output_path,
         url,
     ]
 
-    # These were hardcoded to one machine's WinGet install paths, which made
-    # the downloader fail anywhere else. Both are optional: yt-dlp only needs
-    # the locations when the binaries aren't already on PATH.
-    ffmpeg_bin_dir = ffmpeg_dir()
-    if ffmpeg_bin_dir:
-        cmd[-2:-2] = ["--ffmpeg-location", ffmpeg_bin_dir]
-
-    deno = shutil.which("deno") or _known_deno_path()
-    if deno:
-        cmd[-2:-2] = ["--js-runtimes", f"deno:{deno}"]
     print(f"Downloading {url} -> {output_path}")
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        # Surface yt-dlp's own message: "video unavailable", "sign in to
+        # confirm you're not a bot", and a stale yt-dlp all look identical
+        # from a bare CalledProcessError.
+        detail = (result.stderr or result.stdout or "").strip()
+        tail = "\n".join(detail.splitlines()[-6:])
+        raise RuntimeError(
+            f"yt-dlp failed (exit {result.returncode}) for {url}\n{tail}\n\n"
+            "If this mentions bot checks or player extraction, run "
+            "`python -m pip install -U yt-dlp` — YouTube changes break older "
+            "versions regularly."
+        )
+
+    if not os.path.exists(output_path):
+        raise RuntimeError(
+            f"yt-dlp reported success but {output_path} does not exist. "
+            "The merge step may have written a different container; check "
+            "the test_videos/ directory."
+        )
     return output_path

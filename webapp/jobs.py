@@ -40,7 +40,10 @@ ANNOTATED_DIR = os.path.join(OUTPUT_DIR, "annotated")
 # working detector look like it had found nothing.
 POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
                    "turbulence", "convergence", "crush_risk",
-                   "vehicle_moving", "vehicle_parked"}
+                   "vehicle_moving", "vehicle_parked",
+                   # ANPR: every captured vehicle is a result, whether or not
+                   # its plate turned out to be legible.
+                   "vehicle_plate", "vehicle_unread"}
 
 
 @dataclass
@@ -230,7 +233,8 @@ class JobManager:
 
         try:
             with self._gpu_lock:
-                model = build_model(model_key, job.device, pose_size=job.pose_size)
+                model = build_model(model_key, job.device, pose_size=job.pose_size,
+                                    video_name=job.video_name or "run")
                 model.load()
 
                 stage.status = "running"

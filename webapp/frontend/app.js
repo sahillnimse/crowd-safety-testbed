@@ -13,6 +13,7 @@ const state = {
   pollTimer: null,
   openJobs: new Set(),
   openHistory: new Set(),
+  openAnpr: new Set(),
   lastActive: false,   // were any jobs running on the previous poll?
 };
 
@@ -79,7 +80,7 @@ async function loadModels() {
 
 function renderModels() {
   const host = $('#model-list');
-  const order = ['fall', 'violence', 'traffic', 'other'];
+  const order = ['fall', 'violence', 'traffic', 'anpr', 'other'];
   host.innerHTML = '';
 
   order.forEach((cat) => {
@@ -270,7 +271,7 @@ async function refreshJobs() {
 
   const active = jobs.some((j) => !['done', 'failed', 'cancelled'].includes(j.status));
   // A job just finished: pick up the files it wrote.
-  if (state.lastActive && !active) refreshHistory();
+  if (state.lastActive && !active) { refreshHistory(); refreshAnpr(); }
   state.lastActive = active;
 
   clearTimeout(state.pollTimer);
@@ -394,6 +395,78 @@ function renderDetections(d) {
       <th>Track</th><th>Scoring</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+/* ------------------------------------------------------------------- anpr */
+function anprCard(g) {
+  const c = g.counts || {};
+  const withPlate = g.vehicles.filter((v) => v.plate);
+  const without = g.vehicles.filter((v) => !v.plate);
+  // Readable plates first — that's what you came to see.
+  const ordered = [...withPlate, ...without];
+
+  const tiles = ordered.map((v) => {
+    const img = v.image
+      ? `<img src="/api/anpr/${encodeURIComponent(g.video)}/vehicles/${encodeURIComponent(v.image)}" alt="" />`
+      : '<div class="noimg">no image</div>';
+    const plate = v.plate
+      ? `<div class="plate">${esc(v.plate_display || v.plate)}</div>`
+      : `<div class="plate none">${esc(statusText(v.plate_status, v.plate_width_px))}</div>`;
+    return `<figure class="vcard${v.plate ? '' : ' unread'}">
+      ${img}
+      <figcaption>
+        <div class="vname">${esc(v.caption || v.vehicle_class)}</div>
+        ${plate}
+        <div class="vmeta">${v.first_seen_sec}s–${v.last_seen_sec}s · ${v.frames_seen} frames${
+          v.plate ? ` · ${Math.round(v.plate_agreement * 100)}% agree` : ''}</div>
+      </figcaption>
+    </figure>`;
+  }).join('');
+
+  return `<div class="job">
+    <div class="job-head" data-anpr-toggle="${esc(g.video)}">
+      <span class="status ${withPlate.length ? 'done' : 'cancelled'}">${withPlate.length} read</span>
+      <span class="title">${esc(g.video)}</span>
+      <span class="meta">${c.total || 0} vehicle(s) captured · ${withPlate.length} with a plate</span>
+      <span class="meta">${state.openAnpr.has(g.video) ? '▾' : '▸'}</span>
+    </div>
+    ${state.openAnpr.has(g.video) ? `<div class="job-body">
+      ${withPlate.length === 0 ? `<div class="warnbox">No plate was legible in this video.
+        ${c.too_small ? `${c.too_small} plate(s) were detected but too small to read` : ''}
+        — ANPR needs roughly 90px of plate width. Wide or distant traffic shots
+        can't resolve the characters, regardless of model.</div>` : ''}
+      <div class="gallery">${tiles}</div>
+    </div>` : ''}
+  </div>`;
+}
+
+function statusText(status, width) {
+  if (status === 'too_small') return `plate too small${width ? ` (${width}px)` : ''}`;
+  if (status === 'unreadable') return 'plate unreadable';
+  if (status === 'no_plate_found') return 'no plate visible';
+  return 'no plate';
+}
+
+async function refreshAnpr() {
+  const host = $('#anpr');
+  let galleries;
+  try { ({ galleries } = await api('/api/anpr')); }
+  catch (e) { host.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+
+  if (!galleries.length) {
+    host.innerHTML = '<div class="empty">No ANPR runs yet. Select the ANPR model and run a video.</div>';
+    return;
+  }
+  if (!state.openAnpr.size) state.openAnpr.add(galleries[0].video);
+
+  host.innerHTML = galleries.map(anprCard).join('');
+  host.querySelectorAll('[data-anpr-toggle]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const v = el.dataset.anprToggle;
+      state.openAnpr.has(v) ? state.openAnpr.delete(v) : state.openAnpr.add(v);
+      refreshAnpr();
+    });
+  });
+}
+
 /* ------------------------------------------------------------------ modal */
 function openModal(title, html) {
   $('#modal-title').textContent = title;
@@ -471,6 +544,7 @@ function wire() {
   $('#run-btn').addEventListener('click', runJob);
   $('#refresh-jobs').addEventListener('click', refreshJobs);
   $('#refresh-history').addEventListener('click', refreshHistory);
+  $('#refresh-anpr').addEventListener('click', refreshAnpr);
   $('#modal-close').addEventListener('click', closeModal);
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
@@ -481,6 +555,7 @@ function wire() {
     const r = await api('/api/outputs', { method: 'DELETE' });
     $('#run-error').textContent = `Deleted ${r.removed} file(s).`;
     state.openHistory.clear();
+    state.openAnpr.clear();
     refreshJobs();
     refreshHistory();
   });
@@ -511,4 +586,5 @@ function wire() {
   loadVideos();
   refreshJobs();
   refreshHistory();
+  refreshAnpr();
 })();

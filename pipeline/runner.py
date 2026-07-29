@@ -129,6 +129,18 @@ class PipelineRunner:
 
         pbar.close()
         cap.release()
+
+        # Models that accumulate state across the whole video (ANPR builds a
+        # per-vehicle gallery) get a chance to write their output now that
+        # every frame has been seen.
+        for model in self.models:
+            finalize = getattr(model, "finalize", None)
+            if callable(finalize):
+                try:
+                    finalize()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[WARN] {model.name}.finalize() failed: {e}")
+
         self._summarize_errors(error_counts)
         return all_detections
 

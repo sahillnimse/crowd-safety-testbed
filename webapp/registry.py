@@ -178,6 +178,17 @@ MODELS: list[ModelSpec] = [
               "vehicle classifier.",
               tags=["flow", "cpu"]),
 
+    # ---------------- ANPR ----------------
+    ModelSpec("anpr", "ANPR (number plates)", "anpr",
+              "Captures each vehicle, reads its number plate, and builds a "
+              "gallery of photos with plate, class and colour.",
+              check=lambda: (True, "ready",
+                             "Needs plates roughly 90px wide or more in frame. "
+                             "Wide/distant traffic shots will report "
+                             "'too_small' - the characters aren't resolvable "
+                             "at that size by any OCR."),
+              default_stride=2, tags=["frame", "gpu", "ocr"]),
+
     # ---------------- Other ----------------
     ModelSpec("optical_flow_crush", "Optical Flow (crowd crush)", "other",
               "Circular-variance turbulence + convergence. Classical CV.",
@@ -198,6 +209,7 @@ CATEGORY_LABELS = {
     "fall": "Fall detection",
     "violence": "Violence / altercation",
     "traffic": "Traffic / vehicle counting",
+    "anpr": "ANPR / number plates",
     "other": "Other detectors",
 }
 
@@ -206,7 +218,8 @@ def list_models() -> list[dict]:
     return [m.status() for m in MODELS]
 
 
-def build_model(key: str, device: Optional[str], pose_size: str = "s"):
+def build_model(key: str, device: Optional[str], pose_size: str = "s",
+                video_name: str = "run"):
     """Construct a wrapper instance. Imports are deferred to call time so the
     API can list models without paying torch's import cost."""
     from models.fire_smoke_yolo import FireSmokeYOLO
@@ -246,6 +259,9 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s"):
         "violence_tsm": lambda: TSMViolenceClassifier(device=device),
         "violence_mmaction_slowonly": lambda: MMActionSlowOnlyClassifier(device=device),
         "roboflow_combined": lambda: RoboflowCombinedDetector(device=device),
+        # video_name keys the gallery directory so runs on different clips
+        # don't overwrite each other's captured vehicles.
+        "anpr": lambda: _build_anpr(device, video_name),
         "yolo_traffic": lambda: YoloTrafficDetector(device=device),
         "rtdetr_traffic": lambda: RtdetrTrafficDetector(device=device),
         "roboflow_traffic": lambda: RoboflowTrafficDetector(device=device),
@@ -254,3 +270,13 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s"):
     if key not in factories:
         raise KeyError(f"Unknown model: {key}")
     return factories[key]()
+
+
+def _build_anpr(device, video_name: str):
+    import os
+
+    from models.anpr import ANPRDetector
+    # Strip the extension so the gallery folder matches the log filenames
+    # the rest of the UI uses.
+    stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
+    return ANPRDetector(device=device, video_name=stem)

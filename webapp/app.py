@@ -12,6 +12,7 @@ instantly and the first model import happens inside a job thread.
 """
 
 import asyncio
+import json
 import os
 import shutil
 from contextlib import asynccontextmanager
@@ -236,6 +237,47 @@ def get_detections(job_id: str, model_key: str, limit: int = 500,
         rows = [r for r in rows if r["label"] in POSITIVE_LABELS]
 
     return {"total": len(rows), "rows": rows[:limit]}
+
+
+ANPR_DIR = os.path.join(PROJECT_ROOT, "outputs", "anpr")
+
+
+@app.get("/api/anpr")
+def list_anpr_galleries():
+    """Every ANPR capture on disk, newest first."""
+    if not os.path.isdir(ANPR_DIR):
+        return {"galleries": []}
+
+    out = []
+    for name in os.listdir(ANPR_DIR):
+        manifest = os.path.join(ANPR_DIR, name, "manifest.json")
+        if not os.path.exists(manifest):
+            continue
+        try:
+            with open(manifest, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        out.append({
+            "video": name,
+            "counts": data.get("counts", {}),
+            "vehicles": data.get("vehicles", []),
+            "modified_at": os.path.getmtime(manifest),
+        })
+    out.sort(key=lambda g: g["modified_at"], reverse=True)
+    return {"galleries": out}
+
+
+@app.get("/api/anpr/{video}/{kind}/{name}")
+def anpr_image(video: str, kind: str, name: str):
+    """Serve a captured vehicle or plate crop."""
+    if kind not in ("vehicles", "plates"):
+        raise HTTPException(400, "kind must be 'vehicles' or 'plates'")
+    path = os.path.join(ANPR_DIR, os.path.basename(video), kind,
+                        os.path.basename(name))
+    if not os.path.exists(path):
+        raise HTTPException(404, "No such image")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @app.get("/api/files/logs/{name}")
