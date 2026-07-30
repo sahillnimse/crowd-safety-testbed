@@ -14,6 +14,7 @@ const state = {
   openJobs: new Set(),
   openHistory: new Set(),
   openAnpr: new Set(),
+  openAnprAll: new Set(), // videos where the full gallery is expanded
   lastActive: false,   // were any jobs running on the previous poll?
 };
 
@@ -72,24 +73,46 @@ async function loadModels() {
   state.models = data.models;
   state.categories = data.categories;
 
-  // Preselect the models that run at full capability with no extra setup.
-  state.models.forEach((m) => { if (m.status === 'ready') state.selected.add(m.key); });
+  // Start with no models pre-selected on page load
+  state.selected.clear();
 
   renderModels();
+
+  const searchInput = $('#model-search');
+  if (searchInput && !searchInput.dataset.bound) {
+    searchInput.dataset.bound = 'true';
+    searchInput.addEventListener('input', (e) => {
+      state.searchQuery = e.target.value.toLowerCase().trim();
+      renderModels();
+    });
+  }
 }
 
 function renderModels() {
   const host = $('#model-list');
   const order = ['fall', 'violence', 'traffic', 'anpr', 'other'];
+  const query = state.searchQuery || '';
   host.innerHTML = '';
 
+  let visibleCount = 0;
+
   order.forEach((cat) => {
-    const items = state.models.filter((m) => m.category === cat);
+    let items = state.models.filter((m) => m.category === cat);
+    if (query) {
+      items = items.filter((m) =>
+        m.label.toLowerCase().includes(query) ||
+        m.key.toLowerCase().includes(query) ||
+        m.blurb.toLowerCase().includes(query)
+      );
+    }
     if (!items.length) return;
+
+    visibleCount += items.length;
+    const activeInCat = items.filter((m) => state.selected.has(m.key)).length;
 
     const title = document.createElement('div');
     title.className = 'cat-title';
-    title.textContent = state.categories[cat] || cat;
+    title.innerHTML = `<span>${esc(state.categories[cat] || cat)}</span> <span class="subtle">(${activeInCat}/${items.length})</span>`;
     host.appendChild(title);
 
     items.forEach((m) => {
@@ -106,17 +129,34 @@ function renderModels() {
           <div class="blurb">${esc(m.blurb)}</div>
           ${m.note ? `<div class="note ${m.status}">${esc(m.note)}</div>` : ''}
         </div>`;
+
+      const cb = el.querySelector('input');
+      cb.addEventListener('change', (e) => {
+        e.stopPropagation();
+        if (cb.checked) {
+          state.selected.add(m.key);
+          el.classList.add('checked');
+        } else {
+          state.selected.delete(m.key);
+          el.classList.remove('checked');
+        }
+        $('#selected-count').textContent = `${state.selected.size} selected of ${state.models.length}`;
+        // Update category subtext counter without rebuilding list
+        const catHeader = el.previousElementSibling;
+        const catItems = state.models.filter((x) => x.category === cat);
+        const catActive = catItems.filter((x) => state.selected.has(x.key)).length;
+        if (catHeader && catHeader.classList.contains('cat-title')) {
+          catHeader.innerHTML = `<span>${esc(state.categories[cat] || cat)}</span> <span class="subtle">(${catActive}/${catItems.length})</span>`;
+        }
+      });
+
       host.appendChild(el);
     });
   });
 
-  host.querySelectorAll('input[data-key]').forEach((cb) => {
-    cb.addEventListener('change', () => {
-      if (cb.checked) state.selected.add(cb.dataset.key);
-      else state.selected.delete(cb.dataset.key);
-      renderModels();
-    });
-  });
+  if (query && visibleCount === 0) {
+    host.innerHTML = `<div class="empty">No models match "${esc(query)}"</div>`;
+  }
 
   $('#selected-count').textContent =
     `${state.selected.size} selected of ${state.models.length}`;
@@ -216,8 +256,11 @@ function jobCard(job) {
 }
 
 async function refreshJobs() {
+  const btn = $('#refresh-jobs');
+  if (btn) btn.classList.add('spinning');
   let jobs;
-  try { ({ jobs } = await api('/api/jobs')); } catch { return; }
+  try { ({ jobs } = await api('/api/jobs')); } catch { if (btn) btn.classList.remove('spinning'); return; }
+  if (btn) btn.classList.remove('spinning');
 
   const host = $('#jobs');
   if (!jobs.length) {
@@ -317,6 +360,7 @@ function historyCard(group) {
       <span class="status done">saved</span>
       <span class="title">${esc(group.video)}</span>
       <span class="meta">${group.stages.length} model(s) · ${group.total_positives} event(s) · ${esc(when)}</span>
+      <button class="link-btn danger-link" data-delete-history="${esc(group.video)}">delete</button>
       <span class="meta">${state.openHistory.has(group.video) ? '▾' : '▸'}</span>
     </div>
     ${state.openHistory.has(group.video) ? `<div class="job-body">
@@ -330,10 +374,18 @@ function historyCard(group) {
 }
 
 async function refreshHistory() {
+  const btn = $('#refresh-history');
+  if (btn) btn.classList.add('spinning');
   const host = $('#history');
   let history;
-  try { ({ history } = await api('/api/history')); }
-  catch (e) { host.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  try {
+    ({ history } = await api('/api/history'));
+  } catch (e) {
+    host.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    if (btn) btn.classList.remove('spinning');
+    return;
+  }
+  if (btn) btn.classList.remove('spinning');
 
   if (!history.length) {
     host.innerHTML = '<div class="empty">Nothing in outputs/ yet.</div>';
@@ -346,10 +398,27 @@ async function refreshHistory() {
 
   host.querySelectorAll('[data-hist-toggle]').forEach((el) => {
     el.addEventListener('click', (ev) => {
-      if (ev.target.dataset.video || ev.target.dataset.histModel) return;
+      if (ev.target.dataset.video || ev.target.dataset.histModel || ev.target.dataset.deleteHistory) return;
       const v = el.dataset.histToggle;
       state.openHistory.has(v) ? state.openHistory.delete(v) : state.openHistory.add(v);
       refreshHistory();
+    });
+  });
+
+  host.querySelectorAll('[data-delete-history]').forEach((el) => {
+    el.addEventListener('click', async (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const v = el.dataset.deleteHistory;
+      if (!confirm(`Permanently delete all saved outputs (logs, videos, ANPR) for "${v}"?`)) return;
+      try {
+        await api(`/api/history/${encodeURIComponent(v)}`, { method: 'DELETE' });
+        state.openHistory.delete(v);
+        state.openAnpr.delete(v);
+        refreshHistory();
+        refreshAnpr();
+      } catch (err) {
+        alert(`Could not delete "${v}": ${err.message}`);
+      }
     });
   });
 
@@ -382,50 +451,88 @@ function renderDetections(d) {
       '<div class="empty">No positive detections in this run.</div>';
     return;
   }
-  const rows = d.rows.map((r) => `<tr>
-    <td>${r.timestamp_sec.toFixed(2)}s</td>
-    <td>${esc(r.label)}</td>
-    <td>${r.confidence.toFixed(3)}</td>
-    <td>${r.extra && r.extra.track_id != null ? r.extra.track_id : '—'}</td>
-    <td>${r.extra && r.extra.scoring ? esc(r.extra.scoring) : '—'}</td>
-  </tr>`).join('');
+  const hasPlates = d.rows.some((r) => r.extra && (r.extra.plate || r.extra.plate_display || r.extra.plate_status));
+  const rows = d.rows.map((r) => {
+    const extra = r.extra || {};
+    const plateStr = extra.plate_display || extra.plate || '';
+    const plateStatus = extra.plate_status || '';
+    let plateCell = '—';
+    if (plateStr) {
+      plateCell = `<span class="plate-badge">${esc(plateStr)}</span>`;
+    } else if (plateStatus) {
+      plateCell = `<span class="subtle">${esc(statusText(plateStatus, extra.plate_width_px))}</span>`;
+    }
+
+    const details = extra.scoring
+      ? esc(extra.scoring)
+      : (extra.vehicle_class ? `${esc(extra.vehicle_class)}${extra.colour ? ` (${esc(extra.colour)})` : ''}` : '—');
+
+    return `<tr>
+      <td>${r.timestamp_sec.toFixed(2)}s</td>
+      <td>${esc(r.label)}</td>
+      <td>${r.confidence.toFixed(3)}</td>
+      <td>${extra.track_id != null ? extra.track_id : '—'}</td>
+      ${hasPlates ? `<td>${plateCell}</td>` : ''}
+      <td>${details}</td>
+    </tr>`;
+  }).join('');
+
   $('#modal-body').innerHTML = `
     <div class="hint">${d.total} positive detection(s); showing ${d.rows.length}.</div>
     <table><thead><tr><th>Time</th><th>Label</th><th>Conf</th>
-      <th>Track</th><th>Scoring</th></tr></thead><tbody>${rows}</tbody></table>`;
+      <th>Track</th>${hasPlates ? '<th>Plate Number</th>' : ''}<th>Details</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
 }
 
 /* ------------------------------------------------------------------- anpr */
+const GALLERY_PREVIEW = 12; // tiles shown before the "Show all" button
+
+function makeTile(v, video) {
+  const img = v.image
+    ? `<img src="/api/anpr/${encodeURIComponent(video)}/vehicles/${encodeURIComponent(v.image)}" alt="" loading="lazy" onerror="this.onerror=null; this.outerHTML='<div class=\\'noimg\\'>no image</div>';" />`
+    : '<div class="noimg">no image</div>';
+  const plate = v.plate
+    ? `<div class="plate">${esc(v.plate_display || v.plate)}</div>`
+    : `<div class="plate none">${esc(statusText(v.plate_status, v.plate_width_px))}</div>`;
+  return `<figure class="vcard${v.plate ? '' : ' unread'}">
+    ${img}
+    <figcaption>
+      <div class="vname">${esc(v.caption || v.vehicle_class)}</div>
+      ${plate}
+      <div class="vmeta">${v.first_seen_sec}s–${v.last_seen_sec}s · ${v.frames_seen} frames${
+        v.plate ? ` · ${Math.round(v.plate_agreement * 100)}% agree` : ''}</div>
+    </figcaption>
+  </figure>`;
+}
+
 function anprCard(g) {
   const c = g.counts || {};
   const withPlate = g.vehicles.filter((v) => v.plate);
-  const without = g.vehicles.filter((v) => !v.plate);
+  const without   = g.vehicles.filter((v) => !v.plate);
   // Readable plates first — that's what you came to see.
   const ordered = [...withPlate, ...without];
+  const total = ordered.length;
+  const isExpanded = state.openAnprAll.has(g.video);
+  const visible = isExpanded ? ordered : ordered.slice(0, GALLERY_PREVIEW);
+  const hiddenCount = total - GALLERY_PREVIEW;
 
-  const tiles = ordered.map((v) => {
-    const img = v.image
-      ? `<img src="/api/anpr/${encodeURIComponent(g.video)}/vehicles/${encodeURIComponent(v.image)}" alt="" />`
-      : '<div class="noimg">no image</div>';
-    const plate = v.plate
-      ? `<div class="plate">${esc(v.plate_display || v.plate)}</div>`
-      : `<div class="plate none">${esc(statusText(v.plate_status, v.plate_width_px))}</div>`;
-    return `<figure class="vcard${v.plate ? '' : ' unread'}">
-      ${img}
-      <figcaption>
-        <div class="vname">${esc(v.caption || v.vehicle_class)}</div>
-        ${plate}
-        <div class="vmeta">${v.first_seen_sec}s–${v.last_seen_sec}s · ${v.frames_seen} frames${
-          v.plate ? ` · ${Math.round(v.plate_agreement * 100)}% agree` : ''}</div>
-      </figcaption>
-    </figure>`;
-  }).join('');
+  const tiles = visible.map((v) => makeTile(v, g.video)).join('');
+  const showAllBtn = !isExpanded && hiddenCount > 0
+    ? `<button class="gallery-more" data-show-all-anpr="${esc(g.video)}">
+        ▼ Show all ${total} vehicles (${hiddenCount} more)
+       </button>`
+    : (isExpanded && total > GALLERY_PREVIEW
+        ? `<button class="gallery-more" data-show-all-anpr="${esc(g.video)}">
+            ▲ Show fewer
+           </button>`
+        : '');
 
   return `<div class="job">
     <div class="job-head" data-anpr-toggle="${esc(g.video)}">
       <span class="status ${withPlate.length ? 'done' : 'cancelled'}">${withPlate.length} read</span>
       <span class="title">${esc(g.video)}</span>
-      <span class="meta">${c.total || 0} vehicle(s) captured · ${withPlate.length} with a plate</span>
+      <span class="meta">${total} vehicle(s) captured · ${withPlate.length} with a plate</span>
+      <button class="link-btn danger-link" data-delete-anpr="${esc(g.video)}">delete</button>
       <span class="meta">${state.openAnpr.has(g.video) ? '▾' : '▸'}</span>
     </div>
     ${state.openAnpr.has(g.video) ? `<div class="job-body">
@@ -434,6 +541,7 @@ function anprCard(g) {
         — ANPR needs roughly 90px of plate width. Wide or distant traffic shots
         can't resolve the characters, regardless of model.</div>` : ''}
       <div class="gallery">${tiles}</div>
+      ${showAllBtn}
     </div>` : ''}
   </div>`;
 }
@@ -446,10 +554,13 @@ function statusText(status, width) {
 }
 
 async function refreshAnpr() {
+  const btn = $('#refresh-anpr');
+  if (btn) btn.classList.add('spinning');
   const host = $('#anpr');
   let galleries;
   try { ({ galleries } = await api('/api/anpr')); }
-  catch (e) { host.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  catch (e) { host.innerHTML = `<div class="err">${esc(e.message)}</div>`; if (btn) btn.classList.remove('spinning'); return; }
+  if (btn) btn.classList.remove('spinning');
 
   if (!galleries.length) {
     host.innerHTML = '<div class="empty">No ANPR runs yet. Select the ANPR model and run a video.</div>';
@@ -458,11 +569,38 @@ async function refreshAnpr() {
   if (!state.openAnpr.size) state.openAnpr.add(galleries[0].video);
 
   host.innerHTML = galleries.map(anprCard).join('');
+
   host.querySelectorAll('[data-anpr-toggle]').forEach((el) => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (ev) => {
+      if (ev.target.dataset.deleteAnpr || ev.target.dataset.showAllAnpr) return;
       const v = el.dataset.anprToggle;
       state.openAnpr.has(v) ? state.openAnpr.delete(v) : state.openAnpr.add(v);
       refreshAnpr();
+    });
+  });
+
+  host.querySelectorAll('[data-show-all-anpr]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const v = el.dataset.showAllAnpr;
+      state.openAnprAll.has(v) ? state.openAnprAll.delete(v) : state.openAnprAll.add(v);
+      refreshAnpr();
+    });
+  });
+
+  host.querySelectorAll('[data-delete-anpr]').forEach((el) => {
+    el.addEventListener('click', async (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const v = el.dataset.deleteAnpr;
+      if (!confirm(`Permanently delete ANPR gallery for "${v}"?`)) return;
+      try {
+        await api(`/api/anpr/${encodeURIComponent(v)}`, { method: 'DELETE' });
+        state.openAnpr.delete(v);
+        state.openAnprAll.delete(v);
+        refreshAnpr();
+      } catch (err) {
+        alert(`Could not delete ANPR gallery for "${v}": ${err.message}`);
+      }
     });
   });
 }
@@ -553,12 +691,41 @@ function wire() {
     if (!confirm('Delete every generated log and annotated video in outputs/?\n' +
       'Source videos in test_videos/ are not touched.')) return;
     const r = await api('/api/outputs', { method: 'DELETE' });
-    $('#run-error').textContent = `Deleted ${r.removed} file(s).`;
+    $('#run-error').textContent = `Deleted ${r.removed} item(s).`;
     state.openHistory.clear();
     state.openAnpr.clear();
     refreshJobs();
     refreshHistory();
+    refreshAnpr();
   });
+
+  const delHistAll = $('#delete-history-all');
+  if (delHistAll) {
+    delHistAll.addEventListener('click', async () => {
+      if (!confirm('Delete all saved output logs, annotated videos, and galleries in outputs/?\n' +
+        'Source videos in test_videos/ will NOT be touched.')) return;
+      const r = await api('/api/outputs', { method: 'DELETE' });
+      state.openHistory.clear();
+      state.openAnpr.clear();
+      refreshJobs();
+      refreshHistory();
+      refreshAnpr();
+    });
+  }
+
+  const delAnprAll = $('#delete-anpr-all');
+  if (delAnprAll) {
+    delAnprAll.addEventListener('click', async () => {
+      if (!confirm('Delete all captured ANPR vehicle galleries in outputs/anpr/?')) return;
+      let galleries;
+      try { ({ galleries } = await api('/api/anpr')); } catch { return; }
+      for (const g of galleries) {
+        try { await api(`/api/anpr/${encodeURIComponent(g.video)}`, { method: 'DELETE' }); } catch {}
+      }
+      state.openAnpr.clear();
+      refreshAnpr();
+    });
+  }
 
   $('#video-file').addEventListener('change', async (e) => {
     const file = e.target.files[0];

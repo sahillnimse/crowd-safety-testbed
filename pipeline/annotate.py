@@ -312,14 +312,21 @@ def export_detection_log(detections: list[Detection], output_path: str):
 def export_detection_csv(detections: list[Detection], output_path: str):
     """Writes detections to a CSV file — one row per detection."""
     fieldnames = ["model_name", "label", "confidence", "timestamp_sec",
-                  "frame_index", "bbox", "keypoints", "extra"]
-    with open(output_path, "w", newline="") as f:
+                  "frame_index", "plate", "plate_display", "track_id",
+                  "vehicle_class", "bbox", "keypoints", "extra"]
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for d in detections:
             row = d.__dict__.copy()
+            extra = row.get("extra") or {}
+            row["plate"] = extra.get("plate", "")
+            row["plate_display"] = extra.get("plate_display", "")
+            row["track_id"] = extra.get("track_id", "")
+            row["vehicle_class"] = extra.get("vehicle_class", "")
             row["bbox"] = json.dumps(row["bbox"]) if row["bbox"] else ""
             row["keypoints"] = json.dumps(row["keypoints"]) if row["keypoints"] else ""
-            row["extra"] = json.dumps(row["extra"]) if row["extra"] else ""
+            row["extra"] = json.dumps(extra) if extra else ""
             writer.writerow(row)
     print(f"Detection CSV written to {output_path}")
+

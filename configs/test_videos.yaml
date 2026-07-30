@@ -6,26 +6,25 @@
 #     - {start_sec: 118.0, end_sec: 121.0}
 videos:
   - url: "https://youtu.be/chzr4s3rWCM?si=5jNH0qtQip4nGosd"
-    category: all_models_dense_crowd
+    category: fall_and_crowd_crush_test
     models:
-      # Fall detection (5 — fall_alphapose_lstm and fall_posec3d skipped:
-      # both need from-source builds (AlphaPose has no maintained pip
-      # package; PoseC3D needs mmcv, which needs the full CUDA Toolkit +
-      # MSVC to compile on Windows). All 5 remaining models confirmed
-      # working on real footage.
+      # Fall detection (7)
       - fall_yolo_pose
       - fall_mediapipe_pose
       - fall_stgcn
       - fall_movenet
       - fall_optical_flow
-      # Crowd-crush (kept alongside fall models — same category as before)
+      - fall_posec3d
+      - fall_alphapose_lstm
+      # Crowd-crush (1)
       - optical_flow_crush
     ground_truth: []
 
   - url: "https://youtu.be/pG4HqTGkHPg?si=tBniURkEF0k_qFPx"
     category: violence_altercation_test
     models:
-      # Violence / altercation detection (7)
+      # Violence / altercation detection (8)
+      - roboflow_combined
       - violence_x3d
       - violence_slowfast
       - violence_videomae
@@ -33,4 +32,24 @@ videos:
       - violence_c3d
       - violence_tsm
       - violence_mmaction_slowonly
+    ground_truth: []
+
+  - url: "https://youtu.be/cJatWBDNabE"
+    category: traffic_and_anpr_test
+    models:
+      # Traffic monitoring (4)
+      - yolo_traffic
+      - rtdetr_traffic
+      - roboflow_traffic
+      - mog2_parked
+      # ANPR / Number plate detection (2)
+      - anpr
+      - indian_anpr
+    ground_truth: []
+
+  - url: "https://youtu.be/sample_fire_smoke"
+    category: fire_and_smoke_test
+    models:
+      # Fire / Smoke detection (1)
+      - fire_smoke_yolo
     ground_truth: []

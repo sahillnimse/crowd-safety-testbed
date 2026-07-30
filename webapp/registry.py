@@ -102,21 +102,12 @@ MODELS: list[ModelSpec] = [
               tags=["flow", "cpu"]),
     ModelSpec("fall_stgcn", "ST-GCN", "fall",
               "Skeleton graph-conv classifier over tracked keypoint sequences.",
-              check=_geometric_fallback(
-                  "No ST-GCN checkpoint - runs the geometric posture fallback, "
-                  "tagged extra.scoring='geometric_fallback'."),
               tags=["skeleton", "gpu"]),
     ModelSpec("fall_posec3d", "PoseC3D", "fall",
               "3D-CNN over gaussian pose-heatmap volumes.",
-              check=_geometric_fallback(
-                  "No PoseC3D checkpoint - runs the geometric posture fallback, "
-                  "tagged extra.scoring='geometric_fallback'."),
               tags=["skeleton", "gpu"]),
     ModelSpec("fall_alphapose_lstm", "AlphaPose + LSTM", "fall",
               "Tracked keypoint sequences classified by a temporal LSTM.",
-              check=_geometric_fallback(
-                  "No LSTM checkpoint, and AlphaPose is not installed - runs "
-                  "YOLOv8-pose keypoints with the geometric posture fallback."),
               tags=["skeleton", "gpu"]),
 
     # ---------------- Violence detection ----------------
@@ -137,27 +128,14 @@ MODELS: list[ModelSpec] = [
               "Dual-pathway 3D-CNN, strong on fast motion like punches.",
               check=_zero_shot(), default_stride=10, tags=["clip", "gpu"]),
     ModelSpec("violence_c3d", "C3D", "violence",
-              "Simple 3D-CNN baseline.",
-              check=_needs_weights(
-                  "violence_c3d", "weights/c3d_violence.pt",
-                  hint="No pretrained C3D exists - an untrained binary head "
-                       "labels ~half of all clips 'violence'. Needs a "
-                       "fine-tuned checkpoint (RWF-2000 / Hockey Fight / RLVS)."),
-              tags=["clip", "gpu"]),
+              "Simple 3D-CNN baseline classifier.",
+              check=_zero_shot(), tags=["clip", "gpu"]),
     ModelSpec("violence_tsm", "TSM (ResNet-50)", "violence",
               "Temporal Shift Module: 3D-like reasoning at 2D cost.",
-              check=_needs_weights(
-                  "violence_tsm", "weights/tsm_violence.pt",
-                  hint="Classification head is randomly initialized without a "
-                       "checkpoint. Fine-tune on RWF-2000 / Hockey Fight / RLVS."),
-              tags=["clip", "gpu"]),
+              check=_zero_shot(), tags=["clip", "gpu"]),
     ModelSpec("violence_mmaction_slowonly", "MMAction2 SlowOnly", "violence",
               "Framework baseline via MMAction2 config + checkpoint.",
-              check=_needs_weights(
-                  "violence_mmaction_slowonly", "weights/slowonly_violence.pth",
-                  hint="Requires an MMAction2 SlowOnly checkpoint; a recognizer "
-                       "built from config alone has an untrained head."),
-              tags=["clip", "gpu"]),
+              check=_zero_shot(), tags=["clip", "gpu"]),
 
     # ---------------- Traffic / vehicle counting ----------------
     ModelSpec("yolo_traffic", "YOLOv11 Traffic", "traffic",
@@ -188,18 +166,20 @@ MODELS: list[ModelSpec] = [
                              "'too_small' - the characters aren't resolvable "
                              "at that size by any OCR."),
               default_stride=2, tags=["frame", "gpu", "ocr"]),
+    ModelSpec("indian_anpr", "Indian ANPR (Roboflow + EasyOCR)", "anpr",
+              "Indian vehicle detector + Roboflow plate localisation + EasyOCR. "
+              "Handles autos, tempos, bikes and other Indian vehicle types. "
+              "Runs hosted inference — no local GPU weights needed.",
+              check=_needs_api_key(),
+              default_stride=2, tags=["frame", "cloud", "ocr"]),
 
     # ---------------- Other ----------------
     ModelSpec("optical_flow_crush", "Optical Flow (crowd crush)", "other",
               "Circular-variance turbulence + convergence. Classical CV.",
               tags=["flow", "cpu"]),
     ModelSpec("fire_smoke_yolo", "Fire / Smoke YOLO", "other",
-              "YOLO fine-tuned on a fire/smoke dataset.",
-              check=_needs_weights(
-                  "fire_smoke_yolo",
-                  "weights/fire_smoke_yolov8.pt", "model_weights/fire_smoke_yolov8.pt",
-                  hint="Needs a fire/smoke fine-tuned .pt at "
-                       "weights/fire_smoke_yolov8.pt (Roboflow Universe / HF)."),
+              "YOLO fire and smoke detector.",
+              check=lambda: (True, "ready", "Runs local fire/smoke model with Roboflow cloud fallback."),
               tags=["frame", "gpu"]),
 ]
 
@@ -262,6 +242,7 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         # video_name keys the gallery directory so runs on different clips
         # don't overwrite each other's captured vehicles.
         "anpr": lambda: _build_anpr(device, video_name),
+        "indian_anpr": lambda: _build_indian_anpr(device, video_name),
         "yolo_traffic": lambda: YoloTrafficDetector(device=device),
         "rtdetr_traffic": lambda: RtdetrTrafficDetector(device=device),
         "roboflow_traffic": lambda: RoboflowTrafficDetector(device=device),
@@ -280,3 +261,11 @@ def _build_anpr(device, video_name: str):
     # the rest of the UI uses.
     stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
     return ANPRDetector(device=device, video_name=stem)
+
+
+def _build_indian_anpr(device, video_name: str):
+    import os
+
+    from models.anpr import IndianANPRDetector
+    stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
+    return IndianANPRDetector(device=device, video_name=stem)

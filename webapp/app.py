@@ -296,6 +296,70 @@ def stream_annotated(name: str):
     return FileResponse(path, media_type="video/mp4")
 
 
+@app.delete("/api/history/{video}")
+def delete_history_video(video: str):
+    """Delete output logs, annotated videos, and ANPR gallery for a specific video."""
+    video_stem = os.path.basename(video)
+    removed = 0
+
+    if os.path.isdir(LOG_DIR):
+        for name in os.listdir(LOG_DIR):
+            if name.startswith(f"{video_stem}_"):
+                path = os.path.join(LOG_DIR, name)
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed += 1
+
+    if os.path.isdir(ANNOTATED_DIR):
+        for name in os.listdir(ANNOTATED_DIR):
+            if name.startswith(f"{video_stem}_"):
+                path = os.path.join(ANNOTATED_DIR, name)
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed += 1
+
+    anpr_folder = os.path.join(ANPR_DIR, video_stem)
+    if os.path.isdir(anpr_folder):
+        shutil.rmtree(anpr_folder, ignore_errors=True)
+        removed += 1
+
+    return {"ok": True, "removed": removed}
+
+
+@app.delete("/api/history/{video}/{model_key}")
+def delete_history_stage(video: str, model_key: str):
+    """Delete a single model's saved outputs for a video."""
+    video_stem = os.path.basename(video)
+    model_stem = os.path.basename(model_key)
+    stem = f"{video_stem}_{model_stem}"
+    removed = 0
+
+    for ext in (".json", ".csv"):
+        path = os.path.join(LOG_DIR, f"{stem}{ext}")
+        if os.path.isfile(path):
+            os.remove(path)
+            removed += 1
+
+    mp4_path = os.path.join(ANNOTATED_DIR, f"{stem}.mp4")
+    if os.path.isfile(mp4_path):
+        os.remove(mp4_path)
+        removed += 1
+
+    return {"ok": True, "removed": removed}
+
+
+
+@app.delete("/api/anpr/{video}")
+def delete_anpr_gallery(video: str):
+    """Delete ANPR gallery for a specific video."""
+    video_stem = os.path.basename(video)
+    anpr_folder = os.path.join(ANPR_DIR, video_stem)
+    if os.path.isdir(anpr_folder):
+        shutil.rmtree(anpr_folder, ignore_errors=True)
+        return {"ok": True, "removed": 1}
+    return {"ok": True, "removed": 0}
+
+
 @app.delete("/api/outputs")
 def clear_outputs():
     """Wipe generated artifacts. Only ever touches outputs/, never the
@@ -307,10 +371,28 @@ def clear_outputs():
         for name in os.listdir(d):
             path = os.path.join(d, name)
             if os.path.isfile(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError:
+                    pass
+
+    if os.path.isdir(ANPR_DIR):
+        for name in os.listdir(ANPR_DIR):
+            path = os.path.join(ANPR_DIR, name)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
                 removed += 1
+            elif os.path.isfile(path):
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError:
+                    pass
+
     return {"removed": removed}
 
 
 # Static frontend last, so it doesn't shadow /api routes.
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+

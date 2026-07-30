@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Crowd Safety Testbed</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -21,6 +24,10 @@
       <button class="link-btn" data-select="all">Select all</button>
       <button class="link-btn" data-select="none">Clear</button>
       <button class="link-btn" data-select="ready">Runnable only</button>
+    </div>
+
+    <div class="sidebar-search">
+      <input type="text" id="model-search" placeholder="Search 23 models…" autocomplete="off" />
     </div>
 
     <div id="model-list" class="model-list">
@@ -107,7 +114,9 @@
     <section class="panel">
       <div class="panel-head">
         <h2>3 · Runs (this session)</h2>
-        <button id="refresh-jobs" class="link-btn">Refresh</button>
+        <div class="head-actions">
+          <button id="refresh-jobs" class="link-btn">Refresh</button>
+        </div>
       </div>
       <div id="jobs"><div class="empty">No runs yet.</div></div>
     </section>
@@ -115,7 +124,11 @@
     <section class="panel" id="anpr-panel">
       <div class="panel-head">
         <h2>ANPR captures <span class="subtle">— vehicles and number plates</span></h2>
-        <button id="refresh-anpr" class="link-btn">Refresh</button>
+        <div class="head-actions">
+          <button id="delete-anpr-all" class="link-btn danger-link">Delete all</button>
+          <span class="sep">·</span>
+          <button id="refresh-anpr" class="link-btn">Refresh</button>
+        </div>
       </div>
       <div id="anpr"><div class="empty">No ANPR runs yet.</div></div>
     </section>
@@ -123,7 +136,11 @@
     <section class="panel">
       <div class="panel-head">
         <h2>4 · Saved results <span class="subtle">— everything in outputs/</span></h2>
-        <button id="refresh-history" class="link-btn">Refresh</button>
+        <div class="head-actions">
+          <button id="delete-history-all" class="link-btn danger-link">Delete all</button>
+          <span class="sep">·</span>
+          <button id="refresh-history" class="link-btn">Refresh</button>
+        </div>
       </div>
       <p class="hint">Read from disk, so these survive a server restart and
         include runs started from the command line.</p>
