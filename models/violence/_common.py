@@ -318,6 +318,11 @@ class ViolenceScoringMixin:
     #: set by the wrapper's load() once it knows the head it ended up with
     _binary_head: bool = False
     _violence_indices: Optional[set[int]] = None
+
+    #: True when this wrapper is running with a randomly-initialized
+    #: classification head because no fine-tuned checkpoint was supplied.
+    _untrained: bool = False
+    _untrained_reason: str = ""
     _roi: Optional[PersonROI] = None
 
     def _init_roi(self, use_person_roi: bool):
@@ -351,8 +356,36 @@ class ViolenceScoringMixin:
         print(f"[{self.name}] No fine-tuned binary head - scoring violence "
               f"zero-shot from {len(matched)} Kinetics classes: {matched}")
 
+    def _mark_untrained(self, reason: str) -> None:
+        """Declare that this model's head is randomly initialized.
+
+        Call from load() when no fine-tuned checkpoint was found. The model
+        still runs and still emits rows, but its output is labelled so it
+        can never be counted as a real detection.
+        """
+        self._untrained = True
+        self._untrained_reason = reason
+        print(f"[{self.name}] WARNING: {reason} Output is labelled "
+              f"'violence_untrained' and excluded from event counts.")
+
     def _score(self, probs) -> tuple[str, float, dict]:
         """probs -> (label, confidence, extras) using the resolved head."""
         score, extras = violence_score(probs, self._violence_indices, self._binary_head)
+
+        if self._untrained:
+            # A randomly-initialized head does not respond to its input: on
+            # this repo's test footage C3D returned 0.510 for every single
+            # clip (std 0.000) and TSM 0.494-0.564, both sitting above the
+            # 0.5 threshold. Labelling that "violence" made them look like
+            # the most sensitive detectors in the comparison tables while
+            # carrying no information at all. `violence_untrained` is
+            # deliberately absent from POSITIVE_LABELS, so these rows are
+            # still written and inspectable but never counted as events.
+            return "violence_untrained", score, {
+                **extras,
+                "scoring": "untrained_random_head",
+                "untrained_reason": self._untrained_reason,
+            }
+
         label = "violence" if score >= self.conf_threshold else "non_violence"
         return label, score, extras

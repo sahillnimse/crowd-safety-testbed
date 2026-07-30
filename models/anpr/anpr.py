@@ -46,6 +46,7 @@ from models.anpr._ocr import (
     PlateDetector,
     PlateOCR,
     dominant_colour,
+    get_ocr_engine,
 )
 from models.anpr._plate_text import PlateVote, format_display
 from models.traffic._tracker import ParkedMovingClassifier
@@ -96,7 +97,7 @@ class ANPRDetector(BaseModelWrapper):
                  min_plate_width: int = DEFAULT_MIN_PLATE_WIDTH,
                  read_every_n_frames: int = 3,
                  gallery_dir: str = None, video_name: str = "run",
-                 save_gallery: bool = True, device=None):
+                 save_gallery: bool = True, ocr_backend: str = "easyocr", device=None):
         super().__init__(device=device)
         self.weights = weights
         self.conf_threshold = conf_threshold
@@ -109,11 +110,12 @@ class ANPRDetector(BaseModelWrapper):
         self.gallery_dir = gallery_dir or DEFAULT_GALLERY_DIR
         self.video_name = video_name
         self.save_gallery = save_gallery
+        self.ocr_backend = ocr_backend
 
         self._records: dict[int, _VehicleRecord] = {}
         self._classifier = ParkedMovingClassifier(model_name=self.name)
         self._plate_detector = PlateDetector(conf_threshold=plate_conf)
-        self._ocr = PlateOCR(min_plate_width=min_plate_width)
+        self._ocr = get_ocr_engine(ocr_backend, min_plate_width=min_plate_width)
 
     def load(self):
         from ultralytics import YOLO

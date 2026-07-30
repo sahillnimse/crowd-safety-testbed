@@ -155,6 +155,16 @@ class PlateOCR:
         return text, conf, "ok"
 
 
+def get_ocr_engine(backend: str = "easyocr", use_gpu: bool = True,
+                   min_plate_width: int = DEFAULT_MIN_PLATE_WIDTH):
+    """Factory for swappable ANPR OCR engines ('easyocr' or 'rapidocr')."""
+    backend_norm = str(backend).lower().replace("_", "").replace("-", "")
+    if "rapid" in backend_norm:
+        from models.anpr._rapid_ocr import PlateRapidOCR
+        return PlateRapidOCR(use_gpu=use_gpu, min_plate_width=min_plate_width)
+    return PlateOCR(use_gpu=use_gpu, min_plate_width=min_plate_width)
+
+
 def dominant_colour(crop) -> str:
     """Coarse colour name for a vehicle crop.
 

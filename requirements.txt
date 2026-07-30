@@ -64,6 +64,14 @@ deep-sort-realtime>=1.3.2
 # at first .track() call, which fails offline / in CI.
 lap>=0.5.12
 
+# Umbrella detection
+# umbrella_yolo and umbrella_ssd need nothing extra (ultralytics/torchvision
+# above). umbrella_world is open-vocabulary and needs CLIP for its text
+# encoder; ultralytics otherwise auto-installs it mid-run and then warns that
+# a restart is required, which silently degrades the first run.
+ftfy>=6.3.1
+clip @ git+https://github.com/ultralytics/CLIP.git
+
 # ANPR (number plates)
 easyocr>=1.7.2
 # DETR plate detector uses a timm backbone

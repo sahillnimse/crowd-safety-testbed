@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Crowd Safety Testbed</title>
+  <title>Crowd Safety Testbed — AI Analytics Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -42,6 +42,38 @@
   <!-- ============ MAIN PANEL ============ -->
   <main class="main">
 
+    <!-- KPI STATS SUMMARY BAR -->
+    <div class="kpi-bar">
+      <div class="kpi-card">
+        <div class="kpi-icon">⚙️</div>
+        <div>
+          <div class="kpi-val" id="kpi-device">CPU</div>
+          <div class="kpi-lbl">Hardware Device</div>
+        </div>
+      </div>
+      <div class="kpi-card history">
+        <div class="kpi-icon">📹</div>
+        <div>
+          <div class="kpi-val" id="kpi-runs">0</div>
+          <div class="kpi-lbl">Saved Outputs</div>
+        </div>
+      </div>
+      <div class="kpi-card events">
+        <div class="kpi-icon">🚨</div>
+        <div>
+          <div class="kpi-val" id="kpi-events">0</div>
+          <div class="kpi-lbl">Positive Alerts</div>
+        </div>
+      </div>
+      <div class="kpi-card anpr">
+        <div class="kpi-icon">🚘</div>
+        <div>
+          <div class="kpi-val" id="kpi-anpr">0</div>
+          <div class="kpi-lbl">ANPR Captures</div>
+        </div>
+      </div>
+    </div>
+
     <section class="panel">
       <h2>1 · Source video</h2>
 
@@ -68,7 +100,7 @@
     </section>
 
     <section class="panel">
-      <h2>2 · Settings</h2>
+      <h2>2 · Execution Settings</h2>
       <div class="settings">
         <label>
           <span>Frame sampling</span>
@@ -105,7 +137,7 @@
       </div>
 
       <div class="run-row">
-        <button id="run-btn" class="primary">Run selected models</button>
+        <button id="run-btn" class="primary">▶ Run selected models</button>
         <button id="clear-outputs" class="danger-ghost">Delete all outputs</button>
         <span id="run-error" class="run-error"></span>
       </div>
@@ -113,17 +145,17 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>3 · Runs (this session)</h2>
+        <h2>3 · Live Runs <span class="subtle">— active & recent session jobs</span></h2>
         <div class="head-actions">
           <button id="refresh-jobs" class="link-btn">Refresh</button>
         </div>
       </div>
-      <div id="jobs"><div class="empty">No runs yet.</div></div>
+      <div id="jobs"><div class="empty">No runs yet. Select models above and click Run.</div></div>
     </section>
 
     <section class="panel" id="anpr-panel">
       <div class="panel-head">
-        <h2>ANPR captures <span class="subtle">— vehicles and number plates</span></h2>
+        <h2>ANPR Captures <span class="subtle">— vehicles and plate reads</span></h2>
         <div class="head-actions">
           <button id="delete-anpr-all" class="link-btn danger-link">Delete all</button>
           <span class="sep">·</span>
@@ -135,27 +167,35 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>4 · Saved results <span class="subtle">— everything in outputs/</span></h2>
-        <div class="head-actions">
+        <h2>4 · Saved Results & Analysis <span class="subtle">— outputs on disk</span></h2>
+        <div class="filter-bar">
+          <input type="text" id="history-search" placeholder="Filter outputs..." />
           <button id="delete-history-all" class="link-btn danger-link">Delete all</button>
           <span class="sep">·</span>
           <button id="refresh-history" class="link-btn">Refresh</button>
         </div>
       </div>
-      <p class="hint">Read from disk, so these survive a server restart and
-        include runs started from the command line.</p>
-      <div id="history"><div class="empty">Nothing in outputs/ yet.</div></div>
+      <p class="hint">Interactive model classification cards. Click any card to inspect full details, detections timeline, video, or JSON payloads.</p>
+      <div id="history" class="cards-grid"><div class="empty">Nothing in outputs/ yet.</div></div>
     </section>
 
   </main>
 </div>
 
-<!-- detection detail / video modal -->
+<!-- DETAILED CLASSIFICATION & ANALYTICAL INSPECTOR MODAL -->
 <div id="modal" class="modal hidden">
   <div class="modal-card">
     <div class="modal-head">
-      <h3 id="modal-title">Results</h3>
-      <button id="modal-close" class="link-btn">Close</button>
+      <div class="modal-head-title">
+        <h3 id="modal-title">Classification & Analytical Details</h3>
+      </div>
+      <button id="modal-close" class="link-btn">✕ Close</button>
+    </div>
+    <div class="modal-nav-tabs" id="modal-nav">
+      <button class="modal-tab-btn active" data-mtab="overview">📊 Overview & Key Details</button>
+      <button class="modal-tab-btn" data-mtab="timeline">⏱️ Detections Timeline</button>
+      <button class="modal-tab-btn" data-mtab="video">🎥 Annotated Video</button>
+      <button class="modal-tab-btn" data-mtab="raw">💻 Raw JSON Payload</button>
     </div>
     <div id="modal-body" class="modal-body"></div>
   </div>

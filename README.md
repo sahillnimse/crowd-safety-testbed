@@ -154,6 +154,75 @@ needs either a registration-database lookup or a make/model classifier
 trained on Indian vehicles. What you get is class + colour ("white car").
 `_VehicleRecord` is where a resolver would slot in.
 
+## Umbrella detection — 3 models
+
+All three stay inside the 30 MB budget and share their filtering, counting
+and output construction (`models/umbrella/_common.py`), so any difference
+in results is a difference in the *detector*.
+
+| Model | Weights | Approach |
+|---|---|---|
+| `umbrella_yolo` | 5.6 MB (`n`) / 19.3 MB (`s`) | YOLO11, COCO fixed class 25 |
+| `umbrella_ssd` | 13.8 MB | SSDLite320 + MobileNetV3, older/lighter family, CPU-viable |
+| `umbrella_world` | 25.9 MB | YOLO-World v2, open-vocabulary text prompts |
+
+Measured on the same real crowd photos:
+
+| Image | `yolo` (s) | `ssd` | `world` |
+|---|---|---|---|
+| Crowd holding umbrellas | 6 (top 0.86) | 4 (top 0.94) | **15** (top 0.82) |
+| Crowd with women, angle 1 | 8 (top 0.74) | 2 (top 0.97) | **15** (top 0.95) |
+| Crowd with women, angle 2 | 8 (top 0.73) | 1 (top 0.96) | **15** (top 0.96) |
+| Thatched beach shelters | 0 | 0 | 0 |
+
+The spread is the point: **SSDLite is high-precision/low-recall** (fewest
+boxes, highest confidence), **YOLO sits in the middle**, and
+**YOLO-World recalls roughly twice as many** at slightly lower confidence.
+Pick by whether missed umbrellas or false ones cost you more.
+
+`umbrella_yolo` rejects `model_size="m"` rather than silently exceeding the
+budget (yolo11m is ~40 MB).
+
+### Open-vocabulary finds what you *name*
+
+The thatched-shelter row above is worth understanding. Those structures are
+invisible to all three by default. With YOLO-World:
+
+| Prompts | Found |
+|---|---|
+| `umbrella`, `parasol` | 0 |
+| `umbrella`, `parasol`, `canopy` | 0 |
+| `umbrella`, `parasol`, `beach hut`, `straw roof` | 0 |
+| **`thatched roof shelter`** (+ others) | **35** |
+
+Open-vocabulary does **not** generalise to "things that give shade" — near
+synonyms fail outright. If your footage has shade structures you care
+about, prompt for them literally:
+
+```python
+UmbrellaWorldDetector(prompts=("umbrella", "parasol", "thatched roof shelter"))
+```
+
+Each detection records which prompt matched in `extra["matched_class"]`, so
+a run can be audited for whether extra recall came from real umbrellas or
+from a broad term pulling in awnings and market stalls.
+
+### Notes
+
+Tracking is on by default in all three. Without persistent IDs one umbrella
+held for 100 frames is indistinguishable from 100 umbrellas; `track_id`
+identifies the individual and `umbrellas_in_frame` gives the live
+concurrent count.
+
+`umbrella_world` needs CLIP for its text encoder (in `requirements.txt`).
+Without it ultralytics auto-installs mid-run and warns that a restart is
+required, which silently degrades that first run.
+
+In a crowd-safety context a rising umbrella count is a proxy for rain
+(which bunches crowds and slows walking speed) and a caveat on the
+pose-based fall detectors, which degrade when umbrellas occlude torsos from
+overhead cameras.
+
 ## Traffic models: use a low frame stride
 
 The traffic detectors classify each tracked vehicle as `vehicle_moving` or

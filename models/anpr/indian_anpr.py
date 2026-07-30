@@ -53,7 +53,7 @@ import cv2
 import numpy as np
 
 from models.base import BaseModelWrapper, Detection
-from models.anpr._ocr import enhance_plate, dominant_colour, PLATE_ALPHABET
+from models.anpr._ocr import enhance_plate, dominant_colour, PLATE_ALPHABET, get_ocr_engine, PlateOCR
 from models.anpr._plate_text import PlateVote, format_display
 from models.traffic.rtdetr_traffic import _stable_track_id
 
@@ -109,6 +109,7 @@ class IndianANPRDetector(BaseModelWrapper):
                  gallery_dir: str = None,
                  video_name: str = "run",
                  save_gallery: bool = True,
+                 ocr_backend: str = "easyocr",
                  device=None):
         super().__init__(device=device)
         self.vehicle_model_id = vehicle_model_id
@@ -127,6 +128,7 @@ class IndianANPRDetector(BaseModelWrapper):
         self.gallery_dir = gallery_dir or DEFAULT_GALLERY_DIR
         self.video_name = video_name
         self.save_gallery = save_gallery
+        self.ocr_backend = ocr_backend
 
         self._records: dict[int, _VehicleRecord] = {}
         self._rf_client = None
@@ -142,15 +144,12 @@ class IndianANPRDetector(BaseModelWrapper):
             api_key=self.api_key,
         )
 
-        # DeepSORT: gives persistent IDs across frames so vote logic has
-        # a consistent vehicle identity to accumulate reads against.
         from deep_sort_realtime.deepsort_tracker import DeepSort
         self._tracker = DeepSort(max_age=30)
 
-        # EasyOCR: ~40 MB recognition model, already a project dependency.
-        import easyocr
         use_gpu = str(self.device).startswith("cuda")
-        self._ocr = easyocr.Reader(["en"], gpu=use_gpu, verbose=False)
+        self._ocr = get_ocr_engine(self.ocr_backend, use_gpu=use_gpu, min_plate_width=self.min_plate_width)
+        self._ocr.load()
 
         self._records = {}
         self._frame_count = 0
@@ -295,27 +294,12 @@ class IndianANPRDetector(BaseModelWrapper):
 
         # Stage 3: OCR
         rec.ocr_attempts += 1
-        prepared = enhance_plate(plate_img)
-        if prepared is None:
-            if rec.plate_status not in ("ok",):
-                rec.plate_status = "unreadable"
-            return
-
-        results = self._ocr.readtext(prepared, allowlist=PLATE_ALPHABET, detail=1)
-        if not results:
-            if rec.plate_status not in ("ok",):
-                rec.plate_status = "unreadable"
-            return
-
-        # Join multi-line plates (state code above, number below) in reading order.
-        results.sort(key=lambda r: (r[0][0][1], r[0][0][0]))
-        text = "".join(r[1] for r in results)
-        conf = float(np.mean([r[2] for r in results]))
-
-        if text:
+        text, conf, status = self._ocr.read(plate_img)
+        if status == "ok" and text:
             rec.votes.add(text, conf)
-            if rec.votes.readings:
-                rec.plate_status = "ok"
+            rec.plate_status = "ok"
+        elif status != "ok" and rec.plate_status not in ("ok",):
+            rec.plate_status = status
 
     # ------------------------------------------------------------------
     def finalize(self) -> dict:

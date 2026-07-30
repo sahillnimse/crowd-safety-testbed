@@ -41,6 +41,9 @@ COLOR_MAP = {
     # in the annotated video rather than both falling through to yellow.
     "vehicle_moving": (255, 191, 0),   # cyan-blue
     "vehicle_parked": (0, 140, 255),   # orange
+    "vehicle_plate": (0, 215, 255),    # amber — ANPR, plate read
+    "vehicle_unread": (120, 120, 120), # grey — ANPR, plate not legible
+    "umbrella": (203, 65, 200),        # magenta
 }
 DEFAULT_COLOR = (255, 255, 0)
 

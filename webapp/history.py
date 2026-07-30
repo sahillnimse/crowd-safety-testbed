@@ -32,7 +32,7 @@ def _split_name(stem: str) -> tuple[str, str] | None:
     Split against the known model keys rather than on the last underscore:
     model keys contain underscores themselves, and video IDs can too.
     """
-    for key in BY_KEY:
+    for key in sorted(BY_KEY, key=len, reverse=True):
         suffix = "_" + key
         if stem.endswith(suffix):
             return stem[: -len(suffix)], key

@@ -43,7 +43,8 @@ POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
                    "vehicle_moving", "vehicle_parked",
                    # ANPR: every captured vehicle is a result, whether or not
                    # its plate turned out to be legible.
-                   "vehicle_plate", "vehicle_unread"}
+                   "vehicle_plate", "vehicle_unread",
+                   "umbrella"}
 
 
 @dataclass

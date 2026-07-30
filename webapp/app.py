@@ -393,6 +393,15 @@ def clear_outputs():
     return {"removed": removed}
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    fav_path = os.path.join(FRONTEND_DIR, "favicon.ico")
+    if os.path.exists(fav_path):
+        return FileResponse(fav_path)
+    from fastapi.responses import Response
+    return Response(status_code=204)
+
+
 # Static frontend last, so it doesn't shadow /api routes.
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 

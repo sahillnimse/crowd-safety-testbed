@@ -83,9 +83,17 @@ class TSMViolenceClassifier(ViolenceScoringMixin, BaseModelWrapper):
             self._model = self._build_tsm_resnet(num_classes=num_classes, pretrained_backbone=False)
             self._model.load_state_dict(state)
         else:
-            # Safe ImageNet ResNet50 + TSM backbone initialization
+            # ImageNet weights give the backbone real features, but the
+            # 2-class head on top is still random, so the output carries no
+            # violence information. Runs, but flagged.
             num_classes = 2
             self._model = self._build_tsm_resnet(num_classes=num_classes, pretrained_backbone=True)
+            self._mark_untrained(
+                "No weights_path given. The ResNet-50 backbone has ImageNet "
+                "weights but the 2-class violence head is randomly "
+                "initialized. Measured output was 0.494-0.564 regardless of "
+                "content. Fine-tune on RWF-2000 / Hockey Fight / RLVS."
+            )
 
         self._model.to(self.device).eval()
         self._resolve_head(num_classes)

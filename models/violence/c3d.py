@@ -71,9 +71,17 @@ class C3DViolenceClassifier(ViolenceScoringMixin, BaseModelWrapper):
             self._model = self._build_c3d(num_classes=num_classes)
             self._model.load_state_dict(state)
         else:
-            # Safe fallback initialization if fine-tuned weights file is not provided
+            # No pretrained C3D exists to fall back on, so the whole network
+            # is random here — not just the head. It still loads and runs,
+            # but is flagged so its output can't be mistaken for detections.
             num_classes = 2
             self._model = self._build_c3d(num_classes=num_classes)
+            self._mark_untrained(
+                "No weights_path given and no pretrained C3D exists, so the "
+                "entire network is randomly initialized. Measured output was "
+                "a constant 0.510 on every clip. Fine-tune on Hockey Fight / "
+                "RLVS / RWF-2000 for real results."
+            )
 
         self._model.to(self.device).eval()
         self._resolve_head(num_classes)
