@@ -51,6 +51,23 @@ scratch/
 .env.*
 !.env.example
 
+# API keys / credentials committed by mistake before
+*.key
+*api_key*
+secrets.json
+credentials.json
+
+# yt-dlp session cookies (contain live auth tokens - never commit)
+cookies.txt
+cookies.txt.txt
+*.cookies
+
+# Downloaded model directories (large binaries — pull via
+# scripts/download_models.py instead of committing them)
+ML Models/
+Recommended_Models/
+Senior_Recommended_Models/
+
 # IDE & Editor files
 .vscode/
 .idea/
@@ -61,6 +78,4 @@ scratch/
 # OS metadata
 .DS_Store
 Thumbs.db
-desktop.inicookies.txt 
-cookies.txt.txt 
-ML Model
+desktop.ini
