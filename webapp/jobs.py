@@ -50,7 +50,7 @@ POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
 @dataclass
 class Stage:
     model_key: str
-    status: str = "pending"        # pending | loading | running | done | failed | cancelled
+    status: str = "pending"        # pending | queued | loading | running | done | failed | cancelled
     progress: float = 0.0          # 0..1
     frames_done: int = 0
     frames_total: int = 0
@@ -67,7 +67,7 @@ class Stage:
 
     def to_dict(self) -> dict:
         elapsed = None
-        if self.started_at:
+        if self.started_at and self.status not in ("pending", "queued"):
             elapsed = round((self.finished_at or time.time()) - self.started_at, 1)
         return {
             "model_key": self.model_key,
@@ -175,7 +175,14 @@ class JobManager:
         return True
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     def _run_job(self, job: Job):
+        acquired = self._gpu_lock.acquire(blocking=False)
+        if not acquired:
+            job.status = "queued"
+            job.message = "Queued \u2014 waiting for previous job to finish..."
+            self._gpu_lock.acquire(blocking=True)  # Block until previous job finishes completely
+
         try:
             self._prepare_video(job)
             if job._cancel.is_set():
@@ -185,7 +192,7 @@ class JobManager:
             for key in job.model_keys:
                 if job._cancel.is_set():
                     for k in job.model_keys:
-                        if job.stages[k].status == "pending":
+                        if job.stages[k].status in ("pending", "queued"):
                             job.stages[k].status = "cancelled"
                     return self._finish(job, "cancelled", "Cancelled by user.")
                 self._run_stage(job, key)
@@ -204,6 +211,8 @@ class JobManager:
             job.error = f"{e.__class__.__name__}: {e}"
             traceback.print_exc()
             self._finish(job, "failed", job.error)
+        finally:
+            self._gpu_lock.release()
 
     def _prepare_video(self, job: Job):
         """Resolve the submitted source to a local file."""
@@ -222,57 +231,57 @@ class JobManager:
         job.message = f"Downloaded {job.video_name}"
 
     def _run_stage(self, job: Job, model_key: str):
-        from pipeline.annotate import (export_annotated_video, export_detection_csv,
-                                       export_detection_log)
         from pipeline.runner import PipelineRunner
         from webapp.registry import build_model
 
         stage = job.stages[model_key]
+
+        # Stage starts loading immediately as GPU lock is held by parent job
         stage.started_at = time.time()
         stage.status = "loading"
         job.message = f"Loading {model_key}..."
 
         try:
-            with self._gpu_lock:
-                model = build_model(model_key, job.device, pose_size=job.pose_size,
-                                    video_name=job.video_name or "run")
-                model.load()
+            model = build_model(model_key, job.device, pose_size=job.pose_size,
+                                video_name=job.video_name or "run")
+            model.load()
 
-                stage.status = "running"
-                job.message = f"Running {model_key} on {job.video_name}"
+            stage.status = "running"
+            job.message = f"Running {model_key} on {job.video_name}"
 
-                runner = PipelineRunner(models=[model],
-                                        sample_every_n_frames=job.sample_every_n_frames)
+            runner = PipelineRunner(models=[model],
+                                    sample_every_n_frames=job.sample_every_n_frames)
 
-                def on_progress(done, total, n_dets):
-                    stage.frames_done = done
-                    stage.frames_total = total
-                    stage.progress = (done / total) if total else 0.0
-                    stage.detections = n_dets
+            def on_progress(done, total, n_dets):
+                stage.frames_done = done
+                stage.frames_total = total
+                stage.progress = (done / total) if total else 0.0
+                stage.detections = n_dets
 
-                detections = runner.run(job.video_path,
-                                        progress_callback=on_progress,
-                                        should_cancel=job._cancel.is_set)
-
-            if job._cancel.is_set():
-                stage.status = "cancelled"
-                stage.finished_at = time.time()
-                return
-
-            self._summarize(stage, detections)
-            self._export(job, stage, detections, model_key)
-
-            stage.status = "done"
-            stage.progress = 1.0
-
+            detections = runner.run(job.video_path,
+                                    progress_callback=on_progress,
+                                    should_cancel=job._cancel.is_set)
         except Exception as e:  # noqa: BLE001
             # Expected for wrappers that refuse to load without a checkpoint.
             # Recorded on the stage so the other models still run.
             stage.status = "failed"
             stage.error = f"{e.__class__.__name__}: {e}"
             traceback.print_exc()
-        finally:
             stage.finished_at = time.time()
+            return
+
+        if job._cancel.is_set():
+            stage.status = "cancelled"
+            stage.finished_at = time.time()
+            return
+
+        self._summarize(stage, detections)
+        self._export(job, stage, detections, model_key)
+
+        stage.status = "done"
+        stage.progress = 1.0
+        stage.finished_at = time.time()
+
 
     @staticmethod
     def _summarize(stage: Stage, detections: list):

@@ -278,6 +278,9 @@ code { font-family: var(--font-code); font-size: .92em; }
 .pill.fallback { color: var(--warn); border-color: var(--warn-border); background: var(--warn-bg); }
 .pill.blocked { color: var(--bad); border-color: var(--bad-border); background: var(--bad-bg); }
 
+/* Stage-row status labels (span.status inside the stages table) */
+.status.queued   { color: #f59e0b; font-size: 12px; font-style: italic; }
+
 .sidebar-foot {
   padding: 14px 20px;
   border-top: 1px solid var(--border);

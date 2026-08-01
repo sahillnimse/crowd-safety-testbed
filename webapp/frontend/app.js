@@ -114,8 +114,9 @@ async function loadModels() {
 
 function renderModels() {
   const host = $('#model-list');
-  const order = ['fall', 'violence', 'traffic', 'anpr', 'other'];
+  const order = ['fall', 'violence', 'traffic', 'anpr', 'umbrella', 'fire', 'crush', 'other'];
   const query = state.searchQuery || '';
+
   host.innerHTML = '';
 
   let visibleCount = 0;
@@ -208,7 +209,9 @@ function stageRow(job, s) {
   const pct = Math.round(s.progress * 100);
 
   let progressCell;
-  if (s.status === 'running' || s.status === 'loading') {
+  if (s.status === 'queued') {
+    progressCell = `<span class="status queued">⏳ queued — waiting for another model to finish</span>`;
+  } else if (s.status === 'running' || s.status === 'loading') {
     progressCell = `<div class="bar"><i style="width:${pct}%"></i></div>
                     <div class="meta">${s.status === 'loading' ? 'loading model…' : `${pct}%`}</div>`;
   } else {

@@ -42,9 +42,21 @@ videos:
       - rtdetr_traffic
       - roboflow_traffic
       - mog2_parked
-      # ANPR / Number plate detection (2)
+      # ANPR / Number plate detection (3)
       - anpr
       - indian_anpr
+      - rapid_ocr
+    ground_truth: []
+
+  - url: "https://youtu.be/sample_umbrella_crowd"
+    category: umbrella_and_crowd_test
+    models:
+      # Umbrella detection (5)
+      - umbrella_yolo
+      - umbrella_ssd
+      - umbrella_world
+      - umbrella_rfdetr
+      - umbrella_yolo26n
     ground_truth: []
 
   - url: "https://youtu.be/sample_fire_smoke"
@@ -53,3 +65,4 @@ videos:
       # Fire / Smoke detection (1)
       - fire_smoke_yolo
     ground_truth: []
+

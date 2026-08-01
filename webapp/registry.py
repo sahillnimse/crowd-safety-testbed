@@ -229,8 +229,8 @@ MODELS: list[ModelSpec] = [
               "swappable alternative to EasyOCR for ANPR plate crops.",
               default_stride=2, tags=["frame", "cpu", "ocr"]),
 
-    # ---------------- Other ----------------
-    ModelSpec("umbrella_yolo", "Umbrella Detection", "other",
+    # ---------------- Umbrella detection ----------------
+    ModelSpec("umbrella_yolo", "Umbrella Detection", "umbrella",
               "Detects and counts umbrellas, with persistent IDs so unique "
               "umbrellas can be distinguished from one held for many frames.",
               check=lambda: (True, "ready",
@@ -239,7 +239,7 @@ MODELS: list[ModelSpec] = [
                              "model_size='s' (~19 MB) for better recall on "
                              "small or distant umbrellas."),
               default_stride=3, tags=["frame", "gpu"]),
-    ModelSpec("umbrella_ssd", "Umbrella (SSDLite MobileNetV3)", "other",
+    ModelSpec("umbrella_ssd", "Umbrella (SSDLite MobileNetV3)", "umbrella",
               "Lighter, older architecture than YOLO - the comparison point "
               "for how much detection quality comes from the architecture.",
               check=lambda: (True, "ready",
@@ -248,7 +248,7 @@ MODELS: list[ModelSpec] = [
                              "Scores run lower than YOLO's, hence its lower "
                              "default threshold - not a weaker setting."),
               default_stride=3, tags=["frame", "cpu", "gpu"]),
-    ModelSpec("umbrella_world", "Umbrella (YOLO-World open-vocab)", "other",
+    ModelSpec("umbrella_world", "Umbrella (YOLO-World open-vocab)", "umbrella",
               "Text-prompted detection: finds parasols and sun umbrellas that "
               "COCO's single fixed 'umbrella' class was never trained on.",
               check=lambda: (True, "ready",
@@ -258,25 +258,27 @@ MODELS: list[ModelSpec] = [
                              "models - each detection records which prompt "
                              "matched in extra.matched_class."),
               default_stride=3, tags=["frame", "gpu", "open-vocab"]),
-    ModelSpec("umbrella_yolo26n", "YOLO26-Nano (umbrella-finetuned)", "other",
+    ModelSpec("umbrella_yolo26n", "YOLO26-Nano (umbrella-finetuned)", "umbrella",
               "Ultralytics YOLO26 nano variant, NMS-free, edge-optimized + ByteTrack.",
               check=lambda: (True, "ready",
                              "NMS-free edge profile detector. Uses fallback pretrained "
                              "nano weights when fine-tuned checkpoint is not on disk."),
               default_stride=3, tags=["frame", "gpu", "edge"]),
-    ModelSpec("umbrella_rfdetr", "RF-DETR Nano (umbrella-finetuned)", "other",
+    ModelSpec("umbrella_rfdetr", "RF-DETR Nano (umbrella-finetuned)", "umbrella",
               "Roboflow RF-DETR Nano transformer with DINOv2 backbone for small/occluded umbrella recall.",
               check=lambda: (True, "ready",
                              "DINOv2 backbone transformer detector. High recall on small or "
                              "occluded objects in dense crowds."),
               default_stride=3, tags=["frame", "gpu", "transformer"]),
-    ModelSpec("optical_flow_crush", "Optical Flow (crowd crush)", "other",
-              "Circular-variance turbulence + convergence. Classical CV.",
-              tags=["flow", "cpu"]),
-    ModelSpec("fire_smoke_yolo", "Fire / Smoke YOLO", "other",
+
+    # ---------------- Fire / Smoke & Crowd Crush ----------------
+    ModelSpec("fire_smoke_yolo", "Fire / Smoke YOLO", "fire",
               "YOLO fire and smoke detector.",
               check=lambda: (True, "ready", "Runs local fire/smoke model with Roboflow cloud fallback."),
               tags=["frame", "gpu"]),
+    ModelSpec("optical_flow_crush", "Optical Flow (crowd crush)", "crush",
+              "Circular-variance turbulence + convergence. Classical CV.",
+              tags=["flow", "cpu"]),
 ]
 
 BY_KEY = {m.key: m for m in MODELS}
@@ -286,6 +288,9 @@ CATEGORY_LABELS = {
     "violence": "Violence / altercation",
     "traffic": "Traffic / vehicle counting",
     "anpr": "ANPR / number plates",
+    "umbrella": "Umbrella detection",
+    "fire": "Fire & smoke detection",
+    "crush": "Crowd crush detection",
     "other": "Other detectors",
 }
 
