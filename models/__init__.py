@@ -24,8 +24,23 @@ from models.violence import (
 from models.traffic import (
     YoloTrafficDetector,
     RtdetrTrafficDetector,
+    RTDetrV2TrafficDetector,
     RoboflowTrafficDetector,
     Mog2ParkedDetector,
+)
+from models.anpr import (
+    ANPRDetector,
+    IndianANPRDetector,
+    RapidOCRDetector,
+    RTDetrV2ANPRDetector,
+)
+from models.umbrella import (
+    UmbrellaDetector,
+    UmbrellaSSDDetector,
+    UmbrellaWorldDetector,
+    YOLO26NanoUmbrellaDetector,
+    RFDETRNanoUmbrellaDetector,
+    RTDetrV2UmbrellaDetector,
 )
 
 __all__ = [
@@ -50,9 +65,22 @@ __all__ = [
     "C3DViolenceClassifier",
     "TSMViolenceClassifier",
     "MMActionSlowOnlyClassifier",
-    # Traffic detection/counting (4)
+    # Traffic detection/counting (5)
     "YoloTrafficDetector",
     "RtdetrTrafficDetector",
+    "RTDetrV2TrafficDetector",
     "RoboflowTrafficDetector",
     "Mog2ParkedDetector",
+    # ANPR (4)
+    "ANPRDetector",
+    "IndianANPRDetector",
+    "RapidOCRDetector",
+    "RTDetrV2ANPRDetector",
+    # Umbrella detection (6)
+    "UmbrellaDetector",
+    "UmbrellaSSDDetector",
+    "UmbrellaWorldDetector",
+    "YOLO26NanoUmbrellaDetector",
+    "RFDETRNanoUmbrellaDetector",
+    "RTDetrV2UmbrellaDetector",
 ]

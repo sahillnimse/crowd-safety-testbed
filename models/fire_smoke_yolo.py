@@ -33,8 +33,13 @@ class FireSmokeYOLO(BaseModelWrapper):
             self._uses_roboflow = False
         else:
             # Fall back to Roboflow hosted inference for fire and smoke
+            api_key = os.environ.get("ROBOFLOW_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "ROBOFLOW_API_KEY environment variable not set. "
+                    "Please set ROBOFLOW_API_KEY to run FireSmokeYOLO via Roboflow API."
+                )
             from inference_sdk import InferenceHTTPClient
-            api_key = os.environ.get("ROBOFLOW_API_KEY") or "c9KEmh1NFvhY8WFH9Iq5"
             self._model = InferenceHTTPClient(
                 api_url="https://serverless.roboflow.com",
                 api_key=api_key,

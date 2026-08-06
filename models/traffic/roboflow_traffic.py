@@ -39,14 +39,9 @@ class RoboflowTrafficDetector(BaseModelWrapper):
                  device=None):
         super().__init__(device=device)
         self.model_id = model_id
-        # Same fallback pattern as roboflow_combined.py — reuses the same
-        # hardcoded key so this works without any extra env-var setup.
-        # NOTE: that literal key is committed to this repo's git history and
-        # should be rotated; prefer setting ROBOFLOW_API_KEY instead.
         self.api_key = (
             api_key
             or os.environ.get("ROBOFLOW_API_KEY")
-            or "c9KEmh1NFvhY8WFH9Iq5"
         )
         self.conf_threshold = conf_threshold
         self._classifier = ParkedMovingClassifier(

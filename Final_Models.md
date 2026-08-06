@@ -14,6 +14,8 @@ After empirical evaluation across our comparative testbed pipelines on video dat
 | :--- | :--- | :--- | :--- |
 | **Umbrella (Dense Crowds)** | **RF-DETR Nano (DINOv2)** | `umbrella_rfdetr` | **Highest small & occluded object recall** (6,309 detections, 168 persistent tracks). DINOv2 vision transformer backbone outperforms YOLO on overlapping umbrellas. |
 | **Umbrella (Edge / Real-Time)** | **YOLO26-Nano** | `umbrella_yolo26n` | **Best speed/memory trade-off** (<10 MB export, NMS-free, 3.2x faster inference) with clean ByteTrack persistent IDs. |
+| **Umbrella (Apache 2.0)** | **RT-DETRv2-S** | `umbrella_rtdetrv2` | **Permissive open-source transformer** (ResNet-18vd, 20M params, 217 FPS, Apache 2.0). |
+| **ANPR (Apache 2.0 Transformer)**| **RT-DETRv2 ANPR** | `rtdetrv2_anpr` | **Unified vehicle classification, car colour recognition, & plate OCR** powered by RT-DETRv2-S + DETR plate detector + RapidOCR. |
 | **ANPR (OCR Engine)** | **RapidOCR (PP-OCRv4 ONNX)** | `rapid_ocr` | **Superior character recognition & speed** (118 valid reads vs 105 for EasyOCR on identical crops; 2.5x faster CPU inference via ONNX Runtime). |
 | **ANPR (Heterogeneous Traffic)** | **Indian ANPR Pipeline** | `indian_anpr` | **Highest vehicle recall** (516 vehicle captures vs 394 for standard COCO), capturing auto-rickshaws, tempos, and 2-wheelers. |
 
@@ -29,6 +31,7 @@ Umbrellas_umbrella_world.json    : 12,356 detections | 1,121 unique tracks| Avg 
 Umbrellas_umbrella_yolo26n.json  :  1,037 detections | 107 unique tracks | Avg Conf: 0.445
 Umbrellas_umbrella_yolo.json     :  1,037 detections | 107 unique tracks | Avg Conf: 0.445
 Umbrellas_umbrella_ssd.json      :      8 detections |   4 unique tracks | Avg Conf: 0.349
+Umbrellas_umbrella_rtdetrv2.json :      — (to be benchmarked)             Avg Conf: —
 ```
 
 ### Detailed Evaluation & Architectural Comparison
@@ -46,6 +49,18 @@ Umbrellas_umbrella_ssd.json      :      8 detections |   4 unique tracks | Avg C
 #### 📊 Baseline Comparison Models
 - **`umbrella_world` (YOLOv8s-WorldV2)**: High open-vocabulary recall (12,356 detections) catching sunshades and parasols, but exhibits higher false positives on building awnings.
 - **`umbrella_ssd` (SSDLite MobileNetV3)**: Only 8 detections captured; demonstrates that older SSDLite architectures are unsuited for small-object crowd safety tasks.
+
+#### 🆕 New Backend: `RT-DETRv2-S` — `umbrella_rtdetrv2`
+- **Architecture**: RT-DETRv2-S (Real-Time Detection Transformer v2, lyuwenyu / Baidu) with ResNet-18vd backbone.
+- **License**: **Apache 2.0** — fully permissive, safe for commercial deployment.
+- **Improvements over RT-DETR v1**: Deformable attention in decoder + dual-level IoU-aware query selection → better small-object localisation at same speed.
+- **Specs**: 20 M parameters, COCO AP^val 48.1, **217 FPS** on A100 (faster than RF-DETR Nano at same accuracy tier).
+- **Weights**: Auto-downloaded from HuggingFace Hub (`PekingU/rtdetr_v2_r18vd`) on first run via `transformers.RTDetrV2ForObjectDetection`. Cache at `~/.cache/huggingface/` thereafter.
+- **Usage**:
+  ```python
+  from models.umbrella import RTDetrV2UmbrellaDetector
+  detector = RTDetrV2UmbrellaDetector(device="cuda")  # or "cpu"
+  ```
 
 ---
 
@@ -70,6 +85,10 @@ Indian Traffic_indian_anpr.json  : 516 vehicle rows | 173 valid plate reads |  9
 - **Engine**: Roboflow Indian Vehicle Model + Roboflow Plate Detector + DeepSORT.
 - **Performance**: **516 vehicle captures** (vs 394 for COCO YOLOv8).
 - **Why it won**: COCO-pretrained YOLO models fail to detect auto-rickshaws, tempos, and modified 2-wheelers. The Indian Vehicle model captures these non-standard vehicles frame-by-frame for comprehensive capture.
+
+#### 🆕 New Apache 2.0 ANPR Backend: `RT-DETRv2 ANPR` — `rtdetrv2_anpr`
+- **Engine**: RT-DETRv2-S (`PekingU/rtdetr_v2_r18vd`) + HSV Colour Analysis + DETR Plate Detector + RapidOCR / EasyOCR.
+- **Features**: Detects cars/trucks/buses/motorcycles, extracts dominant car colour (`white`, `black`, `red`, `blue`, etc.), detects license plates inside vehicle crops, and votes plate readings across frames for portrait & manifest export.
 
 ---
 

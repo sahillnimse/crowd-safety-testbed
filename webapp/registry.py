@@ -191,6 +191,10 @@ MODELS: list[ModelSpec] = [
               "Transformer detector, stronger on small/occluded vehicles. "
               "Falls back to DeepSORT if ByteTrack IDs don't come through.",
               tags=["frame", "gpu"]),
+    ModelSpec("rtdetrv2_traffic", "RT-DETRv2 Traffic (Moving / Parked)", "traffic",
+              "RT-DETRv2-S vehicle detector + centroid drift classifier for "
+              "moving vs. parked cars (Apache 2.0, 20M params, 217 FPS).",
+              tags=["frame", "gpu", "transformer", "apache2"]),
     ModelSpec("roboflow_traffic", "Roboflow (traffic)", "traffic",
               "Hosted model trained on real traffic-camera footage rather "
               "than general COCO images. Runs on Roboflow's servers.",
@@ -228,6 +232,10 @@ MODELS: list[ModelSpec] = [
               "ONNX Runtime RapidOCR engine (PP-OCRv4 mobile det/cls/rec) — "
               "swappable alternative to EasyOCR for ANPR plate crops.",
               default_stride=2, tags=["frame", "cpu", "ocr"]),
+    ModelSpec("rtdetrv2_anpr", "RT-DETRv2 ANPR (Classification, Color & Plate)", "anpr",
+              "RT-DETRv2-S vehicle detector + fine-grained classification + car colour "
+              "recognition + DETR plate detector + RapidOCR / EasyOCR engine (Apache 2.0).",
+              default_stride=2, tags=["frame", "gpu", "ocr", "transformer", "apache2"]),
 
     # ---------------- Umbrella detection ----------------
     ModelSpec("umbrella_yolo", "Umbrella Detection", "umbrella",
@@ -270,7 +278,14 @@ MODELS: list[ModelSpec] = [
                              "DINOv2 backbone transformer detector. High recall on small or "
                              "occluded objects in dense crowds."),
               default_stride=3, tags=["frame", "gpu", "transformer"]),
-
+    ModelSpec("umbrella_rtdetrv2", "RT-DETRv2-S (COCO zero-shot)", "umbrella",
+              "RT-DETRv2 with ResNet-18vd backbone — improved deformable attention, "
+              "dual-level IoU-aware query selection (Apache 2.0, 20M params, 217 FPS).",
+              check=lambda: (True, "ready",
+                             "Apache-2.0 licensed. Weights auto-downloaded from "
+                             "HuggingFace Hub (PekingU/rtdetr_v2_r18vd) on first run. "
+                             "COCO umbrella class 25 — no fine-tuning required."),
+              default_stride=3, tags=["frame", "gpu", "transformer", "apache2"]),
     # ---------------- Fire / Smoke & Crowd Crush ----------------
     ModelSpec("fire_smoke_yolo", "Fire / Smoke YOLO", "fire",
               "YOLO fire and smoke detector.",
@@ -328,6 +343,7 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         "umbrella_world": lambda: _build_umbrella_world(device),
         "umbrella_yolo26n": lambda: _build_umbrella_yolo26n(device),
         "umbrella_rfdetr": lambda: _build_umbrella_rfdetr(device),
+        "umbrella_rtdetrv2": lambda: _build_umbrella_rtdetrv2(device),
         "rapid_ocr": lambda: _build_rapid_ocr(device, video_name),
         "optical_flow_crush": lambda: OpticalFlowCrushDetector(device=device),
         "roboflow_combined": lambda: RoboflowCombinedDetector(device=device),
@@ -349,8 +365,10 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         # don't overwrite each other's captured vehicles.
         "anpr": lambda: _build_anpr(device, video_name),
         "indian_anpr": lambda: _build_indian_anpr(device, video_name),
+        "rtdetrv2_anpr": lambda: _build_rtdetrv2_anpr(device, video_name),
         "yolo_traffic": lambda: YoloTrafficDetector(device=device),
         "rtdetr_traffic": lambda: RtdetrTrafficDetector(device=device),
+        "rtdetrv2_traffic": lambda: _build_rtdetrv2_traffic(device),
         "roboflow_traffic": lambda: RoboflowTrafficDetector(device=device),
         "mog2_parked": lambda: Mog2ParkedDetector(device=device),
     }
@@ -384,6 +402,11 @@ def _build_umbrella_rfdetr(device):
     return RFDETRNanoUmbrellaDetector(device=device)
 
 
+def _build_umbrella_rtdetrv2(device):
+    from models.umbrella import RTDetrV2UmbrellaDetector
+    return RTDetrV2UmbrellaDetector(device=device)
+
+
 def _build_rapid_ocr(device, video_name: str):
     import os
     from models.anpr import RapidOCRDetector
@@ -407,3 +430,17 @@ def _build_indian_anpr(device, video_name: str):
     from models.anpr import IndianANPRDetector
     stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
     return IndianANPRDetector(device=device, video_name=stem)
+
+
+def _build_rtdetrv2_anpr(device, video_name: str):
+    import os
+
+    from models.anpr import RTDetrV2ANPRDetector
+    stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
+    return RTDetrV2ANPRDetector(device=device, video_name=stem)
+
+
+def _build_rtdetrv2_traffic(device):
+    from models.traffic import RTDetrV2TrafficDetector
+    return RTDetrV2TrafficDetector(device=device)
+

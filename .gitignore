@@ -30,9 +30,22 @@ share/python-wheels/
 venv/
 ENV/
 env/
+.uv/
 
-# Model weights & Checkpoints
+# Testing & Coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Model weights & Checkpoints (large binaries — manage via scripts/download_models.py)
 weights/
+model_weights/
+ML Models/
+Recommended_Models/
+Senior_Recommended_Models/
+checkpoints/
 *.pt
 *.pth
 *.onnx
@@ -40,33 +53,47 @@ weights/
 *.safetensors
 *.ckpt
 *.h5
+*.task
+*.tflite
+*.engine
+*.caffemodel
+*.pb
+*.weights
+*.param
+*.blob
+*.ncnn*
+*.mlmodel
 
-# Ingested media & outputs
+# Ingested media, outputs & experiment logs
 test_videos/
 outputs/
 scratch/
+runs/
+wandb/
+tensorboard/
+*.tfevents.*
+*.log
 
-# Environment / Secret variables
+# Environment / Secret variables & keys
 .env
 .env.*
 !.env.example
-
-# API keys / credentials committed by mistake before
 *.key
 *api_key*
+*secret*
+*credential*
 secrets.json
 credentials.json
+replacements.txt
+*.pem
+*.crt
+*.pfx
+*.p12
 
 # yt-dlp session cookies (contain live auth tokens - never commit)
 cookies.txt
 cookies.txt.txt
 *.cookies
-
-# Downloaded model directories (large binaries — pull via
-# scripts/download_models.py instead of committing them)
-ML Models/
-Recommended_Models/
-Senior_Recommended_Models/
 
 # IDE & Editor files
 .vscode/
@@ -79,3 +106,4 @@ Senior_Recommended_Models/
 .DS_Store
 Thumbs.db
 desktop.ini
+ehthumbs.db

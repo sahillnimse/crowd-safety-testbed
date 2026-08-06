@@ -114,12 +114,9 @@ class IndianANPRDetector(BaseModelWrapper):
         super().__init__(device=device)
         self.vehicle_model_id = vehicle_model_id
         self.plate_model_id = plate_model_id
-        # Same fallback key as other Roboflow models in this repo — no extra
-        # signup needed. Rotate this key; prefer the env var instead.
         self.api_key = (
             api_key
             or os.environ.get("ROBOFLOW_API_KEY")
-            or "c9KEmh1NFvhY8WFH9Iq5"
         )
         self.conf_threshold = conf_threshold
         self.plate_conf = plate_conf

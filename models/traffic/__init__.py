@@ -12,12 +12,14 @@ Detection.extra will include: {"vehicle_class": "car"/"bus"/"truck"/"motorcycle"
 
 from models.traffic.yolo_traffic import YoloTrafficDetector
 from models.traffic.rtdetr_traffic import RtdetrTrafficDetector
+from models.traffic.rtdetrv2_traffic import RTDetrV2TrafficDetector
 from models.traffic.roboflow_traffic import RoboflowTrafficDetector
 from models.traffic.mog2_parked import Mog2ParkedDetector
 
 __all__ = [
     "YoloTrafficDetector",
     "RtdetrTrafficDetector",
+    "RTDetrV2TrafficDetector",
     "RoboflowTrafficDetector",
     "Mog2ParkedDetector",
 ]
