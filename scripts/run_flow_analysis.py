@@ -1,0 +1,267 @@
+"""
+CLI entry point for the dense optical flow crowd-safety analyser.
+
+Supports:
+  - Video file
+  - Image sequence (glob pattern, e.g. "frames/*.jpg")
+  - RTSP stream (rtsp://...)
+
+Writes:
+  - Per-frame metrics CSV (and optionally Parquet)
+  - Annotated output video (H.264 via ffmpeg, falls back to mp4v)
+  - Per-zone time-series PNG plots
+
+Usage
+-----
+  # Video file:
+  python scripts/run_flow_analysis.py \\
+      --source test_videos/ram_kund_crowd.mp4 \\
+      --config configs/crowd_flow.yaml \\
+      --camera ram_kund_approach \\
+      --output-dir outputs/flow_run_001
+
+  # Live RTSP stream:
+  python scripts/run_flow_analysis.py \\
+      --source rtsp://192.168.1.100:554/stream1 \\
+      --config configs/crowd_flow.yaml \\
+      --camera ram_kund_bridge \\
+      --output-dir outputs/live_run
+
+  # Run synthetic validation suite and exit:
+  python scripts/run_flow_analysis.py --validate
+
+  # Show live OpenCV preview (disable for headless servers):
+  python scripts/run_flow_analysis.py --source ... --show
+
+Flags
+-----
+  --no-vis          Disable all visualisation (saves ~5-12 ms/frame)
+  --stride N        Process every Nth frame (default 1 = every frame)
+  --max-frames N    Stop after N processed frames
+  --show            Display annotated frames in an OpenCV window (local only)
+  --validate        Run synthetic validation suite and exit (no video needed)
+  --fps FLOAT       Override source FPS (useful for image sequences)
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import logging
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+import yaml
+
+# Ensure project root is on the path so `models/` is importable.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+from models.crowd_flow.dense_flow_analyser import DenseFlowAnalyser
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("run_flow_analysis")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Frame source
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _open_source(source: str):
+    """
+    Returns (cap, fps, total_frames, is_glob).
+
+    For RTSP/camera streams, total_frames is -1.
+    For image sequences (glob), returns a sorted list of paths.
+    """
+    if "*" in source or "?" in source:
+        paths = sorted(glob.glob(source))
+        if not paths:
+            raise FileNotFoundError(f"No files matched: {source!r}")
+        return paths, None, len(paths), True
+
+    cap = cv2.VideoCapture(source)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open source: {source!r}")
+
+    fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    return cap, fps, max(total, -1), False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main run loop
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run(args: argparse.Namespace) -> None:
+    # Load config
+    with open(args.config) as f:
+        full_cfg = yaml.safe_load(f)
+    cfg = full_cfg.get("crowd_flow", {})
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    analyser = DenseFlowAnalyser(
+        config=cfg,
+        camera_id=args.camera,
+        output_dir=args.output_dir,
+        visualise=not args.no_vis,
+        fps=args.fps or 30.0,
+    )
+    analyser.load()
+
+    # Re-read fps from actual source if not overridden
+    source, src_fps, total_frames, is_glob = _open_source(args.source)
+    fps = args.fps or (src_fps if src_fps else 30.0)
+    analyser._fps = fps
+
+    logger.info(
+        "Source: %s  FPS: %.2f  Total frames: %s  Camera: %s",
+        args.source, fps,
+        str(total_frames) if total_frames > 0 else "∞ (stream)",
+        args.camera,
+    )
+
+    # The annotated video is written by DenseFlowAnalyser itself, streaming
+    # frames to ffmpeg as they are produced.  This script used to run a second
+    # encoder over the same frames, which doubled the encode cost and left two
+    # near-identical files in the output directory.
+    prev_frame:     np.ndarray | None = None
+    frame_index:    int = 0
+    processed:      int = 0
+    all_detections: list = []
+    t_start = time.perf_counter()
+
+    def _iter_frames():
+        nonlocal frame_index
+        if is_glob:
+            for path in source:
+                img = cv2.imread(path)
+                if img is not None:
+                    yield img, frame_index, frame_index / fps
+                frame_index += 1
+        else:
+            cap = source
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                yield frame, frame_index, frame_index / fps
+                frame_index += 1
+            cap.release()
+
+    try:
+        for frame, fidx, ts in _iter_frames():
+            # Stride skip
+            if fidx % args.stride != 0:
+                prev_frame = frame
+                continue
+
+            if args.max_frames and processed >= args.max_frames:
+                logger.info("--max-frames %d reached; stopping.", args.max_frames)
+                break
+
+            if prev_frame is not None:
+                dets = analyser.predict((prev_frame, frame), fidx, ts)
+                all_detections.extend(dets)
+
+                # Live preview
+                if args.show and analyser.latest_annotated_frame is not None:
+                    cv2.imshow("Dense Flow — press Q to quit",
+                               analyser.latest_annotated_frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        logger.info("User quit preview.")
+                        break
+
+                # Progress
+                if processed % 30 == 0:
+                    elapsed = time.perf_counter() - t_start
+                    rate    = processed / elapsed if elapsed > 0 else 0
+                    pct     = f"{100*processed/total_frames:.1f}%" if total_frames > 0 else "?"
+                    logger.info(
+                        "f=%d (%s)  detections=%d  %.1f fps",
+                        fidx, pct, len(all_detections), rate,
+                    )
+
+                processed += 1
+
+            prev_frame = frame
+
+    finally:
+        if args.show:
+            cv2.destroyAllWindows()
+        analyser.finalize()
+
+    elapsed = time.perf_counter() - t_start
+    logger.info(
+        "Done.  %d frames processed in %.1f s (%.1f fps).  "
+        "%d alert detections.",
+        processed, elapsed, processed / elapsed if elapsed > 0 else 0,
+        len(all_detections),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Argument parser
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        description="Dense optical flow crowd-safety analyser CLI.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    ap.add_argument("--source",       default="",
+                    help="Video file, image-glob, or RTSP URL.")
+    ap.add_argument("--config",       default="configs/crowd_flow.yaml",
+                    help="Path to crowd_flow.yaml.")
+    ap.add_argument("--camera",       default="ram_kund_approach",
+                    help="Camera ID in the config file.")
+    ap.add_argument("--output-dir",   default="outputs/flow",
+                    help="Directory for CSV, Parquet, video, and plots.")
+    ap.add_argument("--stride",       type=int, default=1,
+                    help="Process every Nth frame.")
+    ap.add_argument("--max-frames",   type=int, default=0,
+                    help="Stop after this many processed frames (0 = no limit).")
+    ap.add_argument("--fps",          type=float, default=0.0,
+                    help="Override detected source FPS.")
+    ap.add_argument("--no-vis",       action="store_true",
+                    help="Disable visualisation (headless / multi-stream mode).")
+    ap.add_argument("--show",         action="store_true",
+                    help="Display live annotated preview.")
+    ap.add_argument("--validate",     action="store_true",
+                    help="Run synthetic validation suite and exit.")
+    return ap
+
+
+def main() -> None:
+    ap   = build_parser()
+    args = ap.parse_args()
+
+    if args.validate:
+        # Delegate to the validation script
+        val_script = _PROJECT_ROOT / "scripts" / "validate_flow.py"
+        logger.info("Running validation suite: %s", val_script)
+        ret = subprocess.run(
+            [sys.executable, str(val_script), "--all"],
+            check=False,
+        )
+        sys.exit(ret.returncode)
+
+    if not args.source:
+        ap.error("--source is required unless --validate is given.")
+
+    run(args)
+
+
+if __name__ == "__main__":
+    main()

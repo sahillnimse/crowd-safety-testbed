@@ -71,6 +71,7 @@ class JobRequest(BaseModel):
     device: str | None = None          # None = auto-detect
     export_video: bool = True
     pose_size: str = "s"
+    thresholds: dict[str, float] = Field(default_factory=dict)
 
 
 @app.get("/api/health")
@@ -139,6 +140,10 @@ def create_job(req: JobRequest):
     if unknown:
         raise HTTPException(400, f"Unknown model(s): {', '.join(unknown)}")
 
+    unknown_thresh = [m for m in req.thresholds if m not in registry.BY_KEY]
+    if unknown_thresh:
+        raise HTTPException(400, f"Unknown model(s) in thresholds: {', '.join(unknown_thresh)}")
+
     # A local filename in test_videos/ skips the download path entirely.
     local_path = None
     candidate = os.path.join(TEST_VIDEOS_DIR, os.path.basename(req.source))
@@ -160,6 +165,7 @@ def create_job(req: JobRequest):
         export_video=req.export_video,
         pose_size=req.pose_size,
         local_path=local_path,
+        thresholds=req.thresholds,
     )
     return job.to_dict()
 

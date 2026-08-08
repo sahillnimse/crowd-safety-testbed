@@ -44,7 +44,12 @@ POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
                    # ANPR: every captured vehicle is a result, whether or not
                    # its plate turned out to be legible.
                    "vehicle_plate", "vehicle_unread",
-                   "umbrella"}
+                   "umbrella",
+                   # Dense optical flow crowd-safety
+                   "flow_analysis",
+                   "mean_divergence_critical", "counterflow_warning",
+                   "turbulence_index_critical", "stop_go_warning",
+                   "mean_speed_warning", "vehicle_in_ped_zone"}
 
 
 @dataclass
@@ -96,6 +101,7 @@ class Job:
     device: Optional[str]
     export_video: bool
     pose_size: str = "s"
+    thresholds: dict = field(default_factory=dict)
     status: str = "queued"          # queued | fetching | running | done | failed | cancelled
     message: str = ""
     video_path: Optional[str] = None
@@ -137,7 +143,7 @@ class JobManager:
 
     def create(self, source: str, model_keys: list, sample_every_n_frames: int,
                device: Optional[str], export_video: bool, pose_size: str = "s",
-               local_path: Optional[str] = None) -> Job:
+               local_path: Optional[str] = None, thresholds: Optional[dict] = None) -> Job:
         job = Job(
             id=uuid.uuid4().hex[:12],
             source=source,
@@ -146,6 +152,7 @@ class JobManager:
             device=device,
             export_video=export_video,
             pose_size=pose_size,
+            thresholds=thresholds or {},
         )
         job.video_path = local_path
         for key in job.model_keys:
@@ -243,7 +250,18 @@ class JobManager:
 
         try:
             model = build_model(model_key, job.device, pose_size=job.pose_size,
-                                video_name=job.video_name or "run")
+                                video_name=job.video_name or "run", threshold=job.thresholds.get(model_key))
+
+            # Give flow-pair models the actual source FPS so speed conversion
+            # and stop-go timing are correct.
+            if getattr(model, "consumption_type", "") == "flow_pair" and job.video_path:
+                import cv2 as _cv2
+                _cap = _cv2.VideoCapture(job.video_path)
+                _src_fps = _cap.get(_cv2.CAP_PROP_FPS)
+                _cap.release()
+                if _src_fps and _src_fps > 0:
+                    model._fps = float(_src_fps)
+
             model.load()
 
             stage.status = "running"
@@ -276,7 +294,7 @@ class JobManager:
             return
 
         self._summarize(stage, detections)
-        self._export(job, stage, detections, model_key)
+        self._export(job, stage, detections, model_key, model)
 
         stage.status = "done"
         stage.progress = 1.0
@@ -295,7 +313,8 @@ class JobManager:
         stage.scoring_modes = dict(scoring)
         stage.positives = sum(n for lbl, n in labels.items() if lbl in POSITIVE_LABELS)
 
-    def _export(self, job: Job, stage: Stage, detections: list, model_key: str):
+    def _export(self, job: Job, stage: Stage, detections: list, model_key: str,
+                model=None):
         from pipeline.annotate import (export_annotated_video, export_detection_csv,
                                        export_detection_log)
 
@@ -314,9 +333,20 @@ class JobManager:
 
         if job.export_video:
             job.message = f"Writing annotated video for {model_key}..."
-            mp4_path = os.path.join(ANNOTATED_DIR, f"{stem}.mp4")
-            export_annotated_video(job.video_path, detections, mp4_path)
-            stage.annotated = f"{stem}.mp4"
+
+            # DenseFlowAnalyser (and any future flow model) writes its own
+            # annotated video with the heatmap overlay during finalize().
+            # Use it directly instead of re-rendering plain bboxes on top.
+            own_video = getattr(model, "annotated_video_path", None)
+            if own_video and os.path.exists(own_video):
+                import shutil
+                mp4_path = os.path.join(ANNOTATED_DIR, f"{stem}.mp4")
+                shutil.copy2(own_video, mp4_path)
+                stage.annotated = f"{stem}.mp4"
+            else:
+                mp4_path = os.path.join(ANNOTATED_DIR, f"{stem}.mp4")
+                export_annotated_video(job.video_path, detections, mp4_path)
+                stage.annotated = f"{stem}.mp4"
 
     @staticmethod
     def _finish(job: Job, status: str, message: str):

@@ -30,6 +30,7 @@ a person is rather than what shape they are.
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.fall._geometry import (
     DEFAULT_MIN_KP_CONF,
     angle_threshold_to_score,
@@ -48,14 +49,16 @@ class STGCNFallDetector(BaseModelWrapper):
     name = "fall_stgcn"
 
     def __init__(self, sequence_len: int = 30, stgcn_weights_path: str = None,
-                 pose_conf_threshold: float = 0.4, iou_match_threshold: float = 0.3,
+                 pose_conf_threshold: float = 0.4, conf_threshold: float = 0.4,
+                 iou_match_threshold: float = 0.3,
                  min_kp_conf: float = DEFAULT_MIN_KP_CONF,
                  horizontal_angle_threshold_deg: float = 45.0,
                  confirm_frames: int = 5, device=None):
         super().__init__(device=device)
         self.sequence_len = sequence_len
         self.stgcn_weights_path = stgcn_weights_path
-        self.pose_conf_threshold = pose_conf_threshold
+        self.conf_threshold = conf_threshold
+        self.pose_conf_threshold = conf_threshold
         self.iou_match_threshold = iou_match_threshold
         self.min_kp_conf = min_kp_conf
         self.score_threshold = angle_threshold_to_score(horizontal_angle_threshold_deg)
@@ -81,7 +84,7 @@ class STGCNFallDetector(BaseModelWrapper):
 
     def load(self):
         from ultralytics import YOLO
-        self._pose_model = YOLO("yolov8s-pose.pt")
+        self._pose_model = YOLO(_resolve_weight_path("yolov8s-pose.pt"))
         self._pose_model.to(self.device)
         self._tracker.reset()
 

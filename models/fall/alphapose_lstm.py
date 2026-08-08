@@ -31,6 +31,7 @@ rather than body shape.
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.fall._geometry import (
     DEFAULT_MIN_KP_CONF,
     angle_threshold_to_score,
@@ -96,7 +97,7 @@ class AlphaPoseFallDetector(BaseModelWrapper):
                   "extra.pose_source='yolov8_pose'; install AlphaPose for a true "
                   "AlphaPose-vs-others comparison.")
             from ultralytics import YOLO
-            self._pose_model = YOLO("yolov8s-pose.pt")
+            self._pose_model = YOLO(_resolve_weight_path("yolov8s-pose.pt"))
             self._pose_model.to(self.device)
             self._pose_source = "yolov8_pose"
         self._tracker.reset()

@@ -7,6 +7,7 @@ const state = {
   models: [],
   categories: {},
   selected: new Set(),
+  thresholds: {},          // model_key -> float (only set when user moves a slider)
   sourceTab: 'url',
   pollTimer: null,
   openJobs: new Set(),
@@ -142,20 +143,35 @@ function renderModels() {
 
     items.forEach((m) => {
       const checked = state.selected.has(m.key);
+      const hasThresh = m.default_threshold !== null && m.default_threshold !== undefined;
+      const curThresh = state.thresholds[m.key] !== undefined
+        ? state.thresholds[m.key]
+        : (hasThresh ? m.default_threshold : null);
+
       const el = document.createElement('label');
       el.className = 'model' + (checked ? ' checked' : '') +
         (m.status === 'blocked' ? ' blocked' : '');
       el.innerHTML = `
         <input type="checkbox" ${checked ? 'checked' : ''}
                ${m.status === 'blocked' ? 'disabled' : ''} data-key="${m.key}" />
-        <div>
+        <div class="model-body">
           <div class="name">${esc(m.label)}
             <span class="pill ${m.status}">${m.status}</span></div>
           <div class="blurb">${esc(m.blurb)}</div>
           ${m.note ? `<div class="note ${m.status}">${esc(m.note)}</div>` : ''}
+          ${hasThresh ? `
+          <div class="thresh-row" title="Confidence threshold — lower = more detections, higher = fewer false positives">
+            <span class="thresh-label">Threshold</span>
+            <input type="range" class="thresh-slider"
+              id="thresh-${m.key}"
+              min="0" max="1" step="0.01"
+              value="${curThresh.toFixed(2)}"
+              data-model-key="${m.key}" />
+            <span class="thresh-value" id="thresh-val-${m.key}">${curThresh.toFixed(2)}</span>
+          </div>` : ''}
         </div>`;
 
-      const cb = el.querySelector('input');
+      const cb = el.querySelector('input[type=checkbox]');
       cb.addEventListener('change', (e) => {
         e.stopPropagation();
         if (cb.checked) {
@@ -173,6 +189,19 @@ function renderModels() {
           catHeader.innerHTML = `<span>${esc(state.categories[cat] || cat)}</span> <span class="subtle">(${catActive}/${catItems.length})</span>`;
         }
       });
+
+      if (hasThresh) {
+        const slider = el.querySelector('.thresh-slider');
+        const valSpan = el.querySelector(`#thresh-val-${m.key}`);
+        slider.addEventListener('input', (e) => {
+          e.stopPropagation();
+          const v = parseFloat(slider.value);
+          state.thresholds[m.key] = v;
+          valSpan.textContent = v.toFixed(2);
+        });
+        // Prevent clicks on the slider row from toggling the checkbox
+        slider.addEventListener('click', (e) => e.stopPropagation());
+      }
 
       host.appendChild(el);
     });
@@ -926,6 +955,21 @@ async function runJob() {
   btn.textContent = 'Starting job…';
 
   try {
+    // Build thresholds payload: only models that have been explicitly adjusted
+    // OR that have a default_threshold (so the backend always gets the right value).
+    const thresholdsPayload = {};
+    for (const key of state.selected) {
+      const model = state.models.find((m) => m.key === key);
+      if (!model) continue;
+      if (state.thresholds[key] !== undefined) {
+        // User moved the slider
+        thresholdsPayload[key] = state.thresholds[key];
+      } else if (model.default_threshold !== null && model.default_threshold !== undefined) {
+        // Use the model's published default so the backend is explicit
+        thresholdsPayload[key] = model.default_threshold;
+      }
+    }
+
     await postJSON('/api/jobs', {
       source,
       models: [...state.selected],
@@ -933,6 +977,7 @@ async function runJob() {
       device: $('#device').value || null,
       export_video: $('#export-video').checked,
       pose_size: $('#pose-size').value,
+      thresholds: thresholdsPayload,
     });
     state.openJobs.clear();
     refreshJobs();

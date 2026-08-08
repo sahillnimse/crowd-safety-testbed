@@ -41,6 +41,7 @@ import cv2
 import numpy as np
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.anpr._ocr import (
     DEFAULT_MIN_PLATE_WIDTH,
     PlateDetector,
@@ -119,7 +120,7 @@ class ANPRDetector(BaseModelWrapper):
 
     def load(self):
         from ultralytics import YOLO
-        self._model = YOLO(self.weights)
+        self._model = YOLO(_resolve_weight_path(self.weights))
         self._model.to(self.device)
 
         self._plate_detector.device = self.device

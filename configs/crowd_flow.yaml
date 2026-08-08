@@ -1,0 +1,253 @@
+# crowd_flow.yaml — configuration for the dense optical flow crowd-safety module.
+#
+# Load with:
+#   import yaml
+#   with open("configs/crowd_flow.yaml") as f:
+#       cfg = yaml.safe_load(f)["crowd_flow"]
+#
+# Pass the cfg dict to DenseFlowAnalyser(config=cfg, camera_id="ram_kund_approach").
+#
+# Per-camera calibration
+# ----------------------
+# Run scripts/calibrate_ground_plane.py on a still frame to generate the
+# homography block.  Without it, speed values are in px/frame and speed-based
+# alert thresholds (speed_low_ms, speed_high_ms) are DISABLED.  All other
+# metrics (divergence, curl, counterflow, turbulence) remain active.
+#
+# Zone polygons
+# -------------
+# Polygons are in image (pixel) coordinates.  Use the calibration helper's
+# output to verify they cover the right physical areas.  A quick check:
+# open a still frame in an image viewer that shows pixel coordinates (e.g.
+# GIMP → View → Show Pointer Coordinates) and click the corners of each zone.
+
+crowd_flow:
+
+  # ── Flow computation ────────────────────────────────────────────────────────
+  flow_backend:   "dis"      # "dis" | "farneback"
+                             # DIS is faster and more robust to CCTV compression
+                             # artifacts.  Farneback as a labelled fallback.
+  dis_preset:     "medium"   # "ultrafast" | "fast" | "medium"
+                             # medium ≈ 4-8 ms on 320×180 at CPU; upgrade if
+                             # flow quality on oblique ghat cameras looks noisy.
+
+  downsample_target_px: 320  # Longest side for flow computation.  Smaller =
+                             # faster but coarser; 320 is the recommended start.
+                             # The result is scaled back to source resolution.
+
+  temporal_smooth_alpha: 0.4 # EMA α for temporal smoothing (higher = faster
+                             # response, more noise).  0.4 at 30fps ≈ 2.5-frame
+                             # effective window.
+
+  # ── Global motion compensation ──────────────────────────────────────────────
+  global_motion_compensation: true
+                             # Subtract estimated camera-sway translation from
+                             # the flow field.  Essential for pole-mounted CCTV.
+  gmc_warn_threshold_px: 3.0 # Correction > this for > 5 s → WARNING log.
+                             # A large persistent correction = mount needs work.
+  gmc_max_correction_px: 8.0 # Source px/frame.  A correction larger than this
+                             # is rejected outright rather than applied: it is
+                             # not plausible camera sway, it is the estimator
+                             # locking onto moving objects (traffic, a dense
+                             # crowd) and reporting their motion as the
+                             # camera's.  Applying such an estimate injects a
+                             # uniform velocity into the static background and
+                             # destroys the field.  Rejected frames are logged
+                             # with gmc_method = "rejected".
+
+  # ── Detector integration ────────────────────────────────────────────────────
+  # Set these to your trained RTDetrV2ForObjectDetection folder paths.
+  # Searched by models/_weights.py; absolute paths also accepted.
+  # Leave empty ("") to disable that detector (a WARNING is logged).
+  vehicle_model_path:  ""   # e.g. "model_weights/crowd_vehicles"
+  umbrella_model_path: ""   # e.g. "model_weights/crowd_umbrella"
+
+  detector_stride:      5   # Run detectors every Nth flow frame.
+                            # Higher = faster but larger mask lag.
+  detector_conf_threshold: 0.35
+
+  # ── Metrics ─────────────────────────────────────────────────────────────────
+  grid_cell_px:   16        # Grid cell size at source resolution.  Smaller
+                            # cells → finer spatial resolution but noisier per-
+                            # cell estimates.  16 px is a good starting point.
+                            # Divergence and curl are reported PER CELL (the
+                            # velocity difference accumulated across one cell
+                            # width), so changing this rescales those metrics
+                            # and their thresholds proportionally.
+  min_magnitude:  0.8       # Source px/frame below which a cell is treated as
+                            # static and excluded from zone aggregates.  This
+                            # is in SOURCE pixels, so it must clear the noise
+                            # floor after the compute-resolution field has been
+                            # scaled up (a factor of 4 at 320-px compute on a
+                            # 1280-px source).  Too low and every cell counts
+                            # as active, which makes the zone means meaningless.
+  stop_go_lag_frames: [5, 10, 15]  # Temporal lags for stop-go autocorrelation.
+
+  # ── Visualisation ───────────────────────────────────────────────────────────
+  # Both translucent overlays use a PER-PIXEL alpha: the values below are the
+  # opacity at full scale, and regions with no motion / no divergence are left
+  # untouched.  A uniform alpha tints the whole frame — including everything
+  # that is perfectly still — and the result is a washed-out image in which
+  # the moving subjects are no easier to see than in the raw video.
+  flow_overlay_alpha:  0.6  # HSV flow overlay opacity at max_magnitude_px
+  heatmap_alpha:       0.55 # Divergence heatmap opacity at ±div_scale
+  arrow_step_px:       32   # Sparse arrow grid step in pixels.  At 20 px an HD
+                            # frame carries ~2300 arrows, which reads as texture
+                            # rather than as direction.
+  auto_scale_overlay:  true # Scale the flow overlay to each frame's own 95th-
+                            # percentile magnitude instead of to a fixed
+                            # constant.  Pedestrian flow at 30 fps runs about
+                            # 1-3 px/frame; vehicle traffic runs 10-30.  No one
+                            # constant serves both, and against a too-large
+                            # reference a crowd renders at a few percent
+                            # opacity — technically present, visually absent.
+                            # Set false to compare absolute speeds across runs.
+  max_magnitude_px:    20.0 # Reference magnitude for HSV value/opacity scaling.
+                            # A fixed reference when auto_scale_overlay is off;
+                            # a floor (÷8) on the automatic one when it is on.
+  min_draw_magnitude_px: 0.4 # Source px/frame below which no arrow is drawn —
+                            # below this the direction is noise, and drawing it
+                            # fills the frame with random needles.
+  div_scale:           2.0  # ±div_scale mapped to full red/blue in heatmap.
+                            # Same per-cell units as divergence_critical below.
+
+  # ── Output ──────────────────────────────────────────────────────────────────
+  output_csv:              true   # Write per-frame metrics to CSV on finalize()
+  output_parquet:          false  # Parquet output (requires pyarrow)
+  output_annotated_video:  true   # Write annotated video (via run_flow_analysis.py)
+  output_timeseries_plots: true   # Write per-zone PNG plots on finalize()
+
+  # ── Robustness thresholds ───────────────────────────────────────────────────
+  # See flow_field.py docstring for a precise description of each heuristic.
+  rain_mag_threshold:          8.0   # px/frame mean magnitude above which to suspect rain
+  lowlight_gradient_threshold: 12.0  # mean gradient below which to flag low light
+  brightness_jump_threshold:   15.0  # Shift in the frame's MEAN GREY LEVEL above
+                                     # which the flow update is suppressed (a
+                                     # floodlight switching, a cloud crossing).
+                                     # Not the mean absolute frame difference:
+                                     # that grows with scene motion, so on a busy
+                                     # or low-frame-rate camera it suppresses a
+                                     # large fraction of good frames and freezes
+                                     # the field at its last value.
+  min_flow_reliability:        0.35  # Fraction of the inter-frame difference the
+                                     # computed flow must explain (measured by
+                                     # warping the previous frame with the flow).
+                                     # Below this the two frames are almost
+                                     # certainly not temporally adjacent — a
+                                     # scene cut, a time-lapsed export, or a
+                                     # compilation reel — and optical flow is
+                                     # undefined on them.  Such frames are
+                                     # FLAGGED (discontinuity_flag in the CSV,
+                                     # SCENE-CUT? in the video banner), not
+                                     # suppressed: a source that is discontinuous
+                                     # throughout would otherwise freeze the
+                                     # field and hide the problem entirely.
+
+  # ── Cameras ─────────────────────────────────────────────────────────────────
+  #
+  # Zone polygons may be given in absolute pixels OR as fractions of the frame
+  # (every value between 0 and 1).  Fractional polygons are scaled to the real
+  # frame size at run time and are the safer choice: a pixel polygon authored
+  # against one resolution covers the wrong part of the scene on any other,
+  # producing plausible-looking numbers for the wrong region.  A pixel polygon
+  # that does not fit the frame is logged as a WARNING at the first frame.
+  cameras:
+
+    # Resolution-independent default, used by the web UI and by any source
+    # whose geometry has not been surveyed.  Covers the whole frame as a
+    # single zone so the module produces usable output on arbitrary footage
+    # without per-camera calibration.
+    default:
+      zones:
+        - name: "full_frame"
+          polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+          thresholds:
+            # speed_low_ms omitted: meaningless without a homography, and
+            # disabled anyway for uncalibrated cameras.
+            divergence_critical:  -1.5
+            counterflow_critical: 0.25
+            turbulence_critical:  0.60
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+
+    ram_kund_approach:
+      # calibrated: false until you run scripts/calibrate_ground_plane.py
+      # homography:
+      #   image_points:
+      #     - [x1, y1]    # pixel coordinates (click in GIMP / cv2 window)
+      #     - [x2, y2]
+      #     - [x3, y3]
+      #     - [x4, y4]
+      #   world_points_m:
+      #     - [X1, Y1]    # ground-plane metres (measure on-site)
+      #     - [X2, Y2]
+      #     - [X3, Y3]
+      #     - [X4, Y4]
+      zones:
+        - name: "ghat_approach"
+          # Replace with actual polygon from your camera view.
+          # These are illustrative placeholder values (640×480 frame assumed).
+          polygon: [[0, 240], [640, 240], [640, 480], [0, 480]]
+          thresholds:
+            speed_low_ms:         0.4    # m/s; DISABLED if uncalibrated
+            divergence_critical:  -1.5   # negative = compression → risk
+            counterflow_critical: 0.20   # fraction of cells opposing dominant dir
+            turbulence_critical:  0.50   # Helbing turbulence index
+            min_duration_sec:     2.0    # alert must persist this long
+            hysteresis_frac:      0.20   # prevents single-frame oscillation
+
+        - name: "water_steps"
+          polygon: [[160, 360], [480, 360], [480, 480], [160, 480]]
+          thresholds:
+            speed_low_ms:         0.2    # lower threshold near the water's edge
+            divergence_critical:  -2.0   # tighter for the highest-risk zone
+            counterflow_critical: 0.15
+            turbulence_critical:  0.40
+            min_duration_sec:     1.5
+            hysteresis_frac:      0.20
+
+    kushavarta_kund_approach:
+      # homography: (add after calibration)
+      zones:
+        - name: "kund_approach"
+          polygon: [[0, 0], [1920, 0], [1920, 1080], [0, 1080]]
+          thresholds:
+            speed_low_ms:         0.35
+            divergence_critical:  -1.8
+            counterflow_critical: 0.18
+            turbulence_critical:  0.48
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+
+    ram_kund_bridge:
+      zones:
+        - name: "bridge_deck"
+          # Bridge: narrower zone, tighter divergence threshold
+          polygon: [[300, 0], [980, 0], [980, 1080], [300, 1080]]
+          thresholds:
+            speed_low_ms:         0.3
+            divergence_critical:  -1.2   # bridges compress faster than open ghats
+            counterflow_critical: 0.15   # entry/exit separation is mandatory here
+            turbulence_critical:  0.45
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+        - name: "bridge_ramp_entry"
+          polygon: [[0, 0], [300, 0], [300, 1080], [0, 1080]]
+          thresholds:
+            divergence_critical: -1.0
+            counterflow_critical: 0.12
+            turbulence_critical:  0.40
+            min_duration_sec:     1.5
+            hysteresis_frac:      0.20
+
+    procession_route_north:
+      zones:
+        - name: "procession_corridor"
+          polygon: [[0, 200], [1920, 200], [1920, 880], [0, 880]]
+          thresholds:
+            speed_low_ms:         0.5    # procession route: higher expected speed
+            divergence_critical:  -2.0
+            counterflow_critical: 0.25   # processions push against incoming devotees
+            turbulence_critical:  0.55
+            min_duration_sec:     3.0
+            hysteresis_frac:      0.25

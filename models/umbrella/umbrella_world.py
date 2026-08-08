@@ -35,6 +35,7 @@ from a broad term pulling in awnings and market stalls.
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.fall._tracker import IoUTracker
 from models.umbrella._common import DEFAULT_MIN_AREA_FRAC, emit_umbrellas
 
@@ -74,7 +75,7 @@ class UmbrellaWorldDetector(BaseModelWrapper):
     def load(self):
         from ultralytics import YOLO
 
-        self._model = YOLO(self.weights)
+        self._model = YOLO(_resolve_weight_path(self.weights))
         if not hasattr(self._model, "set_classes"):
             raise ValueError(
                 f"{self.weights} is not an open-vocabulary YOLO-World "

@@ -16,6 +16,7 @@ crash the moment it was ever reached.
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.traffic._tracker import ParkedMovingClassifier
 
 # RT-DETR ships pretrained on COCO — same class indices as YOLO/COCO.
@@ -42,7 +43,7 @@ class RtdetrTrafficDetector(BaseModelWrapper):
 
     def load(self):
         from ultralytics import RTDETR
-        self._model = RTDETR(self.weights)
+        self._model = RTDETR(_resolve_weight_path(self.weights))
         self._model.to(self.device)
         self._classifier.reset()
 

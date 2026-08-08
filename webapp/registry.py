@@ -34,6 +34,7 @@ class ModelSpec:
     #   "blocked"  - cannot run; needs weights or a missing dependency
     check: Optional[Callable[[], tuple[bool, str, str]]] = None
     default_stride: int = 5
+    default_threshold: float | None = None
     tags: list = field(default_factory=list)
 
     def status(self) -> dict:
@@ -49,6 +50,7 @@ class ModelSpec:
             "status": status,
             "note": note,
             "default_stride": self.default_stride,
+            "default_threshold": self.default_threshold,
             "tags": self.tags,
         }
 
@@ -110,29 +112,61 @@ def _needs_api_key(note: str = "Roboflow-hosted model; inference runs on "
     return check
 
 
+def _real_arch_check(finetuned_path: str, finetuned_note: str, stock_note: str):
+    """Ready either way: fine-tuned if present, else the real stock weights.
+
+    Distinct from `_untrained_head`, which marks a model `fallback` because
+    it is not the architecture it claims. These two now load their actual
+    networks in both cases, so `ready` is accurate — the note just says
+    which weights are in play.
+    """
+    def check():
+        if _exists(finetuned_path):
+            return True, "ready", finetuned_note
+        return True, "ready", stock_note
+    return check
+
+
+def _trained_umbrella_check():
+    """Available only when the fine-tuned checkpoint is actually on disk."""
+    def check():
+        from models.umbrella.umbrella_trained import find_trained_dir
+        d = find_trained_dir()
+        if d:
+            return True, "ready", (
+                "Fine-tuned RT-DETRv2, val F1 0.711 (precision 0.769 / recall "
+                "0.661). NMS is applied - the raw checkpoint emits ~2.7x "
+                "duplicate boxes despite RT-DETR being nominally NMS-free.")
+        return False, "blocked", (
+            "No fine-tuned checkpoint. Unzip umbrella_v1_best.zip into "
+            "'ML Models/umbrella_trained/' (needs model.safetensors + "
+            "config.json + preprocessor_config.json).")
+    return check
+
+
 MODELS: list[ModelSpec] = [
     # ---------------- Fall detection ----------------
     ModelSpec("fall_yolo_pose", "YOLOv8-Pose", "fall",
               "Pose keypoints + posture heuristic, temporally confirmed.",
-              tags=["pose", "gpu"]),
+              default_threshold=0.4, tags=["pose", "gpu"]),
     ModelSpec("fall_movenet", "MoveNet", "fall",
               "Google MoveNet multipose, same posture heuristic.",
-              tags=["pose", "cpu"]),
+              default_threshold=0.4, tags=["pose", "cpu"]),
     ModelSpec("fall_mediapipe_pose", "MediaPipe BlazePose", "fall",
               "Lightweight per-person pose; YOLO detector upstream for crowds.",
-              tags=["pose", "cpu"]),
+              default_threshold=0.4, tags=["pose", "cpu"]),
     ModelSpec("fall_optical_flow", "Optical Flow (fall)", "fall",
               "Pose-free: sustained downward flow that settles. Classical CV.",
               tags=["flow", "cpu"]),
     ModelSpec("fall_stgcn", "ST-GCN", "fall",
               "Skeleton graph-conv classifier over tracked keypoint sequences.",
-              tags=["skeleton", "gpu"]),
+              default_threshold=0.4, tags=["skeleton", "gpu"]),
     ModelSpec("fall_posec3d", "PoseC3D", "fall",
               "3D-CNN over gaussian pose-heatmap volumes.",
-              tags=["skeleton", "gpu"]),
+              default_threshold=0.4, tags=["skeleton", "gpu"]),
     ModelSpec("fall_alphapose_lstm", "AlphaPose + LSTM", "fall",
               "Tracked keypoint sequences classified by a temporal LSTM.",
-              tags=["skeleton", "gpu"]),
+              default_threshold=0.4, tags=["skeleton", "gpu"]),
 
     # ---------------- Violence detection ----------------
     ModelSpec("roboflow_combined", "Roboflow (violence/fall)", "violence",
@@ -141,19 +175,19 @@ MODELS: list[ModelSpec] = [
               check=_needs_api_key(
                   "Roboflow-hosted model trained on real violence/fall labels, "
                   "not zero-shot Kinetics classes."),
-              tags=["hosted", "cloud"]),
+              default_threshold=0.5, tags=["hosted", "cloud"]),
     ModelSpec("violence_x3d", "X3D", "violence",
               "Lightweight 3D-CNN. Best speed/accuracy trade-off here.",
-              check=_zero_shot(), tags=["clip", "gpu"]),
+              check=_zero_shot(), default_threshold=0.5, tags=["clip", "gpu"]),
     ModelSpec("violence_videomae", "VideoMAE", "violence",
               "Transformer video classifier. Heaviest, usually most accurate.",
-              check=_zero_shot(), tags=["clip", "gpu"]),
+              check=_zero_shot(), default_threshold=0.5, tags=["clip", "gpu"]),
     ModelSpec("violence_i3d", "I3D", "violence",
               "Inflated 3D ConvNet. Common literature baseline for RWF-2000.",
-              check=_zero_shot(), default_stride=10, tags=["clip", "gpu"]),
+              check=_zero_shot(), default_stride=10, default_threshold=0.5, tags=["clip", "gpu"]),
     ModelSpec("violence_slowfast", "SlowFast", "violence",
               "Dual-pathway 3D-CNN, strong on fast motion like punches.",
-              check=_zero_shot(), default_stride=10, tags=["clip", "gpu"]),
+              check=_zero_shot(), default_stride=10, default_threshold=0.5, tags=["clip", "gpu"]),
     ModelSpec("violence_c3d", "C3D", "violence",
               "Simple 3D-CNN baseline classifier.",
               check=_untrained_head(
@@ -163,7 +197,7 @@ MODELS: list[ModelSpec] = [
                   "so output is labelled 'violence_untrained' and excluded "
                   "from event counts. Fine-tune on RWF-2000 / Hockey Fight / "
                   "RLVS to use it for real."),
-              tags=["clip", "gpu"]),
+              default_threshold=0.5, tags=["clip", "gpu"]),
     ModelSpec("violence_tsm", "TSM (ResNet-50)", "violence",
               "Temporal Shift Module: 3D-like reasoning at 2D cost.",
               check=_untrained_head(
@@ -172,7 +206,7 @@ MODELS: list[ModelSpec] = [
                   "Scores sat at 0.494-0.564 regardless of content, so output "
                   "is labelled 'violence_untrained' and excluded from event "
                   "counts. Fine-tune on RWF-2000 / Hockey Fight / RLVS."),
-              tags=["clip", "gpu"]),
+              default_threshold=0.5, tags=["clip", "gpu"]),
     ModelSpec("violence_mmaction_slowonly", "MMAction2 SlowOnly", "violence",
               "Framework baseline via MMAction2 config + checkpoint.",
               check=lambda: (True, "ready",
@@ -180,28 +214,28 @@ MODELS: list[ModelSpec] = [
                              "Without one, falls back to a Kinetics-pretrained "
                              "r3d_18 scored zero-shot over the 9 fighting "
                              "classes - real weights, but not SlowOnly."),
-              tags=["clip", "gpu"]),
+              default_threshold=0.5, tags=["clip", "gpu"]),
 
     # ---------------- Traffic / vehicle counting ----------------
     ModelSpec("yolo_traffic", "YOLOv11 Traffic", "traffic",
               "COCO-pretrained vehicle detector + ByteTrack; classifies each "
               "tracked vehicle as moving or parked from centroid drift.",
-              tags=["frame", "gpu"]),
+              default_threshold=0.35, tags=["frame", "gpu"]),
     ModelSpec("rtdetr_traffic", "RT-DETR Traffic", "traffic",
               "Transformer detector, stronger on small/occluded vehicles. "
               "Falls back to DeepSORT if ByteTrack IDs don't come through.",
-              tags=["frame", "gpu"]),
+              default_threshold=0.35, tags=["frame", "gpu"]),
     ModelSpec("rtdetrv2_traffic", "RT-DETRv2 Traffic (Moving / Parked)", "traffic",
               "RT-DETRv2-S vehicle detector + centroid drift classifier for "
               "moving vs. parked cars (Apache 2.0, 20M params, 217 FPS).",
-              tags=["frame", "gpu", "transformer", "apache2"]),
+              default_threshold=0.35, tags=["frame", "gpu", "transformer", "apache2"]),
     ModelSpec("roboflow_traffic", "Roboflow (traffic)", "traffic",
               "Hosted model trained on real traffic-camera footage rather "
               "than general COCO images. Runs on Roboflow's servers.",
               check=_needs_api_key(
                   "Roboflow-hosted vehicle detector trained on traffic-camera "
                   "footage. One API call per processed frame."),
-              tags=["hosted", "cloud"]),
+              default_threshold=0.35, tags=["hosted", "cloud"]),
     ModelSpec("mog2_parked", "MOG2 Background Subtraction", "traffic",
               "Classical CV, no GPU/weights: flags regions whose pixels "
               "stop changing as parked. Independent cross-check, not a "
@@ -217,7 +251,7 @@ MODELS: list[ModelSpec] = [
                              "Wide/distant traffic shots will report "
                              "'too_small' - the characters aren't resolvable "
                              "at that size by any OCR."),
-              default_stride=2, tags=["frame", "gpu", "ocr"]),
+              default_stride=2, default_threshold=0.35, tags=["frame", "gpu", "ocr"]),
     ModelSpec("indian_anpr", "Indian ANPR (Roboflow + EasyOCR)", "anpr",
               "Indian vehicle detector + Roboflow plate localisation + EasyOCR. "
               "Handles autos, tempos, bikes and other Indian vehicle types. "
@@ -227,15 +261,15 @@ MODELS: list[ModelSpec] = [
                   "1 per vehicle per read-frame for plates. A 2,600-frame clip "
                   "with ~15 vehicles is roughly 13,000 calls - test on a short "
                   "window first and watch your Roboflow quota."),
-              default_stride=2, tags=["frame", "cloud", "ocr"]),
+              default_stride=2, default_threshold=0.35, tags=["frame", "cloud", "ocr"]),
     ModelSpec("rapid_ocr", "RapidOCR (PP-OCRv4 ONNX)", "anpr",
               "ONNX Runtime RapidOCR engine (PP-OCRv4 mobile det/cls/rec) — "
               "swappable alternative to EasyOCR for ANPR plate crops.",
-              default_stride=2, tags=["frame", "cpu", "ocr"]),
+              default_stride=2, default_threshold=0.35, tags=["frame", "cpu", "ocr"]),
     ModelSpec("rtdetrv2_anpr", "RT-DETRv2 ANPR (Classification, Color & Plate)", "anpr",
               "RT-DETRv2-S vehicle detector + fine-grained classification + car colour "
               "recognition + DETR plate detector + RapidOCR / EasyOCR engine (Apache 2.0).",
-              default_stride=2, tags=["frame", "gpu", "ocr", "transformer", "apache2"]),
+              default_stride=2, default_threshold=0.35, tags=["frame", "gpu", "ocr", "transformer", "apache2"]),
 
     # ---------------- Umbrella detection ----------------
     ModelSpec("umbrella_yolo", "Umbrella Detection", "umbrella",
@@ -246,7 +280,7 @@ MODELS: list[ModelSpec] = [
                              "weights to download (yolo11n is 5.6 MB). Pass "
                              "model_size='s' (~19 MB) for better recall on "
                              "small or distant umbrellas."),
-              default_stride=3, tags=["frame", "gpu"]),
+              default_stride=3, default_threshold=0.35, tags=["frame", "gpu"]),
     ModelSpec("umbrella_ssd", "Umbrella (SSDLite MobileNetV3)", "umbrella",
               "Lighter, older architecture than YOLO - the comparison point "
               "for how much detection quality comes from the architecture.",
@@ -255,7 +289,7 @@ MODELS: list[ModelSpec] = [
                              "320x320 input so it is genuinely usable on CPU. "
                              "Scores run lower than YOLO's, hence its lower "
                              "default threshold - not a weaker setting."),
-              default_stride=3, tags=["frame", "cpu", "gpu"]),
+              default_stride=3, default_threshold=0.25, tags=["frame", "cpu", "gpu"]),
     ModelSpec("umbrella_world", "Umbrella (YOLO-World open-vocab)", "umbrella",
               "Text-prompted detection: finds parasols and sun umbrellas that "
               "COCO's single fixed 'umbrella' class was never trained on.",
@@ -265,19 +299,33 @@ MODELS: list[ModelSpec] = [
                              "Higher recall but looser than the fixed-class "
                              "models - each detection records which prompt "
                              "matched in extra.matched_class."),
-              default_stride=3, tags=["frame", "gpu", "open-vocab"]),
+              default_stride=3, default_threshold=0.25, tags=["frame", "gpu", "open-vocab"]),
     ModelSpec("umbrella_yolo26n", "YOLO26-Nano (umbrella-finetuned)", "umbrella",
               "Ultralytics YOLO26 nano variant, NMS-free, edge-optimized + ByteTrack.",
-              check=lambda: (True, "ready",
-                             "NMS-free edge profile detector. Uses fallback pretrained "
-                             "nano weights when fine-tuned checkpoint is not on disk."),
-              default_stride=3, tags=["frame", "gpu", "edge"]),
+              check=_real_arch_check(
+                  "weights/yolo26n_umbrella.pt",
+                  "Fine-tuned YOLO26 umbrella checkpoint found.",
+                  "Real YOLO26-Nano COCO weights (yolo26n.pt), detecting COCO's "
+                  "umbrella class. NMS-free end-to-end head - a genuinely "
+                  "different architecture from the YOLO11 wrapper, so it is an "
+                  "independent data point. Drop weights/yolo26n_umbrella.pt in "
+                  "to use a fine-tuned version instead."),
+              default_stride=3, default_threshold=0.35, tags=["frame", "gpu", "edge"]),
     ModelSpec("umbrella_rfdetr", "RF-DETR Nano (umbrella-finetuned)", "umbrella",
               "Roboflow RF-DETR Nano transformer with DINOv2 backbone for small/occluded umbrella recall.",
-              check=lambda: (True, "ready",
-                             "DINOv2 backbone transformer detector. High recall on small or "
-                             "occluded objects in dense crowds."),
-              default_stride=3, tags=["frame", "gpu", "transformer"]),
+              check=_real_arch_check(
+                  "weights/rfdetr_nano_umbrella.pt",
+                  "Fine-tuned RF-DETR umbrella checkpoint found.",
+                  "Real RF-DETR Nano COCO weights via the rfdetr package "
+                  "(DINOv2 backbone), detecting COCO's umbrella class. Drop "
+                  "weights/rfdetr_nano_umbrella.pt in to use a fine-tuned "
+                  "version instead."),
+              default_stride=3, default_threshold=0.35, tags=["frame", "gpu", "transformer"]),
+    ModelSpec("umbrella_trained", "RT-DETRv2 (trained)", "umbrella",
+              "Fine-tuned on umbrella data - the only umbrella model here not "
+              "relying on COCO's generic class. 42.7M params, single class.",
+              check=_trained_umbrella_check(),
+              default_stride=3, default_threshold=0.35, tags=["frame", "gpu", "finetuned"]),
     ModelSpec("umbrella_rtdetrv2", "RT-DETRv2-S (COCO zero-shot)", "umbrella",
               "RT-DETRv2 with ResNet-18vd backbone — improved deformable attention, "
               "dual-level IoU-aware query selection (Apache 2.0, 20M params, 217 FPS).",
@@ -285,15 +333,20 @@ MODELS: list[ModelSpec] = [
                              "Apache-2.0 licensed. Weights auto-downloaded from "
                              "HuggingFace Hub (PekingU/rtdetr_v2_r18vd) on first run. "
                              "COCO umbrella class 25 — no fine-tuning required."),
-              default_stride=3, tags=["frame", "gpu", "transformer", "apache2"]),
+              default_stride=3, default_threshold=0.35, tags=["frame", "gpu", "transformer", "apache2"]),
     # ---------------- Fire / Smoke & Crowd Crush ----------------
     ModelSpec("fire_smoke_yolo", "Fire / Smoke YOLO", "fire",
               "YOLO fire and smoke detector.",
               check=lambda: (True, "ready", "Runs local fire/smoke model with Roboflow cloud fallback."),
-              tags=["frame", "gpu"]),
+              default_threshold=0.35, tags=["frame", "gpu"]),
     ModelSpec("optical_flow_crush", "Optical Flow (crowd crush)", "crush",
               "Circular-variance turbulence + convergence. Classical CV.",
               tags=["flow", "cpu"]),
+    ModelSpec("dense_flow", "Dense Flow Analysis (Kumbh Mela)", "crush",
+              "DIS dense flow field analysis: divergence compression, counterflow, "
+              "stop-and-go waves, and perspective m/s speed.",
+              check=lambda: (True, "ready", "DIS optical flow + zone metrics + perspective correction."),
+              tags=["flow", "cpu", "kumbh-mela"]),
 ]
 
 BY_KEY = {m.key: m for m in MODELS}
@@ -315,7 +368,7 @@ def list_models() -> list[dict]:
 
 
 def build_model(key: str, device: Optional[str], pose_size: str = "s",
-                video_name: str = "run"):
+                video_name: str = "run", threshold: Optional[float] = None):
     """Construct a wrapper instance. Imports are deferred to call time so the
     API can list models without paying torch's import cost."""
     from models.fire_smoke_yolo import FireSmokeYOLO
@@ -336,40 +389,48 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         RoboflowTrafficDetector, Mog2ParkedDetector,
     )   
 
+    def _kw(extra: dict = None):
+        kw = dict(extra) if extra else {}
+        if threshold is not None:
+            kw["conf_threshold"] = threshold
+        return kw
+
     factories = {
-        "fire_smoke_yolo": lambda: FireSmokeYOLO(device=device),
-        "umbrella_yolo": lambda: _build_umbrella(device),
-        "umbrella_ssd": lambda: _build_umbrella_ssd(device),
-        "umbrella_world": lambda: _build_umbrella_world(device),
-        "umbrella_yolo26n": lambda: _build_umbrella_yolo26n(device),
-        "umbrella_rfdetr": lambda: _build_umbrella_rfdetr(device),
-        "umbrella_rtdetrv2": lambda: _build_umbrella_rtdetrv2(device),
-        "rapid_ocr": lambda: _build_rapid_ocr(device, video_name),
+        "fire_smoke_yolo": lambda: FireSmokeYOLO(device=device, **_kw()),
+        "umbrella_yolo": lambda: _build_umbrella(device, threshold=threshold),
+        "umbrella_ssd": lambda: _build_umbrella_ssd(device, threshold=threshold),
+        "umbrella_world": lambda: _build_umbrella_world(device, threshold=threshold),
+        "umbrella_yolo26n": lambda: _build_umbrella_yolo26n(device, threshold=threshold),
+        "umbrella_rfdetr": lambda: _build_umbrella_rfdetr(device, threshold=threshold),
+        "umbrella_rtdetrv2": lambda: _build_umbrella_rtdetrv2(device, threshold=threshold),
+        "umbrella_trained": lambda: _build_umbrella_trained(device, threshold=threshold),
+        "rapid_ocr": lambda: _build_rapid_ocr(device, video_name, threshold=threshold),
         "optical_flow_crush": lambda: OpticalFlowCrushDetector(device=device),
-        "roboflow_combined": lambda: RoboflowCombinedDetector(device=device),
-        "fall_yolo_pose": lambda: YOLOPoseFallDetector(model_size=pose_size, device=device),
-        "fall_mediapipe_pose": lambda: MediaPipeFallDetector(device=device),
-        "fall_alphapose_lstm": lambda: AlphaPoseFallDetector(device=device),
-        "fall_stgcn": lambda: STGCNFallDetector(device=device),
-        "fall_posec3d": lambda: PoseC3DFallDetector(device=device),
-        "fall_movenet": lambda: MoveNetFallDetector(device=device),
+        "dense_flow": lambda: _build_dense_flow(device),
+        "roboflow_combined": lambda: RoboflowCombinedDetector(device=device, **_kw()),
+        "fall_yolo_pose": lambda: YOLOPoseFallDetector(model_size=pose_size, device=device, **_kw()),
+        "fall_mediapipe_pose": lambda: MediaPipeFallDetector(device=device, **_kw()),
+        "fall_alphapose_lstm": lambda: AlphaPoseFallDetector(device=device, **_kw()),
+        "fall_stgcn": lambda: STGCNFallDetector(device=device, **_kw()),
+        "fall_posec3d": lambda: PoseC3DFallDetector(device=device, **_kw()),
+        "fall_movenet": lambda: MoveNetFallDetector(device=device, **_kw()),
         "fall_optical_flow": lambda: OpticalFlowFallDetector(device=device),
-        "violence_x3d": lambda: X3DViolenceClassifier(device=device),
-        "violence_slowfast": lambda: SlowFastViolenceClassifier(device=device),
-        "violence_videomae": lambda: VideoMAEViolenceClassifier(device=device),
-        "violence_i3d": lambda: I3DViolenceClassifier(device=device),
-        "violence_c3d": lambda: C3DViolenceClassifier(device=device),
-        "violence_tsm": lambda: TSMViolenceClassifier(device=device),
-        "violence_mmaction_slowonly": lambda: MMActionSlowOnlyClassifier(device=device),
+        "violence_x3d": lambda: X3DViolenceClassifier(device=device, **_kw()),
+        "violence_slowfast": lambda: SlowFastViolenceClassifier(device=device, **_kw()),
+        "violence_videomae": lambda: VideoMAEViolenceClassifier(device=device, **_kw()),
+        "violence_i3d": lambda: I3DViolenceClassifier(device=device, **_kw()),
+        "violence_c3d": lambda: C3DViolenceClassifier(device=device, **_kw()),
+        "violence_tsm": lambda: TSMViolenceClassifier(device=device, **_kw()),
+        "violence_mmaction_slowonly": lambda: MMActionSlowOnlyClassifier(device=device, **_kw()),
         # video_name keys the gallery directory so runs on different clips
         # don't overwrite each other's captured vehicles.
-        "anpr": lambda: _build_anpr(device, video_name),
-        "indian_anpr": lambda: _build_indian_anpr(device, video_name),
-        "rtdetrv2_anpr": lambda: _build_rtdetrv2_anpr(device, video_name),
-        "yolo_traffic": lambda: YoloTrafficDetector(device=device),
-        "rtdetr_traffic": lambda: RtdetrTrafficDetector(device=device),
-        "rtdetrv2_traffic": lambda: _build_rtdetrv2_traffic(device),
-        "roboflow_traffic": lambda: RoboflowTrafficDetector(device=device),
+        "anpr": lambda: _build_anpr(device, video_name, threshold=threshold),
+        "indian_anpr": lambda: _build_indian_anpr(device, video_name, threshold=threshold),
+        "rtdetrv2_anpr": lambda: _build_rtdetrv2_anpr(device, video_name, threshold=threshold),
+        "yolo_traffic": lambda: YoloTrafficDetector(device=device, **_kw()),
+        "rtdetr_traffic": lambda: RtdetrTrafficDetector(device=device, **_kw()),
+        "rtdetrv2_traffic": lambda: _build_rtdetrv2_traffic(device, threshold=threshold),
+        "roboflow_traffic": lambda: RoboflowTrafficDetector(device=device, **_kw()),
         "mog2_parked": lambda: Mog2ParkedDetector(device=device),
     }
     if key not in factories:
@@ -377,70 +438,135 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
     return factories[key]()
 
 
-def _build_umbrella(device):
+def _build_umbrella(device, threshold=None):
     from models.umbrella import UmbrellaDetector
-    return UmbrellaDetector(device=device)
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return UmbrellaDetector(**kw)
 
 
-def _build_umbrella_ssd(device):
+def _build_umbrella_ssd(device, threshold=None):
     from models.umbrella import UmbrellaSSDDetector
-    return UmbrellaSSDDetector(device=device)
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return UmbrellaSSDDetector(**kw)
 
 
-def _build_umbrella_world(device):
+def _build_umbrella_world(device, threshold=None):
     from models.umbrella import UmbrellaWorldDetector
-    return UmbrellaWorldDetector(device=device)
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return UmbrellaWorldDetector(**kw)
 
 
-def _build_umbrella_yolo26n(device):
+def _build_umbrella_trained(device, threshold=None):
+    from models.umbrella import TrainedUmbrellaDetector
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return TrainedUmbrellaDetector(**kw)
+
+
+def _build_umbrella_yolo26n(device, threshold=None):
     from models.umbrella import YOLO26NanoUmbrellaDetector
-    return YOLO26NanoUmbrellaDetector(device=device)
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return YOLO26NanoUmbrellaDetector(**kw)
 
 
-def _build_umbrella_rfdetr(device):
+def _build_umbrella_rfdetr(device, threshold=None):
     from models.umbrella import RFDETRNanoUmbrellaDetector
-    return RFDETRNanoUmbrellaDetector(device=device)
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return RFDETRNanoUmbrellaDetector(**kw)
 
 
-def _build_umbrella_rtdetrv2(device):
+def _build_umbrella_rtdetrv2(device, threshold=None):
     from models.umbrella import RTDetrV2UmbrellaDetector
-    return RTDetrV2UmbrellaDetector(device=device)
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return RTDetrV2UmbrellaDetector(**kw)
 
 
-def _build_rapid_ocr(device, video_name: str):
+def _build_rapid_ocr(device, video_name: str, threshold=None):
     import os
     from models.anpr import RapidOCRDetector
     stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
-    return RapidOCRDetector(device=device, video_name=stem)
+    kw = {"device": device, "video_name": stem}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return RapidOCRDetector(**kw)
 
 
-def _build_anpr(device, video_name: str):
+def _build_anpr(device, video_name: str, threshold=None):
     import os
 
     from models.anpr import ANPRDetector
     # Strip the extension so the gallery folder matches the log filenames
     # the rest of the UI uses.
     stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
-    return ANPRDetector(device=device, video_name=stem)
+    kw = {"device": device, "video_name": stem}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return ANPRDetector(**kw)
 
 
-def _build_indian_anpr(device, video_name: str):
+def _build_indian_anpr(device, video_name: str, threshold=None):
     import os
 
     from models.anpr import IndianANPRDetector
     stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
-    return IndianANPRDetector(device=device, video_name=stem)
+    kw = {"device": device, "video_name": stem}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return IndianANPRDetector(**kw)
 
 
-def _build_rtdetrv2_anpr(device, video_name: str):
+def _build_rtdetrv2_anpr(device, video_name: str, threshold=None):
     import os
 
     from models.anpr import RTDetrV2ANPRDetector
     stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
-    return RTDetrV2ANPRDetector(device=device, video_name=stem)
+    kw = {"device": device, "video_name": stem}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return RTDetrV2ANPRDetector(**kw)
 
 
-def _build_rtdetrv2_traffic(device):
+def _build_rtdetrv2_traffic(device, threshold=None):
     from models.traffic import RTDetrV2TrafficDetector
-    return RTDetrV2TrafficDetector(device=device)
+    kw = {"device": device}
+    if threshold is not None:
+        kw["conf_threshold"] = threshold
+    return RTDetrV2TrafficDetector(**kw)
+
+
+def _build_dense_flow(device):
+    import yaml
+    from models.crowd_flow import DenseFlowAnalyser
+    cfg_path = os.path.join(PROJECT_ROOT, "configs", "crowd_flow.yaml")
+    if os.path.exists(cfg_path):
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f).get("crowd_flow", {})
+    else:
+        cfg = {}
+    output_dir = os.path.join(PROJECT_ROOT, "outputs", "annotated")
+    os.makedirs(output_dir, exist_ok=True)
+    return DenseFlowAnalyser(
+        config=cfg,
+        # The web UI runs arbitrary uploaded footage, so it uses the
+        # resolution-independent "default" camera.  The site-specific camera
+        # blocks carry pixel polygons surveyed for one particular view and
+        # would measure the wrong region of any other video.
+        camera_id="default",
+        output_dir=output_dir,
+        device=device,
+    )
+
 

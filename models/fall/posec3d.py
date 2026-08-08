@@ -34,6 +34,7 @@ output as a PoseC3D result.
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.fall._geometry import (
     DEFAULT_MIN_KP_CONF,
     angle_threshold_to_score,
@@ -53,7 +54,7 @@ class PoseC3DFallDetector(BaseModelWrapper):
     def __init__(self, sequence_len: int = 32, heatmap_size: int = 56,
                  heatmap_sigma: float = 2.0,
                  posec3d_config: str = "configs/posec3d/posec3d_fall.py",
-                 posec3d_checkpoint: str = None, pose_conf_threshold: float = 0.4,
+                 posec3d_checkpoint: str = None, pose_conf_threshold: float = 0.4, conf_threshold: float = 0.4,
                  iou_match_threshold: float = 0.3,
                  min_kp_conf: float = DEFAULT_MIN_KP_CONF,
                  horizontal_angle_threshold_deg: float = 45.0,
@@ -64,7 +65,8 @@ class PoseC3DFallDetector(BaseModelWrapper):
         self.heatmap_sigma = heatmap_sigma
         self.posec3d_config = posec3d_config
         self.posec3d_checkpoint = posec3d_checkpoint
-        self.pose_conf_threshold = pose_conf_threshold
+        self.conf_threshold = conf_threshold
+        self.pose_conf_threshold = conf_threshold
         self.iou_match_threshold = iou_match_threshold
         self.min_kp_conf = min_kp_conf
         self.score_threshold = angle_threshold_to_score(horizontal_angle_threshold_deg)
@@ -84,7 +86,7 @@ class PoseC3DFallDetector(BaseModelWrapper):
 
     def load(self):
         from ultralytics import YOLO
-        self._pose_model = YOLO("yolov8s-pose.pt")
+        self._pose_model = YOLO(_resolve_weight_path("yolov8s-pose.pt"))
         self._pose_model.to(self.device)
         self._tracker.reset()
 

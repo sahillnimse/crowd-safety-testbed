@@ -35,6 +35,7 @@ When a fine-tuned binary checkpoint *is* supplied, the wrappers pass
 
 import json
 import os
+from models._weights import resolve as _resolve_weight_path
 from typing import Optional, Sequence
 
 import cv2
@@ -188,7 +189,7 @@ class PersonROI:
 
     def load(self, device: Optional[str] = None):
         from ultralytics import YOLO
-        self._detector = YOLO(self.weights)
+        self._detector = YOLO(_resolve_weight_path(self.weights))
         if device:
             self._detector.to(device)
         self._last = None

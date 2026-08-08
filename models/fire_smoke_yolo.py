@@ -12,6 +12,7 @@ works out-of-the-box without manual weights downloads.
 
 import os
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 
 
 class FireSmokeYOLO(BaseModelWrapper):
@@ -28,7 +29,7 @@ class FireSmokeYOLO(BaseModelWrapper):
     def load(self):
         if os.path.exists(self.weights_path):
             from ultralytics import YOLO
-            self._model = YOLO(self.weights_path)
+            self._model = YOLO(_resolve_weight_path(self.weights_path))
             self._model.to(self.device)
             self._uses_roboflow = False
         else:

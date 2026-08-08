@@ -31,6 +31,7 @@ fall detectors, which degrade badly when torsos are hidden from above.
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.umbrella._common import DEFAULT_MIN_AREA_FRAC, emit_umbrellas
 
 # COCO class index for "umbrella". Verified against the bundled
@@ -78,7 +79,7 @@ class UmbrellaDetector(BaseModelWrapper):
 
     def load(self):
         from ultralytics import YOLO
-        self._model = YOLO(self.weights)
+        self._model = YOLO(_resolve_weight_path(self.weights))
         self._model.to(self.device)
 
         # Resolve the class index from the checkpoint's own names rather than

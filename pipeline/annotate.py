@@ -44,6 +44,15 @@ COLOR_MAP = {
     "vehicle_plate": (0, 215, 255),    # amber — ANPR, plate read
     "vehicle_unread": (120, 120, 120), # grey — ANPR, plate not legible
     "umbrella": (203, 65, 200),        # magenta
+    # Dense optical flow crowd-safety alerts (DenseFlowAnalyser)
+    # Colour is a rendering choice only; Detection.extra carries the numbers.
+    "mean_speed_warning":       (0, 165, 255),   # orange  — speed drop
+    "mean_speed_critical":      (0, 100, 255),   # red-orange
+    "mean_divergence_critical": (0, 0, 200),     # red  — compression/crush risk
+    "counterflow_warning":      (0, 215, 255),   # amber — entry/exit separation
+    "turbulence_index_critical":(0, 0, 160),     # dark red — Helbing turbulence
+    "stop_go_warning":          (140, 0, 220),   # purple — stop-and-go wave
+    "vehicle_in_ped_zone":      (0, 180, 0),     # green — vehicle alert
 }
 DEFAULT_COLOR = (255, 255, 0)
 

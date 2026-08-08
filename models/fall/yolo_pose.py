@@ -25,6 +25,7 @@ of which was a real source of bad detections here:
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.fall._geometry import (
     DEFAULT_MIN_KP_CONF,
     angle_threshold_to_score,
@@ -68,7 +69,7 @@ class YOLOPoseFallDetector(BaseModelWrapper):
 
     def load(self):
         from ultralytics import YOLO
-        self._model = YOLO(self.weights_path)
+        self._model = YOLO(_resolve_weight_path(self.weights_path))
         self._model.to(self.device)
         self._tracker.reset()
 

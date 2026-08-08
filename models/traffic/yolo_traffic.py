@@ -9,6 +9,7 @@ YOLO base, but filtered to vehicle classes only:
 """
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.traffic._tracker import ParkedMovingClassifier
 
 _VEHICLE_COCO_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
@@ -36,7 +37,7 @@ class YoloTrafficDetector(BaseModelWrapper):
 
     def load(self):
         from ultralytics import YOLO
-        self._model = YOLO(self.weights)
+        self._model = YOLO(_resolve_weight_path(self.weights))
         self._model.to(self.device)
         self._classifier.reset()
 

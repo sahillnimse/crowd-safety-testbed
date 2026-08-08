@@ -264,6 +264,82 @@ code { font-family: var(--font-code); font-size: .92em; }
   color: var(--muted);
 }
 
+/* ---- per-model confidence threshold slider ---- */
+.model-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.thresh-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(99, 102, 241, 0.07);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+}
+
+.thresh-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.thresh-slider {
+  flex: 1;
+  height: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--border);
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+  transition: background .15s;
+  min-width: 0;
+}
+
+.thresh-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+  transition: box-shadow .15s;
+}
+
+.thresh-slider:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 5px var(--accent-glow);
+}
+
+.thresh-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.thresh-value {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
+  min-width: 2.6ch;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+
 .pill {
   font-size: 10px;
   padding: 2px 7px;

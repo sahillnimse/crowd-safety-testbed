@@ -2,6 +2,7 @@ from models.base import BaseModelWrapper, Detection
 from models.fire_smoke_yolo import FireSmokeYOLO
 from models.optical_flow_crush import OpticalFlowCrushDetector
 from models.roboflow_combined import RoboflowCombinedDetector
+from models.crowd_flow import DenseFlowAnalyser
 
 from models.fall import (
     YOLOPoseFallDetector,
@@ -49,6 +50,8 @@ __all__ = [
     "FireSmokeYOLO",
     "OpticalFlowCrushDetector",
     "RoboflowCombinedDetector",
+    # Dense optical flow crowd-safety
+    "DenseFlowAnalyser",
     # Fall detection (7)
     "YOLOPoseFallDetector",
     "MediaPipeFallDetector",

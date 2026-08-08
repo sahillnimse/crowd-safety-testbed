@@ -83,3 +83,12 @@ tqdm>=4.66.0
 pandas>=2.2.0
 # ultralytics>=8.4 imports filelock.AsyncFileLock, added in filelock 3.18
 filelock>=3.18.0
+
+# Dense optical flow crowd-safety module (models/crowd_flow/)
+# scipy: temporal autocorrelation for stop-and-go wave detection.
+#   crowd_metrics.py has a pure-numpy fallback so this is optional, but
+#   scipy.signal.correlate is faster on long buffers.
+scipy>=1.12.0
+# matplotlib: time-series PNG plots written by FlowVisualiser.save_timeseries_plots().
+#   Optional; a WARNING is logged and plots are skipped if absent.
+matplotlib>=3.8.0

@@ -18,6 +18,7 @@ videos:
       - fall_alphapose_lstm
       # Crowd-crush (1)
       - optical_flow_crush
+      - dense_flow
     ground_truth: []
 
   - url: "https://youtu.be/pG4HqTGkHPg?si=tBniURkEF0k_qFPx"

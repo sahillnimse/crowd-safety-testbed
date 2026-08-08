@@ -33,14 +33,18 @@ class UmbrellaSSDDetector(BaseModelWrapper):
     name = "umbrella_ssd"
     gpu_accelerated = True
 
-    def __init__(self, conf_threshold: float = 0.30,
+    def __init__(self, conf_threshold: float = 0.12,
                  min_area_frac: float = DEFAULT_MIN_AREA_FRAC,
                  track: bool = True, iou_match_threshold: float = 0.3,
                  device=None):
         """
-        conf_threshold: lower than the YOLO wrapper's 0.35 on purpose —
-            SSDLite is a weaker detector and its scores run lower, so the
-            same threshold would not be the same operating point.
+        conf_threshold: 0.12, far below the YOLO wrapper's 0.35, and that is
+            not a typo. SSDLite's scores are on a different scale entirely:
+            on a frame of Umbrellas.mp4 where it does find umbrellas, its
+            top scores were 0.13-0.15, so a 0.30 gate discarded every single
+            one and the model reported zero detections on footage full of
+            them. Its confidences are therefore NOT comparable numerically
+            with the other umbrella models' — only its rank ordering is.
         """
         super().__init__(device=device)
         self.conf_threshold = conf_threshold

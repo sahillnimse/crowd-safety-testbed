@@ -24,6 +24,7 @@ import os
 import urllib.request
 
 from models.base import BaseModelWrapper, Detection
+from models._weights import resolve as _resolve_weight_path
 from models.fall._geometry import (
     DEFAULT_MIN_KP_CONF,
     angle_threshold_to_score,
@@ -103,7 +104,7 @@ class MediaPipeFallDetector(BaseModelWrapper):
         # BlazePose is single-person; use a lightweight YOLO person detector
         # upstream to crop each person before running pose on crowd frames.
         from ultralytics import YOLO
-        self._person_detector = YOLO("yolov8n.pt")
+        self._person_detector = YOLO(_resolve_weight_path("yolov8n.pt"))
         self._tracker.reset()
 
     def _landmarks_to_arrays(self, landmarks, crop_w: int, crop_h: int,
