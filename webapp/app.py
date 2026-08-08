@@ -170,6 +170,57 @@ def create_job(req: JobRequest):
     return job.to_dict()
 
 
+class ValidationRequest(BaseModel):
+    source: str = Field(..., description="Filename in test_videos/, or a path")
+    routes: str = "abc"
+    max_frames: int = 120
+
+
+@app.get("/api/validation/flow")
+def get_flow_validation():
+    """Latest dense-flow validation report, plus run state."""
+    from webapp.validation import RUNNER
+    return RUNNER.state()
+
+
+@app.post("/api/validation/flow")
+def run_flow_validation(req: ValidationRequest):
+    """
+    Start a validation run.
+
+    The source is resolved against test_videos/ the same way job sources are,
+    so the UI can pass the filename the user already picked.
+    """
+    from webapp.validation import RUNNER
+
+    path = req.source
+    if not os.path.isabs(path):
+        candidate = os.path.join(TEST_VIDEOS_DIR, os.path.basename(path))
+        if os.path.exists(candidate):
+            path = candidate
+    if not os.path.exists(path):
+        raise HTTPException(400, f"Video not found: {req.source}")
+
+    bad = set(req.routes.lower()) - set("abc")
+    if bad:
+        raise HTTPException(400, f"Unknown route(s): {''.join(sorted(bad))}")
+
+    accepted, message = RUNNER.start(path, req.routes.lower(), req.max_frames)
+    if not accepted:
+        raise HTTPException(409, message)
+    return {"ok": True, "message": message}
+
+
+@app.delete("/api/validation/flow")
+def delete_flow_validation():
+    """Delete the stored validation report and its comparison video."""
+    from webapp.validation import RUNNER
+    removed, message = RUNNER.clear()
+    if removed < 0:
+        raise HTTPException(409, message)
+    return {"removed": removed, "message": message}
+
+
 @app.get("/api/jobs")
 def list_jobs():
     return {"jobs": MANAGER.list()}
@@ -286,6 +337,17 @@ def anpr_image(video: str, kind: str, name: str):
     return FileResponse(path, media_type="image/jpeg")
 
 
+@app.get("/api/files/validation/{name}")
+def stream_validation_file(name: str):
+    """Serve a file produced by a validation run (e.g. the comparison video)."""
+    from webapp.validation import REPORT_DIR
+    path = os.path.join(REPORT_DIR, os.path.basename(name))
+    if not os.path.exists(path):
+        raise HTTPException(404, "Not found")
+    media = "video/mp4" if path.lower().endswith(".mp4") else "application/json"
+    return FileResponse(path, media_type=media)
+
+
 @app.get("/api/files/logs/{name}")
 def download_log(name: str):
     path = os.path.join(LOG_DIR, os.path.basename(name))
@@ -395,6 +457,17 @@ def clear_outputs():
                     removed += 1
                 except OSError:
                     pass
+
+    # Validation output is a generated artifact under outputs/ too, so a
+    # button promising to wipe generated artifacts has to include it.  Going
+    # through the runner rather than deleting the files directly also clears
+    # its in-memory report, which would otherwise keep serving a result whose
+    # comparison video no longer exists.  Refused mid-run, and that refusal is
+    # not an error for this endpoint — the rest of the wipe still happened.
+    from webapp.validation import RUNNER
+    n_val, _ = RUNNER.clear()
+    if n_val > 0:
+        removed += n_val
 
     return {"removed": removed}
 

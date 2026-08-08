@@ -70,6 +70,7 @@ class FlowVisualiser:
         div_scale: float = 3.0,
         auto_scale_overlay: bool = True,
         min_draw_magnitude_px: float = 0.4,
+        background_floor_factor: float = 3.0,
         overlay_work_px: int = 480,
     ) -> None:
         """
@@ -98,8 +99,17 @@ class FlowVisualiser:
             scene does not have its sensor noise amplified into a full-scale
             display.
         min_draw_magnitude_px:
-            Arrows shorter than this (in source px/frame) are not drawn; below
-            it, direction is noise rather than measurement.
+            Absolute floor, in source px/frame, below which nothing is drawn.
+        background_floor_factor:
+            The display floor is also required to be this multiple of the
+            frame's MEDIAN magnitude.  A fixed absolute floor cannot work
+            across sources: dense flow on compressed CCTV has a per-frame
+            noise level that varies with bitrate, texture and lighting, and a
+            threshold tuned on clean footage lights up every pixel on noisy
+            footage.  The median over the whole frame is a robust estimate of
+            "what not moving looks like right now" — most of a fixed camera's
+            view is background — so requiring a multiple of it adapts the
+            floor to each frame instead of assuming one constant fits all.
         overlay_work_px:
             Longest side at which the translucent overlays are rendered before
             being resized onto the frame.  The flow field is computed
@@ -114,7 +124,21 @@ class FlowVisualiser:
         self.div_scale        = div_scale
         self.auto_scale_overlay    = auto_scale_overlay
         self.min_draw_magnitude_px = min_draw_magnitude_px
+        self.background_floor_factor = background_floor_factor
         self.overlay_work_px       = overlay_work_px
+
+    def motion_floor(self, mag: np.ndarray) -> float:
+        """
+        Magnitude below which motion is treated as background for DISPLAY.
+
+        Display only — metrics are unaffected.  Combines an absolute floor
+        with a multiple of this frame's median magnitude, so the overlay
+        adapts to each frame's own noise level rather than to a constant
+        chosen on some other footage.
+        """
+        background = float(np.median(mag))
+        return max(self.min_draw_magnitude_px,
+                   background * self.background_floor_factor)
 
     def _reference_magnitude(self, mag: np.ndarray) -> float:
         """
@@ -196,8 +220,13 @@ class FlowVisualiser:
         hsv_img = np.stack([hue, sat, val], axis=-1)
         bgr_flow = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR)
 
-        # Per-pixel alpha: 0 where there is no motion, flow_alpha at full scale.
+        # Per-pixel alpha: 0 below the background floor, flow_alpha at full
+        # scale.  Without the floor, dense-flow noise on compressed footage
+        # tints the entire frame and the moving subjects stop standing out —
+        # the overlay ends up hiding the very thing it exists to show.
+        floor = self.motion_floor(mag)
         alpha = (norm * self.flow_alpha).astype(np.float32)
+        alpha[mag < floor] = 0.0
 
         if bgr_flow.shape[:2] != (h, w):
             bgr_flow = cv2.resize(bgr_flow, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -243,6 +272,7 @@ class FlowVisualiser:
         mag = np.sqrt(fx ** 2 + fy ** 2)
         if scale is None:
             scale = float(step) / self._reference_magnitude(mag)
+        floor = self.motion_floor(mag)
 
         # Sample the grid points in one shot rather than indexing the
         # full-resolution arrays once per point inside the loop.
@@ -255,7 +285,7 @@ class FlowVisualiser:
         g_len = np.hypot(g_dx, g_dy)
 
         # Sub-pixel arrows render as single dots; not worth drawing.
-        draw = (g_mag >= self.min_draw_magnitude_px) & (g_len >= 2.0)
+        draw = (g_mag >= floor) & (g_len >= 2.0)
 
         # Cap length to avoid arrows that cross multiple cells
         max_len = step * 2.0
@@ -281,7 +311,8 @@ class FlowVisualiser:
     # ------------------------------------------------------------------
 
     def divergence_heatmap(
-        self, frame: np.ndarray, cell_divergence: np.ndarray, cell_size_px: int
+        self, frame: np.ndarray, cell_divergence: np.ndarray, cell_size_px: int,
+        cell_speed: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Diverging colour heatmap over the frame.
@@ -300,6 +331,14 @@ class FlowVisualiser:
         A static camera with no crowd therefore produces essentially no
         overlay at all.  Persistent red in a static scene indicates a
         sign-convention error or GMC failure.
+
+        ``cell_speed`` (same shape as cell_divergence, source px/frame) gates
+        the overlay on there being motion to have divergence ABOUT.  Spatial
+        derivatives of a noisy near-zero field are themselves noisy, and
+        without this gate every textured edge in a still scene accumulates
+        enough apparent divergence to paint itself red — which reads as
+        compression risk covering the whole frame.  Divergence in a region
+        that is not moving is not a crowd signal.
         """
         h, w     = frame.shape[:2]
         n_y, n_x = cell_divergence.shape
@@ -326,6 +365,13 @@ class FlowVisualiser:
 
         # Opacity follows |t|, so neutral cells contribute nothing.
         alpha_cell = np.abs(t_cell) * self.heatmap_alpha
+
+        # Gate on motion: divergence where nothing moves is differentiated
+        # noise, not a crowd signal.
+        if cell_speed is not None and cell_speed.shape == cell_divergence.shape:
+            alpha_cell = np.where(
+                cell_speed >= self.motion_floor(cell_speed), alpha_cell, 0.0
+            ).astype(np.float32)
 
         heat  = cv2.resize(heat_cell, (w, h),
                            interpolation=cv2.INTER_NEAREST).astype(np.uint8)

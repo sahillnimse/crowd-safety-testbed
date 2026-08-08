@@ -212,6 +212,65 @@ class CameraCalibration:
         p_world = cv2.perspectiveTransform(p_img, self.H)
         return float(p_world[0, 0, 0]), float(p_world[0, 0, 1])
 
+    def world_to_pixel(self, X: float, Y: float) -> tuple[float, float]:
+        """
+        Map a ground-plane point (X, Y) in metres back to image coordinates.
+
+        The inverse of pixel_to_world.  Needed to ask "where does this patch of
+        ground appear in this camera?", which is how two cameras are brought
+        into correspondence for cross-camera agreement checks.
+
+        Raises UncalibratedCamera if no homography is configured.
+        """
+        if not self.is_calibrated:
+            raise UncalibratedCamera(
+                f"Camera '{self.camera_id}' has no homography; "
+                "cannot convert world coordinates to pixel coordinates."
+            )
+        H_inv = np.linalg.inv(self.H)
+        p_world = np.array([[[X, Y]]], dtype=np.float64)
+        p_img = cv2.perspectiveTransform(p_world, H_inv)
+        return float(p_img[0, 0, 0]), float(p_img[0, 0, 1])
+
+    def world_to_pixel_many(self, pts_world: np.ndarray) -> np.ndarray:
+        """
+        Batch form of world_to_pixel.
+
+        pts_world: (N, 2) in metres.  Returns (N, 2) image coordinates.
+        """
+        if not self.is_calibrated:
+            raise UncalibratedCamera(
+                f"Camera '{self.camera_id}' has no homography."
+            )
+        H_inv = np.linalg.inv(self.H)
+        pts = np.asarray(pts_world, dtype=np.float64).reshape(-1, 1, 2)
+        out = cv2.perspectiveTransform(pts, H_inv)
+        return out.reshape(-1, 2)
+
+    def image_footprint_world(
+        self, width: int, height: int
+    ) -> tuple[float, float, float, float]:
+        """
+        Axis-aligned ground-plane bounds (min_X, min_Y, max_X, max_Y) of this
+        camera's image rectangle, in metres.
+
+        Used to find the ground region two cameras have in common.  The bound
+        is the corners' bounding box, which over-covers a perspective view --
+        it is a cheap superset, and points inside it are re-checked against
+        each camera's image bounds before use.
+        """
+        if not self.is_calibrated:
+            raise UncalibratedCamera(
+                f"Camera '{self.camera_id}' has no homography."
+            )
+        corners = np.array(
+            [[[0.0, 0.0]], [[width, 0.0]], [[width, height]], [[0.0, height]]],
+            dtype=np.float64,
+        )
+        world = cv2.perspectiveTransform(corners, self.H).reshape(-1, 2)
+        return (float(world[:, 0].min()), float(world[:, 1].min()),
+                float(world[:, 0].max()), float(world[:, 1].max()))
+
     def pixel_velocity_to_ms(
         self,
         x: float,

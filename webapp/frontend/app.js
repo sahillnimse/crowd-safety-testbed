@@ -21,6 +21,8 @@ const state = {
   historySearchQuery: '',
   currentDetail: null,
   activeModalTab: 'overview',
+  validation: null,
+  validationTimer: null,
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -872,6 +874,8 @@ function renderModalTab(tabName) {
         });
       });
     }
+  } else if (tabName === 'validation') {
+    renderValidationTab(host, detail);
   } else if (tabName === 'raw') {
     const rawJsonStr = JSON.stringify(detail.detections, null, 2);
     host.innerHTML = `
@@ -990,6 +994,236 @@ async function runJob() {
 }
 
 /* ------------------------------------------------------------------ wiring */
+/* ------------------------------------------------- dense-flow validation */
+
+const VALIDATION_STATUS_LABEL = {
+  pass: 'PASS', fail: 'FAIL', skipped: 'SKIPPED', error: 'ERROR',
+};
+
+function measurementRow(m) {
+  // A measurement with no tolerance is informational. Rendering it with a
+  // pass/fail tint would imply a judgement that was never made -- which is
+  // exactly how an unjudged correlation gets read as a satisfied one.
+  const judged = m.passed !== null && m.passed !== undefined;
+  const cls = judged ? (m.passed ? 'ok' : 'over') : 'info';
+  const limit = m.tolerance == null
+    ? ''
+    : `<span class="meas-limit">limit ${m.higher_is_better ? '≥' : '≤'} ${m.tolerance}</span>`;
+  const value = Number.isFinite(m.value) ? m.value.toFixed(3) : '—';
+  return `
+    <div class="meas ${cls}">
+      <span class="meas-label">${esc(m.label)}</span>
+      <span class="meas-value">${value} <span class="meas-units">${esc(m.units)}</span></span>
+      ${limit}
+      ${m.note ? `<div class="meas-note">${esc(m.note)}</div>` : ''}
+    </div>`;
+}
+
+function routeCard(r) {
+  const status = r.status || 'skipped';
+  return `
+    <div class="route-card ${status}">
+      <div class="route-head">
+        <span class="route-title">${esc(r.title)}</span>
+        <span class="pill ${status}">${VALIDATION_STATUS_LABEL[status] || status}</span>
+      </div>
+      <div class="route-summary">${esc(r.summary)}</div>
+      ${r.measurements && r.measurements.length
+        ? `<div class="meas-grid">${r.measurements.map(measurementRow).join('')}</div>`
+        : ''}
+      ${r.caveat
+        ? `<div class="route-caveat"><strong>Cannot tell you:</strong> ${esc(r.caveat)}</div>`
+        : ''}
+    </div>`;
+}
+
+function renderValidation() {
+  const host = $('#flow-validation');
+  const st = state.validation;
+  if (!host) return;
+
+  if (!st || (st.status === 'idle' && !st.report)) {
+    host.innerHTML = `<div class="empty">No validation run yet. Pick a video
+      above and click Run validation.</div>`;
+    return;
+  }
+
+  if (st.status === 'running') {
+    host.innerHTML = `<div class="validation-running">
+      <span class="spinner"></span> ${esc(st.message || 'Running…')}
+      <div class="hint">Route (c) runs a person detector per frame, so this
+        takes a couple of minutes.</div>
+    </div>`;
+    return;
+  }
+
+  if (st.status === 'error') {
+    host.innerHTML = `<div class="route-card error">
+      <div class="route-head"><span class="route-title">Validation failed to run</span>
+      <span class="pill error">ERROR</span></div>
+      <div class="route-summary">${esc(st.message)}</div></div>`;
+    return;
+  }
+
+  const rep = st.report;
+  if (!rep) {
+    host.innerHTML = `<div class="empty">${esc(st.message || 'No report.')}</div>`;
+    return;
+  }
+
+  const skipped = (rep.routes || []).filter((r) => r.status === 'skipped').length;
+  const when = rep.created_at
+    ? new Date(rep.created_at * 1000).toLocaleString() : '—';
+
+  host.innerHTML = `
+    <div class="validation-head">
+      <span class="pill ${rep.status}">${VALIDATION_STATUS_LABEL[rep.status] || rep.status}</span>
+      <span class="subtle">${esc(rep.source || '')} · ${esc(when)}</span>
+    </div>
+    ${skipped ? `<div class="validation-incomplete">
+      ${skipped} route${skipped > 1 ? 's' : ''} skipped — the picture is
+      incomplete, not clean. A route that did not run is not a route that
+      passed.</div>` : ''}
+    <div class="route-grid">${(rep.routes || []).map(routeCard).join('')}</div>
+    <div class="validation-footer">
+      These routes measure the velocity field. They do not test whether
+      divergence, counterflow, or turbulence actually predict crush risk —
+      that is a separate question none of them answers.
+    </div>`;
+}
+
+/*
+ * Validation tab inside the result modal.
+ *
+ * Separate from the standalone panel because it answers a different question:
+ * the panel is "is the flow estimator sound right now", this tab is "how much
+ * should I trust THIS result". Same report, read for a different purpose.
+ */
+function renderValidationTab(host, detail) {
+  const st = state.validation;
+
+  const stages = detail.allStages ||
+    (detail.group && detail.group.stages) ||
+    (detail.primaryStage ? [detail.primaryStage] : []);
+  const isFlow = stages.some((s) => s && s.model_key === 'dense_flow');
+
+  if (!isFlow) {
+    host.innerHTML = `<div class="empty">These validation routes measure dense
+      optical flow. This result is from a different model, so they do not
+      apply to it.</div>`;
+    return;
+  }
+
+  if (!st) {
+    // Not fetched yet (modal opened before the initial load finished).
+    host.innerHTML = '<div class="loading">Loading validation report…</div>';
+    refreshValidation().then(() => {
+      if (state.activeModalTab === 'validation' && state.currentDetail) {
+        renderValidationTab(host, state.currentDetail);
+      }
+    });
+    return;
+  }
+
+  if (!st.report) {
+    host.innerHTML = `<div class="empty">
+      No validation has been run yet.<br><br>
+      Use <strong>Run validation</strong> in the “Dense Flow Validation” panel
+      on the main page, then reopen this tab.</div>`;
+    return;
+  }
+
+  const rep = st.report;
+  const cRoute = (rep.routes || []).find((r) => r.route === 'cross_family');
+  const video = cRoute && cRoute.detail && cRoute.detail.comparison_video;
+  const skipped = (rep.routes || []).filter((r) => r.status === 'skipped').length;
+
+  host.innerHTML = `
+    <div class="validation-head">
+      <span class="pill ${rep.status}">${VALIDATION_STATUS_LABEL[rep.status] || rep.status}</span>
+      <span class="subtle">${esc(rep.source || '')} ·
+        ${rep.created_at ? new Date(rep.created_at * 1000).toLocaleString() : '—'}</span>
+    </div>
+
+    ${video ? `
+    <h4 class="vt-heading">See it: tracker vs optical flow</h4>
+    <p class="hint" style="margin-bottom:10px;">
+      Every person carries two arrows. <strong style="color:#fff;">White</strong>
+      is what the person-tracker measured; <strong style="color:#00dcff;">cyan</strong>
+      is what dense optical flow measured. Arrows on top of each other means the
+      two independent methods agree. Arrows splitting apart means they disagree —
+      the box turns red and shows the angle between them.
+    </p>
+    <video class="vt-video" controls src="/api/files/validation/${esc(video)}"></video>
+    <p class="hint" style="margin-bottom:22px;">
+      Arrows are drawn longer than life so they are visible; both use the same
+      exaggeration, so the comparison between them stays fair.
+    </p>` : ''}
+
+    <h4 class="vt-heading">The three routes</h4>
+    ${skipped ? `<div class="validation-incomplete">
+      ${skipped} route${skipped > 1 ? 's' : ''} skipped — the picture is
+      incomplete, not clean. A route that did not run is not a route that
+      passed.</div>` : ''}
+    <div class="route-grid">${(rep.routes || []).map(routeCard).join('')}</div>
+    <div class="validation-footer">
+      These routes check that the velocity field is measured correctly. They do
+      not test whether divergence, counterflow, or turbulence actually predict
+      crush risk — no amount of flow validation answers that.
+    </div>`;
+}
+
+async function refreshValidation() {
+  try {
+    state.validation = await api('/api/validation/flow');
+  } catch (e) {
+    state.validation = { status: 'error', message: e.message, report: null };
+  }
+  renderValidation();
+
+  // Poll only while a run is in flight.
+  if (state.validation && state.validation.status === 'running') {
+    if (!state.validationTimer) {
+      state.validationTimer = setInterval(refreshValidation, 3000);
+    }
+  } else if (state.validationTimer) {
+    clearInterval(state.validationTimer);
+    state.validationTimer = null;
+  }
+}
+
+async function deleteValidation() {
+  if (!confirm('Delete the saved validation report and its comparison video?\n'
+    + 'Source videos and model outputs are not touched.')) return;
+  try {
+    const r = await api('/api/validation/flow', { method: 'DELETE' });
+    // Clear locally too: the modal's Validation tab reads the same state, so
+    // leaving it populated would show a report whose video no longer exists.
+    state.validation = null;
+    await refreshValidation();
+    if (state.activeModalTab === 'validation' && state.currentDetail) {
+      renderValidationTab($('#modal-body'), state.currentDetail);
+    }
+    $('#run-error').textContent = r.message || 'Validation output deleted.';
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function startValidation() {
+  const src = currentSource();
+  if (!src) {
+    alert('Pick a video in the source panel first — validation runs against a video.');
+    return;
+  }
+  try {
+    await postJSON('/api/validation/flow', { source: src, routes: 'abc' });
+    await refreshValidation();
+  } catch (e) {
+    alert(`Could not start validation: ${e.message}`);
+  }
+}
+
 function wire() {
   $$('#source-tabs .tab').forEach((tab) => {
     tab.addEventListener('click', () => {
@@ -1030,6 +1264,12 @@ function wire() {
 
   $('#run-btn').addEventListener('click', runJob);
   $('#refresh-jobs').addEventListener('click', refreshJobs);
+  const runVal = $('#run-validation');
+  if (runVal) runVal.addEventListener('click', startValidation);
+  const refVal = $('#refresh-validation');
+  if (refVal) refVal.addEventListener('click', refreshValidation);
+  const delVal = $('#delete-validation');
+  if (delVal) delVal.addEventListener('click', deleteValidation);
   $('#refresh-history').addEventListener('click', refreshHistory);
   $('#refresh-anpr').addEventListener('click', refreshAnpr);
   $('#modal-close').addEventListener('click', closeModal);
@@ -1101,4 +1341,5 @@ function wire() {
   refreshJobs();
   refreshHistory();
   refreshAnpr();
+  refreshValidation();
 })();

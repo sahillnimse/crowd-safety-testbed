@@ -123,6 +123,9 @@ def run(args: argparse.Namespace) -> None:
     source, src_fps, total_frames, is_glob = _open_source(args.source)
     fps = args.fps or (src_fps if src_fps else 30.0)
     analyser._fps = fps
+    # One annotated frame is produced per processed frame, so with --stride N
+    # the output must play at fps/N to stay at real-world speed.
+    analyser.output_fps = fps / max(1, args.stride)
 
     logger.info(
         "Source: %s  FPS: %.2f  Total frames: %s  Camera: %s",

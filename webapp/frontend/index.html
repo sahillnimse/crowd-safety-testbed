@@ -153,6 +153,30 @@
       <div id="jobs"><div class="empty">No runs yet. Select models above and click Run.</div></div>
     </section>
 
+    <section class="panel" id="flow-validation-panel">
+      <div class="panel-head">
+        <h2>Dense Flow Validation
+          <span class="subtle">— how wrong is the flow field?</span></h2>
+        <div class="head-actions">
+          <button id="run-validation" class="link-btn">Run validation</button>
+          <span class="sep">·</span>
+          <button id="delete-validation" class="link-btn danger-link">Delete output</button>
+          <span class="sep">·</span>
+          <button id="refresh-validation" class="link-btn">Refresh</button>
+        </div>
+      </div>
+      <p class="hint validation-intro">
+        Three annotation-free routes, each manufacturing ground truth a
+        different way so that each covers the others' blind spots. They
+        measure the <em>velocity field</em> — not whether its derived metrics
+        predict crush risk. Passing is necessary, never sufficient.
+      </p>
+      <div id="flow-validation">
+        <div class="empty">No validation run yet. Pick a video above and click
+          Run validation.</div>
+      </div>
+    </section>
+
     <section class="panel" id="anpr-panel">
       <div class="panel-head">
         <h2>ANPR Captures <span class="subtle">— vehicles and plate reads</span></h2>
@@ -195,6 +219,7 @@
       <button class="modal-tab-btn active" data-mtab="overview">📊 Overview & Key Details</button>
       <button class="modal-tab-btn" data-mtab="timeline">⏱️ Detections Timeline</button>
       <button class="modal-tab-btn" data-mtab="video">🎥 Annotated Video</button>
+      <button class="modal-tab-btn" data-mtab="validation">✅ Validation (3 routes)</button>
       <button class="modal-tab-btn" data-mtab="raw">💻 Raw JSON Payload</button>
     </div>
     <div id="modal-body" class="modal-body"></div>

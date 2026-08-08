@@ -199,6 +199,15 @@ class DenseFlowAnalyser(BaseModelWrapper):
         self._visualise  = visualise
         self._fps        = fps
 
+        # Playback rate of the annotated video.  This is NOT self._fps when
+        # the caller samples frames: predict() is invoked once per SAMPLED
+        # frame, so with a stride of 5 the output holds every fifth frame.
+        # Writing those at the source rate replays 5 seconds of footage in
+        # one — the output looks time-lapsed, and any speed read off it by
+        # eye is wrong by the stride factor.  Callers that sample must set
+        # output_fps = source_fps / stride.
+        self.output_fps: Optional[float] = None
+
         # Sub-modules (initialised in load())
         self._flow:    Optional[FlowField]          = None
         self._calib:   Optional[CameraCalibration]  = None
@@ -246,6 +255,7 @@ class DenseFlowAnalyser(BaseModelWrapper):
             global_motion_compensation=cfg.get("global_motion_compensation", True),
             gmc_warn_threshold_px=cfg.get("gmc_warn_threshold_px", 3.0),
             gmc_max_correction_px=cfg.get("gmc_max_correction_px", 8.0),
+            gmc_min_improvement=cfg.get("gmc_min_improvement", 0.9),
             rain_mag_threshold=cfg.get("rain_mag_threshold", 8.0),
             lowlight_gradient_threshold=cfg.get("lowlight_gradient_threshold", 12.0),
             brightness_jump_threshold=cfg.get("brightness_jump_threshold", 30.0),
@@ -300,6 +310,7 @@ class DenseFlowAnalyser(BaseModelWrapper):
                 div_scale=cfg.get("div_scale", 3.0),
                 auto_scale_overlay=cfg.get("auto_scale_overlay", True),
                 min_draw_magnitude_px=cfg.get("min_draw_magnitude_px", 0.4),
+                background_floor_factor=cfg.get("background_floor_factor", 3.0),
                 overlay_work_px=cfg.get("overlay_work_px", 480),
             )
 
@@ -397,7 +408,8 @@ class DenseFlowAnalyser(BaseModelWrapper):
             # arrows before the heatmap blends them away.
             annotated = self._vis.hsv_flow_overlay(curr_frame, flow_result.field_xy)
             annotated = self._vis.divergence_heatmap(
-                annotated, mf.cell_divergence, mf.cell_size_px
+                annotated, mf.cell_divergence, mf.cell_size_px,
+                cell_speed=mf.cell_speed,
             )
             annotated = self._vis.sparse_arrow_grid(annotated, flow_result.field_xy)
             annotated = self._vis.zone_overlay(
@@ -512,7 +524,15 @@ class DenseFlowAnalyser(BaseModelWrapper):
             out_path = os.path.join(
                 self._output_dir, f"{self._camera_id}_dense_flow_annotated.mp4"
             )
-            self._writer = _AnnotatedVideoWriter(out_path, self._fps, w, h)
+            fps = self.output_fps or self._fps
+            if self.output_fps and abs(self.output_fps - self._fps) > 0.01:
+                logger.info(
+                    "Annotated video will be written at %.2f fps (source is "
+                    "%.2f fps) because frames are sampled; this keeps playback "
+                    "at real-world speed instead of time-lapsing it.",
+                    fps, self._fps,
+                )
+            self._writer = _AnnotatedVideoWriter(out_path, fps, w, h)
 
         if self._writer.write(annotated):
             self._frames_written += 1

@@ -261,6 +261,11 @@ class JobManager:
                 _cap.release()
                 if _src_fps and _src_fps > 0:
                     model._fps = float(_src_fps)
+                    # The runner calls predict() once per SAMPLED frame, so the
+                    # annotated video holds one frame per stride.  Writing it at
+                    # the source rate would replay it `stride` times too fast.
+                    stride = max(1, int(job.sample_every_n_frames or 1))
+                    model.output_fps = float(_src_fps) / stride
 
             model.load()
 

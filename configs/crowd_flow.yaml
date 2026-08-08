@@ -31,7 +31,22 @@ crowd_flow:
                              # medium ≈ 4-8 ms on 320×180 at CPU; upgrade if
                              # flow quality on oblique ghat cameras looks noisy.
 
-  downsample_target_px: 320  # Longest side for flow computation.  Smaller =
+  # Measured with scripts/validate_flow_routes.py --routes a --sweep on
+  # test_videos/Foregin Traffic.mp4 (1280x720 traffic camera), mean endpoint
+  # error against known synthetic warps:
+  #
+  #     target_px=640, DIS medium   0.193 px    127 ms/frame
+  #     target_px=480, DIS medium   0.228 px    105 ms/frame   <- default
+  #     target_px=320, DIS medium   0.326 px     92 ms/frame
+  #     target_px=320, Farneback    0.406 px
+  #     target_px=320, DIS fast     0.475 px
+  #
+  # 480 buys 30% lower error for 13% more time; 640 buys 41% for 37% more.
+  # Raise it if motion boundaries around vehicles look soft — the field is
+  # upsampled back to source, so a low compute resolution shows up as blurred
+  # edges around moving objects rather than as missing motion.  Re-run the
+  # sweep after changing footage: the ranking is source-dependent.
+  downsample_target_px: 480  # Longest side for flow computation.  Smaller =
                              # faster but coarser; 320 is the recommended start.
                              # The result is scaled back to source resolution.
 
@@ -54,6 +69,19 @@ crowd_flow:
                              # uniform velocity into the static background and
                              # destroys the field.  Rejected frames are logged
                              # with gmc_method = "rejected".
+  gmc_min_improvement: 0.9   # A correction is applied only if it reduces the
+                             # field's MEDIAN magnitude to at most this
+                             # fraction of its previous value.  Compensation
+                             # exists to quiet the background; one that leaves
+                             # the field noisier is wrong however confident the
+                             # feature matcher was.  This is the guard that
+                             # catches a static camera: ORB will happily return
+                             # a sub-pixel shift with a 0.96 inlier ratio —
+                             # small, self-consistent, and pure noise, because
+                             # keypoints at the downsampled compute resolution
+                             # are not accurate to a quarter pixel.  Subtracting
+                             # it makes every pixel in a still scene appear to
+                             # move in the same direction.
 
   # ── Detector integration ────────────────────────────────────────────────────
   # Set these to your trained RTDetrV2ForObjectDetection folder paths.
@@ -105,9 +133,19 @@ crowd_flow:
   max_magnitude_px:    20.0 # Reference magnitude for HSV value/opacity scaling.
                             # A fixed reference when auto_scale_overlay is off;
                             # a floor (÷8) on the automatic one when it is on.
-  min_draw_magnitude_px: 0.4 # Source px/frame below which no arrow is drawn —
-                            # below this the direction is noise, and drawing it
-                            # fills the frame with random needles.
+  min_draw_magnitude_px: 0.4 # Absolute source px/frame floor for drawing.
+  background_floor_factor: 3.0
+                            # The display floor is also required to be this
+                            # multiple of the frame's MEDIAN magnitude — a
+                            # robust estimate of "what not moving looks like"
+                            # on this frame, since most of a fixed camera's
+                            # view is background.  A fixed absolute threshold
+                            # cannot serve every source: dense-flow noise
+                            # scales with bitrate, texture and lighting, so a
+                            # value tuned on clean footage covers noisy
+                            # footage in arrows.  Display only — metrics and
+                            # alerts are unaffected.  Raise it for a cleaner
+                            # overlay, lower it to see slower movement.
   div_scale:           2.0  # ±div_scale mapped to full red/blue in heatmap.
                             # Same per-cell units as divergence_critical below.
 

@@ -29,6 +29,22 @@ the flow field.  Two guards reject such estimates:
     A correction larger than ``gmc_max_correction_px`` (source pixels) is not
     physically plausible camera sway and is rejected outright.
 
+  Does it actually help?
+    The decisive test, applied last.  Global motion compensation exists to
+    quiet the background: after subtracting a correct estimate, the field's
+    median magnitude must go DOWN.  A correction that leaves the field noisier
+    than it found it is wrong by definition, whatever the feature matcher
+    thought.
+
+    This catches the failure the other two guards cannot see.  On a static
+    camera, ORB happily returns a sub-pixel translation with a 0.96 inlier
+    ratio — internally consistent, small enough to look plausible, and pure
+    noise, because keypoint localisation at the downsampled compute
+    resolution is not accurate to a quarter of a pixel.  Subtracting it turns
+    a still frame into one where every pixel is moving in the same direction:
+    the whole field lights up, and every downstream metric reads motion in a
+    scene where nothing moved.
+
 A rejected estimate yields gmc_method == "rejected" and no correction — the
 raw flow is used unchanged, which is always safer than subtracting a wrong
 global vector.
@@ -174,6 +190,7 @@ class FlowField:
         global_motion_compensation: bool = True,
         gmc_warn_threshold_px: float = 3.0,
         gmc_max_correction_px: float = 8.0,
+        gmc_min_improvement: float = 0.9,
         rain_mag_threshold: float = 8.0,
         lowlight_gradient_threshold: float = 12.0,
         brightness_jump_threshold: float = 30.0,
@@ -195,6 +212,7 @@ class FlowField:
         self.gmc = global_motion_compensation
         self.gmc_warn_threshold_px = gmc_warn_threshold_px
         self.gmc_max_correction_px = gmc_max_correction_px
+        self.gmc_min_improvement = gmc_min_improvement
         self.rain_mag_threshold = rain_mag_threshold
         self.lowlight_gradient_threshold = lowlight_gradient_threshold
         self.brightness_jump_threshold = brightness_jump_threshold
@@ -392,6 +410,25 @@ class FlowField:
                 )
                 gmc_method = "rejected"
 
+            # Decisive guard: does subtracting this estimate actually quiet
+            # the field?  See the module docstring.  Cheap — one median over
+            # the compute-resolution field, which is ~320x180.
+            if gmc_method != "rejected" and (abs(gmc_tx) > 0.01
+                                             or abs(gmc_ty) > 0.01):
+                before, after = self._gmc_median_magnitudes(
+                    raw_flow, gmc_tx, gmc_ty, bg_mask_small
+                )
+                if after > before * self.gmc_min_improvement:
+                    logger.debug(
+                        "GMC(%s) rejected: correction (%.3f, %.3f) would raise "
+                        "the field's median magnitude from %.3f to %.3f "
+                        "compute-px.  Compensation must reduce background "
+                        "motion; this estimate is noise, and applying it would "
+                        "make every pixel appear to move.",
+                        gmc_method, gmc_tx, gmc_ty, before, after,
+                    )
+                    gmc_method = "rejected"
+
             if gmc_method == "rejected":
                 gmc_tx, gmc_ty = 0.0, 0.0
             elif abs(gmc_tx) > 0.01 or abs(gmc_ty) > 0.01:
@@ -498,6 +535,31 @@ class FlowField:
             pyr_scale=0.5, levels=3, winsize=15,
             iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
         )
+
+    @staticmethod
+    def _gmc_median_magnitudes(
+        raw_flow: np.ndarray,
+        tx: float,
+        ty: float,
+        bg_mask_small: Optional[np.ndarray],
+    ) -> tuple[float, float]:
+        """
+        Median field magnitude before and after subtracting (tx, ty).
+
+        The MEDIAN, not the mean: on a scene with a few moving objects against
+        a static background, the median tracks the background — which is
+        exactly what compensation is supposed to flatten — while the mean is
+        pulled around by the objects themselves, so a correction that wrecked
+        the background could still lower it.
+        """
+        fx, fy = raw_flow[..., 0], raw_flow[..., 1]
+        if bg_mask_small is not None:
+            keep = bg_mask_small == 0
+            if keep.any():
+                fx, fy = fx[keep], fy[keep]
+        before = float(np.median(np.hypot(fx, fy)))
+        after = float(np.median(np.hypot(fx - tx, fy - ty)))
+        return before, after
 
     @staticmethod
     def _flow_reliability(

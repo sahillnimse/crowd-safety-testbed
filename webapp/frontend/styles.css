@@ -1089,3 +1089,172 @@ button.danger-ghost:hover {
 
 .empty, .loading { color: var(--muted); font-size: 13.5px; padding: 24px 4px; text-align: center; }
 .subtle { color: var(--muted); font-weight: 400; font-size: 12.5px; }
+
+/* ------------------------------------------------ dense-flow validation */
+
+.validation-intro {
+  margin: 0 0 14px;
+  max-width: 78ch;
+}
+
+.validation-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+/* A skipped route is not a passed route. This banner exists so a partial
+   run cannot be mistaken for a clean one at a glance. */
+.validation-incomplete {
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  margin-bottom: 14px;
+}
+
+.validation-running {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+  color: var(--muted);
+}
+
+.validation-running .spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: val-spin 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: -2px;
+}
+
+@keyframes val-spin { to { transform: rotate(360deg); } }
+
+.route-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.route-card {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 14px 16px;
+}
+
+.route-card.pass    { border-left-color: var(--ok); }
+.route-card.fail    { border-left-color: var(--bad); }
+.route-card.error   { border-left-color: var(--bad); }
+.route-card.skipped { border-left-color: var(--subtle); }
+
+.route-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.route-title { font-weight: 600; font-size: 14px; }
+
+.pill.pass    { color: #34d399;      border-color: var(--ok-border);   background: var(--ok-bg); }
+.pill.fail    { color: var(--bad);   border-color: var(--bad-border);  background: var(--bad-bg); }
+.pill.error   { color: var(--bad);   border-color: var(--bad-border);  background: var(--bad-bg); }
+.pill.skipped { color: var(--subtle); border-color: var(--border);     background: transparent; }
+
+.route-summary {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin-bottom: 10px;
+}
+
+.meas-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.meas {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 12px;
+  background: var(--panel);
+}
+
+.meas.ok   { border-color: var(--ok-border); }
+.meas.over { border-color: var(--bad-border); background: var(--bad-bg); }
+/* Informational only: deliberately neutral, so an unjudged number is never
+   mistaken for one that passed a test. */
+.meas.info { border-style: dashed; }
+
+.meas-label { color: var(--muted); }
+.meas-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.meas-units { color: var(--subtle); font-weight: 400; font-size: 11px; }
+
+.meas-limit {
+  grid-column: 1 / -1;
+  color: var(--subtle);
+  font-size: 10.5px;
+}
+
+.meas-note {
+  grid-column: 1 / -1;
+  color: var(--subtle);
+  font-size: 10.5px;
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
+.route-caveat {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  color: var(--subtle);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.route-caveat strong { color: var(--warn); font-weight: 600; }
+
+.validation-footer {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--subtle);
+  font-size: 11.5px;
+  line-height: 1.6;
+  max-width: 82ch;
+}
+
+/* ---------------------------------------- validation tab (result modal) */
+
+.vt-heading {
+  margin: 4px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.vt-video {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #000;
+  margin-bottom: 10px;
+  display: block;
+}
