@@ -17,7 +17,7 @@ What it does
 4. Downloads VideoMAE (HuggingFace) config + pytorch_model.bin.
 5. Downloads the HuggingFace DETR plate-detection model.
 6. Downloads EasyOCR recognition weights (used by indian_anpr).
-7. Writes a MODEL_MANIFEST.md inside 'ML Models/' cataloguing all 29 models,
+7. Writes a MODEL_MANIFEST.md inside 'ML Models/' cataloguing every registered model,
    their weights, download sources, and status.
 
 Models that live entirely on hosted APIs (Roboflow, MoveNet via TF-Hub,
@@ -40,7 +40,6 @@ ML_MODELS   = PROJECT_ROOT / "ML Models"
 
 # Sub-directories inside ML Models
 DIRS = {
-    "ultralytics":   ML_MODELS / "ultralytics",
     "mediapipe":     ML_MODELS / "mediapipe",
     "pytorchvideo":  ML_MODELS / "pytorchvideo",
     "videomae":      ML_MODELS / "videomae",
@@ -116,24 +115,18 @@ def record(key, file_path, status, note=""):
 # SECTION 1 — ULTRALYTICS / YOLO / RT-DETR  (already on disk)
 # ===========================================================================
 print("\n" + "="*60)
-print("SECTION 1 — Ultralytics / YOLO / RT-DETR weights")
+print("SECTION 1 — Shared RT-DETRv2 detector")
 print("="*60)
 
-ultralytics_weights = [
-    ("yolov8n.pt",         "YOLOv8-Nano  (fall_mediapipe_pose person detector, anpr vehicle detector)"),
-    ("yolov8s-pose.pt",    "YOLOv8s-Pose (fall_yolo_pose, fall_stgcn, fall_posec3d, fall_alphapose_lstm)"),
-    ("yolov8x-pose.pt",    "YOLOv8x-Pose (largest pose variant, optional high-accuracy fallback)"),
-    ("yolo11n.pt",         "YOLO11-Nano  (yolo_traffic, umbrella_yolo, umbrella_yolo26n/rfdetr fallback)"),
-    ("yolo11s.pt",         "YOLO11-Small (umbrella_yolo size='s')"),
-    ("rtdetr-l.pt",        "RT-DETR-L    (rtdetr_traffic, umbrella_rfdetr fallback)"),
-    ("yolov8s-worldv2.pt", "YOLOv8s-WorldV2 (umbrella_world open-vocabulary)"),
-]
-
-for filename, label in ultralytics_weights:
-    src = PROJECT_ROOT / filename
-    st  = copy_if_exists(src, DIRS["ultralytics"], label)
-    dst = DIRS["ultralytics"] / filename
-    record(filename, dst if st != "missing_local" else None, st, label)
+# The six ultralytics .pt files this section used to copy are gone with the
+# YOLO removal; every wrapper that needs person or vehicle boxes now goes
+# through the one Apache-2.0 checkpoint below.  It is fetched by transformers
+# into the HuggingFace cache rather than copied from the project root, so it
+# is recorded here and downloaded by scripts/download_models.py.
+record("PekingU/rtdetr_v2_r18vd",
+       None,
+       "hosted",
+       "RT-DETRv2-R18 (shared person/vehicle detector, Apache 2.0)")
 
 
 # ===========================================================================
@@ -333,13 +326,11 @@ no_weights = {
     "roboflow_traffic":         "API-only — Roboflow hosted 'vehicle-detection-3mmwj/1'. Requires ROBOFLOW_API_KEY.",
     "indian_anpr_vehicle_stage":"API-only — Roboflow 'traffic-indian-vehicles/4'. Stage 1 of indian_anpr.",
     "indian_anpr_plate_stage":  "API-only — Roboflow 'license-plate-recognition-rxg4e/4'. Stage 2 of indian_anpr.",
-    "fire_smoke_yolo":          "API fallback — No fine-tuned fire/smoke .pt on disk; falls back to Roboflow 'smoke-fire-detection-fpxa0/1'.",
     "violence_c3d":             "No pretrained weights — C3D architecture built from scratch. Requires fine-tuning on RWF-2000 / Hockey Fight / RLVS.",
     "violence_tsm":             "Partial — ImageNet ResNet-50 backbone (torchvision auto-download); 2-class violence head is random without fine-tuning.",
     "violence_mmaction_slowonly":"Fallback — Uses torchvision SlowFast_R50 (Kinetics) as fallback when MMAction2 checkpoint absent.",
-    "fall_stgcn":               "Fallback only — YOLOv8s-pose.pt (already copied). ST-GCN head uses geometric fallback; needs NTU RGB+D / UR Fall checkpoint for trained inference.",
-    "fall_posec3d":             "Fallback only — YOLOv8s-pose.pt (already copied). PoseC3D head uses geometric fallback; needs MMAction2 checkpoint.",
-    "fall_alphapose_lstm":      "Fallback only — YOLOv8s-pose.pt (already copied). LSTM head uses geometric fallback; needs UR Fall / Le2i checkpoint.",
+    "umbrella_trained":         "Needs YOUR fine-tuned RT-DETRv2 checkpoint in 'ML Models/umbrella_trained/'.",
+    "umbrella_rfdetr":          "Needs YOUR fine-tuned RF-DETR checkpoint; the rfdetr package fetches its own base weights.",
     "fall_movenet":             "TF-Hub — Loaded from tfhub.dev at runtime (cached by tensorflow_hub). No standalone file to copy.",
     "rapid_ocr":                "Auto-download — PP-OCRv4 ONNX models (~12 MB) downloaded by rapidocr_onnxruntime at first use into its own cache.",
 }
@@ -353,8 +344,7 @@ api_readme.write_text(
     "  roboflow_combined     — violence-ftjyp/1\n"
     "  roboflow_traffic      — vehicle-detection-3mmwj/1\n"
     "  indian_anpr (stage 1) — traffic-indian-vehicles/4\n"
-    "  indian_anpr (stage 2) — license-plate-recognition-rxg4e/4\n"
-    "  fire_smoke_yolo       — smoke-fire-detection-fpxa0/1  (fallback only)\n",
+    "  indian_anpr (stage 2) — license-plate-recognition-rxg4e/4\n",
     encoding="utf-8"
 )
 log(OK, "Roboflow API: wrote README.txt to ML Models/roboflow_api/")
@@ -383,17 +373,18 @@ print("="*60)
 
 manifest_path = ML_MODELS / "MODEL_MANIFEST.md"
 
-# Define the canonical 29-model table
+# The canonical model table.  Cross-checked against webapp/registry.py below:
+# this list is hand-maintained (it carries architecture and provenance the
+# registry does not model), so it drifts silently unless something compares
+# them.  It previously listed nine models that had been deleted and described
+# five others as running on YOLO backbones they no longer use.
 ALL_MODELS = [
     # key,                          category,               architecture,                      local_weight_file,                 hf_or_hub_source
-    ("fall_yolo_pose",              "Fall Detection",        "YOLOv8s-Pose + geometric heuristic",  "ultralytics/yolov8s-pose.pt",    "ultralytics (COCO pretrained)"),
-    ("fall_mediapipe_pose",         "Fall Detection",        "MediaPipe BlazePose (full) + YOLOv8n", "mediapipe/pose_landmarker_full.task + ultralytics/yolov8n.pt", "storage.googleapis.com/mediapipe-models"),
-    ("fall_stgcn",                  "Fall Detection",        "ST-GCN + YOLOv8s-Pose (geometric fallback)", "ultralytics/yolov8s-pose.pt", "pyskl / trained checkpoint required for ST-GCN head"),
+    ("fall_mediapipe_pose",         "Fall Detection",        "MediaPipe BlazePose (full) + RT-DETRv2 person stage", "mediapipe/pose_landmarker_full.task + HF rtdetr_v2_r18vd", "storage.googleapis.com/mediapipe-models"),
     ("fall_movenet",                "Fall Detection",        "Google MoveNet multipose/Lightning",  "TF-Hub (runtime cache)",         "tfhub.dev/google/movenet/multipose/lightning/1"),
     ("fall_optical_flow",           "Fall Detection",        "Classical CV — Farnebäck",            "None (no weights)",              "N/A"),
-    ("fall_posec3d",                "Fall Detection",        "PoseC3D + YOLOv8s-Pose (geometric fallback)", "ultralytics/yolov8s-pose.pt", "MMAction2 checkpoint required for PoseC3D head"),
-    ("fall_alphapose_lstm",         "Fall Detection",        "AlphaPose (fallback: YOLO) + LSTM (geometric fallback)", "ultralytics/yolov8s-pose.pt", "LSTM checkpoint required for trained inference"),
     ("optical_flow_crush",          "Crowd Crush",           "Classical CV — Farnebäck",            "None (no weights)",              "N/A"),
+    ("dense_flow",                  "Crowd Crush",           "Classical CV — DIS optical flow + ORB global-motion compensation", "None (no weights)", "N/A"),
     ("roboflow_combined",           "Violence Detection",    "Roboflow hosted model",               "API only",                       "universe.roboflow.com — violence-ftjyp/1"),
     ("violence_x3d",                "Violence Detection",    "X3D-S + Kinetics-400 zero-shot",      "pytorchvideo/x3d_s_kinetics400.pt", "torch.hub facebookresearch/pytorchvideo"),
     ("violence_slowfast",           "Violence Detection",    "SlowFast-R50 + Kinetics-400 zero-shot","pytorchvideo/slowfast_r50_kinetics400.pt", "torch.hub facebookresearch/pytorchvideo"),
@@ -402,20 +393,34 @@ ALL_MODELS = [
     ("violence_c3d",                "Violence Detection",    "C3D (scratch) — no pretrained weights","None (fine-tune required)",      "RWF-2000 / Hockey Fight / RLVS fine-tune needed"),
     ("violence_tsm",                "Violence Detection",    "TSM-ResNet50 (ImageNet backbone)",    "torchvision auto-download",      "torchvision ResNet50_Weights.DEFAULT (ImageNet)"),
     ("violence_mmaction_slowonly",  "Violence Detection",    "MMAction2 SlowOnly (falls back to torchvision SlowFast)", "torchvision auto-download", "MMAction2 checkpoint required; fallback: torchvision"),
-    ("yolo_traffic",                "Traffic Monitoring",    "YOLO11-Nano + ByteTrack",             "ultralytics/yolo11n.pt",         "ultralytics (COCO pretrained)"),
-    ("rtdetr_traffic",              "Traffic Monitoring",    "RT-DETR-L + ByteTrack",               "ultralytics/rtdetr-l.pt",        "ultralytics (COCO pretrained)"),
+    ("rtdetrv2_traffic",            "Traffic Monitoring",    "RT-DETRv2-R18 + centroid-drift moving/parked classifier", "HF rtdetr_v2_r18vd", "PekingU/rtdetr_v2_r18vd (Apache 2.0, COCO)"),
     ("roboflow_traffic",            "Traffic Monitoring",    "Roboflow hosted model + DeepSORT",    "API only",                       "universe.roboflow.com — vehicle-detection-3mmwj/1"),
     ("mog2_parked",                 "Traffic Monitoring",    "Classical CV — Dual-rate MOG2",       "None (no weights)",              "N/A"),
-    ("anpr",                        "ANPR",                  "YOLOv8n (vehicle) + DETR (plate) + EasyOCR/RapidOCR", "ultralytics/yolov8n.pt + detr_plate/ + easyocr/", "nickmuchi/detr-resnet50-license-plate-detection"),
+    ("anpr",                        "ANPR",                  "RT-DETRv2 (vehicle) + DETR (plate) + EasyOCR/RapidOCR", "HF rtdetr_v2_r18vd + detr_plate/ + easyocr/", "nickmuchi/detr-resnet50-license-plate-detection"),
     ("indian_anpr",                 "ANPR",                  "Roboflow Indian Vehicles + Roboflow Plate + EasyOCR", "easyocr/ (stage 3 OCR)", "Roboflow API stages 1 & 2; EasyOCR stage 3"),
-    ("fire_smoke_yolo",             "Fire & Smoke",          "YOLO (fine-tuned) — fallback to Roboflow", "None locally (fallback to API)", "smoke-fire-detection-fpxa0/1 on Roboflow"),
-    ("umbrella_yolo",               "Umbrella Detection",    "YOLO11-Nano (COCO class 25)",         "ultralytics/yolo11n.pt",         "ultralytics (COCO pretrained)"),
-    ("umbrella_ssd",                "Umbrella Detection",    "SSDLite320-MobileNetV3 (COCO class 28)", "torchvision auto-download",   "torchvision SSDLite320_MobileNet_V3_Large_Weights.COCO_V1"),
-    ("umbrella_world",              "Umbrella Detection",    "YOLOv8s-WorldV2 open-vocabulary",     "ultralytics/yolov8s-worldv2.pt", "ultralytics (CLIP text encoder + COCO pretrained)"),
-    ("umbrella_rfdetr",             "Umbrella Detection",    "RF-DETR Nano / RT-DETR-L (fallback)", "ultralytics/rtdetr-l.pt (fallback)", "weights/rfdetr_nano_umbrella.pt if fine-tuned checkpoint present"),
-    ("umbrella_yolo26n",            "Umbrella Detection",    "YOLO26-Nano (fallback: YOLO11-Nano)", "ultralytics/yolo11n.pt (fallback)", "weights/yolo26n_umbrella.pt if fine-tuned checkpoint present"),
+    ("rtdetrv2_anpr",               "ANPR",                  "RT-DETRv2 (vehicle) + DETR (plate) + OCR", "HF rtdetr_v2_r18vd + detr_plate/", "PekingU/rtdetr_v2_r18vd (Apache 2.0)"),
     ("rapid_ocr",                   "ANPR",                  "PP-OCRv4 ONNX (RapidOCR)",           "Auto-download by rapidocr_onnxruntime", "PP-OCRv4 mobile det/cls/rec ONNX (~12 MB total)"),
+    ("umbrella_ssd",                "Umbrella Detection",    "SSDLite320-MobileNetV3 (COCO class 28)", "torchvision auto-download",   "torchvision SSDLite320_MobileNet_V3_Large_Weights.COCO_V1"),
+    ("umbrella_rtdetrv2",           "Umbrella Detection",    "RT-DETRv2-R18 (COCO umbrella class 25)", "HF rtdetr_v2_r18vd",           "PekingU/rtdetr_v2_r18vd (Apache 2.0)"),
+    ("umbrella_rfdetr",             "Umbrella Detection",    "RF-DETR Nano (DINOv2 backbone)",      "weights/rfdetr_nano_umbrella.pt if present", "rfdetr package fetches its own base weights"),
+    ("umbrella_trained",            "Umbrella Detection",    "RT-DETRv2 fine-tuned on umbrellas",   "ML Models/umbrella_trained/ (yours)", "your fine-tuned checkpoint"),
 ]
+
+# Fail loudly on drift rather than emitting a confident, wrong manifest.
+try:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from webapp import registry as _registry
+    _known = set(_registry.BY_KEY)
+    _listed = {row[0] for row in ALL_MODELS}
+    _missing, _extra = sorted(_known - _listed), sorted(_listed - _known)
+    if _missing:
+        log(WARN, f"in the registry but missing from this manifest: {', '.join(_missing)}")
+    if _extra:
+        log(WARN, f"in this manifest but NOT in the registry (deleted?): {', '.join(_extra)}")
+    if not _missing and not _extra:
+        log(OK, f"manifest matches the registry ({len(_known)} models)")
+except Exception as _exc:  # noqa: BLE001
+    log(WARN, f"could not cross-check the manifest against the registry: {_exc}")
 
 lines = [
     "# ML Models — Complete Model Manifest",
@@ -430,7 +435,6 @@ lines = [
     "",
     "```",
     "ML Models/",
-    "├── ultralytics/          # YOLO / RT-DETR .pt weight files",
     "├── mediapipe/            # BlazePose .task files (lite / full / heavy)",
     "├── pytorchvideo/         # X3D-S, SlowFast-R50, I3D-R50 state dicts",
     "├── videomae/             # VideoMAE-Base HuggingFace snapshot",
@@ -487,12 +491,13 @@ lines += [
     "",
     "5. **Roboflow API models** — Require a `ROBOFLOW_API_KEY` environment variable.",
     "",
-    "6. **Fire/Smoke** — No fine-tuned `fire_smoke_yolov8.pt` exists in this repo.",
-    "   The wrapper falls back to Roboflow hosted inference automatically.",
+    "6. **RT-DETRv2** — `PekingU/rtdetr_v2_r18vd` (81 MB, Apache 2.0) is the shared",
+    "   person/vehicle detector for every wrapper that needs boxes. transformers",
+    "   caches it; `scripts/download_models.py` fetches it ahead of a timed run.",
     "",
-    "7. **umbrella_rfdetr / umbrella_yolo26n** — Fine-tuned umbrella-specific",
-    "   checkpoints (`rfdetr_nano_umbrella.pt`, `yolo26n_umbrella.pt`) are not present.",
-    "   Both fall back to `rtdetr-l.pt` and `yolo11n.pt` respectively.",
+    "7. **umbrella_rfdetr / umbrella_trained** — Need fine-tuned umbrella-specific",
+    "   checkpoints you supply. Without them the registry marks them accordingly",
+    "   rather than silently substituting a different model.",
 ]
 
 manifest_path.write_text("\n".join(lines), encoding="utf-8")

@@ -8,13 +8,18 @@ for headless / multi-stream deployments to save ~5-12 ms/frame.
 
 HSV flow overlay
 ----------------
-Hue   = direction (0° = right, 90° = down, 180° = left, 270° = up)
-Value = magnitude, clipped to max_magnitude_px and rescaled to [0, 255]
-Saturation = 1.0 (full saturation — avoids the "dark at zero" artefact that
-             makes low-motion regions invisible in the overlay)
+Hue        = direction (0° = right, 90° = down, 180° = left, 270° = up)
+Saturation = full
+Value      = full
 
-The flow overlay is blended over the source frame at configurable alpha so
-the original scene is still visible for spatial reference.
+Magnitude is carried by the per-pixel ALPHA (and by arrow length), not by
+Value.  Encoding it in Value as well faded slow and distant movement twice
+over — dim colour, then transparent — so the far half of a traffic scene
+rendered as a barely-visible haze.  Colour now says direction, opacity says
+speed, and each says one thing.
+
+The overlay is blended over the source frame so the scene stays visible for
+spatial reference.
 
 Divergence heatmap
 ------------------
@@ -63,7 +68,8 @@ class FlowVisualiser:
 
     def __init__(
         self,
-        flow_alpha: float = 0.5,
+        flow_alpha: float = 0.85,
+        flow_min_alpha: float = 0.5,
         heatmap_alpha: float = 0.55,
         arrow_step: int = 20,
         max_magnitude_px: float = 20.0,
@@ -78,7 +84,12 @@ class FlowVisualiser:
         ----------
         flow_alpha:
             Opacity of the HSV overlay at reference magnitude (0 = invisible,
-            1 = opaque).  Applied per pixel, scaled by local magnitude.
+            1 = opaque).
+        flow_min_alpha:
+            Opacity for motion that only just clears the display floor.  The
+            alpha ramp runs between this and flow_alpha rather than from
+            zero, so slow or distant movement is still plainly coloured
+            instead of a barely-there tint.
         heatmap_alpha:
             Opacity of the divergence heatmap at ±div_scale, applied per cell.
         arrow_step:
@@ -118,6 +129,7 @@ class FlowVisualiser:
             at full resolution, so the source frame stays sharp.
         """
         self.flow_alpha       = flow_alpha
+        self.flow_min_alpha   = flow_min_alpha
         self.heatmap_alpha    = heatmap_alpha
         self.arrow_step       = arrow_step
         self.max_magnitude_px = max_magnitude_px
@@ -180,15 +192,22 @@ class FlowVisualiser:
         """
         HSV colour-wheel overlay blended over the source frame.
 
-        Hue = direction, Value = magnitude (clipped to max_magnitude_px),
-        Saturation = 1 everywhere.
+        Hue = direction.  Saturation and Value are held at full above the
+        motion floor, so direction reads as a vivid colour rather than a wash.
 
-        The overlay is blended with a **per-pixel** alpha proportional to flow
-        magnitude, so static regions keep the source frame unchanged and
-        moving regions are tinted.  A uniform alpha blends the HSV image —
-        which is black wherever magnitude is zero — over the whole frame, so
-        a scene that is 90% static comes out 90% darkened and the moving
-        subjects are no easier to see than in the raw video.
+        Magnitude is deliberately NOT encoded in Value.  It used to be, and
+        combined with a magnitude-proportional alpha that meant slow or
+        distant traffic faded twice over — a dim colour, then made
+        transparent on top of it — so a vehicle at half the reference speed
+        rendered at roughly a quarter of the intended strength and vanished
+        into the road.  Magnitude is already carried by the alpha ramp and by
+        arrow length; spending Value on it as well just makes the slower half
+        of every scene unreadable.
+
+        The overlay is still blended with a **per-pixel** alpha, so static
+        regions keep the source frame unchanged.  A uniform alpha blends the
+        HSV image over the whole frame, and a scene that is 90% static comes
+        out 90% tinted with the moving subjects no easier to see.
         """
         h, w = frame.shape[:2]
 
@@ -205,27 +224,32 @@ class FlowVisualiser:
         angle = np.arctan2(fy, fx)                           # [-π, π]
         hue   = ((angle + np.pi) / (2 * np.pi) * 180).astype(np.uint8)
 
-        # Value: magnitude scaled to [0, 255] against the frame's reference.
         mag   = np.sqrt(fx ** 2 + fy ** 2)
         ref   = self._reference_magnitude(mag)
         norm  = np.clip(mag / ref, 0.0, 1.0)
         # Square-root ramp: perceptually, a linear ramp spends most of its
-        # range on the fastest few percent of pixels and leaves the bulk of a
-        # crowd — which moves at a fraction of the peak — near-black.
+        # range on the fastest few percent of pixels and leaves everything
+        # slower bunched at the bottom.
         norm  = np.sqrt(norm)
-        val   = (norm * 255).astype(np.uint8)
 
+        # Full saturation and value: the hue is the message, and dimming it
+        # by speed is what made slower traffic disappear.
         sat   = np.full_like(hue, 255)
+        val   = np.full_like(hue, 255)
 
         hsv_img = np.stack([hue, sat, val], axis=-1)
         bgr_flow = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR)
 
-        # Per-pixel alpha: 0 below the background floor, flow_alpha at full
-        # scale.  Without the floor, dense-flow noise on compressed footage
-        # tints the entire frame and the moving subjects stop standing out —
-        # the overlay ends up hiding the very thing it exists to show.
+        # Per-pixel alpha: 0 below the background floor, then a ramp from
+        # flow_min_alpha to flow_alpha.  The floor keeps dense-flow noise on
+        # compressed footage from tinting the whole frame; the *minimum*
+        # keeps anything that clears the floor clearly coloured rather than
+        # a hint of a tint.  Ramping from zero instead meant a vehicle just
+        # above the threshold was drawn at nearly nothing, which is how the
+        # far carriageway ended up looking static.
         floor = self.motion_floor(mag)
-        alpha = (norm * self.flow_alpha).astype(np.float32)
+        span  = max(self.flow_alpha - self.flow_min_alpha, 0.0)
+        alpha = (self.flow_min_alpha + norm * span).astype(np.float32)
         alpha[mag < floor] = 0.0
 
         if bgr_flow.shape[:2] != (h, w):

@@ -260,6 +260,21 @@ class DenseFlowAnalyser(BaseModelWrapper):
             lowlight_gradient_threshold=cfg.get("lowlight_gradient_threshold", 12.0),
             brightness_jump_threshold=cfg.get("brightness_jump_threshold", 30.0),
             min_flow_reliability=cfg.get("min_flow_reliability", 0.35),
+            far_field=cfg.get("far_field_refinement", True),
+            # Per-camera, falling back to the global value.  Where a scene's
+            # far field sits in the frame is a property of the mount, not of
+            # the project: on the Nashik camera the top 45% is sky and
+            # rooftops while the distant crowd sits across the middle, and a
+            # generic ROI refines the static half of the image.  Measured on
+            # that footage, the generic top-45% band moved far-field coverage
+            # 3.1% -> 3.1% (i.e. nothing); a band matching the actual scene
+            # moved it 3.1% -> 8.3%.
+            far_field_roi=tuple(
+                cam_cfg.get("far_field_roi")
+                or cfg.get("far_field_roi", (0.0, 0.0, 1.0, 0.45))
+            ),
+            far_field_target_px=cfg.get("far_field_target_px", 960),
+            far_field_blend_px=cfg.get("far_field_blend_px", 48),
         )
 
         # Ground plane calibration
@@ -303,7 +318,8 @@ class DenseFlowAnalyser(BaseModelWrapper):
         # Visualiser
         if self._visualise:
             self._vis = FlowVisualiser(
-                flow_alpha=cfg.get("flow_overlay_alpha", 0.5),
+                flow_alpha=cfg.get("flow_overlay_alpha", 0.85),
+                flow_min_alpha=cfg.get("flow_min_alpha", 0.5),
                 heatmap_alpha=cfg.get("heatmap_alpha", 0.55),
                 arrow_step=cfg.get("arrow_step_px", 20),
                 max_magnitude_px=cfg.get("max_magnitude_px", 20.0),

@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="Computer-vision test harness for crowd safety: dense optical flow, fall, violence, traffic, ANPR and umbrella detection." />
   <title>Crowd Safety Testbed — AI Analytics Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,28 +16,31 @@
 <div class="app">
 
   <!-- ============ LEFT SIDEBAR: model selection ============ -->
-  <aside class="sidebar">
+  <aside class="sidebar" aria-label="Model selection">
     <div class="sidebar-head">
       <h1>Crowd Safety<span>Testbed</span></h1>
-      <div id="device-badge" class="device-badge">detecting device…</div>
+      <div id="device-badge" class="device-badge" role="status" aria-live="polite">detecting device…</div>
     </div>
 
-    <div class="sidebar-actions">
+    <div class="sidebar-actions" role="group" aria-label="Bulk model selection">
       <button class="link-btn" data-select="all">Select all</button>
       <button class="link-btn" data-select="none">Clear</button>
       <button class="link-btn" data-select="ready">Runnable only</button>
     </div>
 
     <div class="sidebar-search">
-      <input type="text" id="model-search" placeholder="Search 23 models…" autocomplete="off" />
+      <label class="sr-only" for="model-search">Search models</label>
+      <input type="search" id="model-search" placeholder="Search models…"
+             autocomplete="off" aria-controls="model-list" />
     </div>
 
-    <div id="model-list" class="model-list">
+    <div id="model-list" class="model-list" role="group"
+         aria-label="Available models" aria-busy="true">
       <div class="loading">Loading models…</div>
     </div>
 
     <div class="sidebar-foot">
-      <span id="selected-count">0 selected</span>
+      <span id="selected-count" role="status" aria-live="polite">0 selected</span>
     </div>
   </aside>
 
@@ -94,6 +99,7 @@
       </div>
 
       <div class="tab-body hidden" data-body="upload">
+        <label class="sr-only" for="video-file">Upload a video file</label>
         <input id="video-file" type="file" accept="video/*" />
         <p class="hint" id="upload-status">Saved into <code>test_videos/</code>.</p>
       </div>
@@ -120,15 +126,20 @@
             <option value="cpu">Force CPU</option>
           </select>
         </label>
-        <label>
-          <span>YOLO-pose size</span>
-          <select id="pose-size">
-            <option value="n">n — fastest</option>
-            <option value="s" selected>s — balanced</option>
-            <option value="m">m</option>
-            <option value="l">l</option>
-            <option value="x">x — most accurate</option>
-          </select>
+        <label class="threshold-setting">
+          <span>Confidence threshold
+            <em>— applies to every selected model</em></span>
+          <div class="threshold-control">
+            <input type="range" id="threshold" min="0.05" max="0.95"
+                   step="0.05" value="0.35"
+                   aria-label="Confidence threshold for all selected models" />
+            <output id="threshold-value" for="threshold" aria-live="polite">0.35</output>
+          </div>
+          <small class="hint">
+            Lower catches more and reports more false positives; higher is
+            stricter. One value keeps models comparable — tuning each
+            separately makes a benchmark measure nothing.
+          </small>
         </label>
         <label class="checkbox">
           <input type="checkbox" id="export-video" checked />
@@ -139,7 +150,7 @@
       <div class="run-row">
         <button id="run-btn" class="primary">▶ Run selected models</button>
         <button id="clear-outputs" class="danger-ghost">Delete all outputs</button>
-        <span id="run-error" class="run-error"></span>
+        <span id="run-error" class="run-error" role="status" aria-live="polite"></span>
       </div>
     </section>
 
@@ -150,7 +161,7 @@
           <button id="refresh-jobs" class="link-btn">Refresh</button>
         </div>
       </div>
-      <div id="jobs"><div class="empty">No runs yet. Select models above and click Run.</div></div>
+      <div id="jobs" aria-live="polite"><div class="empty">No runs yet. Select models above and click Run.</div></div>
     </section>
 
     <section class="panel" id="flow-validation-panel">
@@ -207,22 +218,24 @@
 </div>
 
 <!-- DETAILED CLASSIFICATION & ANALYTICAL INSPECTOR MODAL -->
-<div id="modal" class="modal hidden">
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true"
+     aria-labelledby="modal-title">
   <div class="modal-card">
     <div class="modal-head">
       <div class="modal-head-title">
         <h3 id="modal-title">Classification & Analytical Details</h3>
       </div>
-      <button id="modal-close" class="link-btn">✕ Close</button>
+      <button id="modal-close" class="link-btn" aria-label="Close details">✕ Close</button>
     </div>
-    <div class="modal-nav-tabs" id="modal-nav">
-      <button class="modal-tab-btn active" data-mtab="overview">📊 Overview & Key Details</button>
-      <button class="modal-tab-btn" data-mtab="timeline">⏱️ Detections Timeline</button>
-      <button class="modal-tab-btn" data-mtab="video">🎥 Annotated Video</button>
-      <button class="modal-tab-btn" data-mtab="validation">✅ Validation (3 routes)</button>
-      <button class="modal-tab-btn" data-mtab="raw">💻 Raw JSON Payload</button>
+    <div class="modal-nav-tabs" id="modal-nav" role="tablist"
+         aria-label="Result detail sections">
+      <button class="modal-tab-btn active" role="tab" aria-selected="true" data-mtab="overview">📊 Overview & Key Details</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="timeline">⏱️ Detections Timeline</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="video">🎥 Annotated Video</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="validation">✅ Validation (3 routes)</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="raw">💻 Raw JSON Payload</button>
     </div>
-    <div id="modal-body" class="modal-body"></div>
+    <div id="modal-body" class="modal-body" role="tabpanel" tabindex="0"></div>
   </div>
 </div>
 

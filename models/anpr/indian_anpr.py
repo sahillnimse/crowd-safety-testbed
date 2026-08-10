@@ -55,7 +55,7 @@ import numpy as np
 from models.base import BaseModelWrapper, Detection
 from models.anpr._ocr import enhance_plate, dominant_colour, PLATE_ALPHABET, get_ocr_engine, PlateOCR
 from models.anpr._plate_text import PlateVote, format_display
-from models.traffic.rtdetr_traffic import _stable_track_id
+from models.traffic._tracker import _stable_track_id
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_GALLERY_DIR = os.path.join(PROJECT_ROOT, "outputs", "anpr")

@@ -50,6 +50,53 @@ crowd_flow:
                              # faster but coarser; 320 is the recommended start.
                              # The result is scaled back to source resolution.
 
+  # ── Far-field refinement ────────────────────────────────────────────────────
+  # A single compute resolution assumes the scene has a single scale, and
+  # perspective guarantees it does not.  At downsample_target_px = 480 a
+  # pedestrian near the camera spans a few hundred source pixels and one at the
+  # back of the same crowd spans a dozen — two or three at compute resolution,
+  # smaller than the patch DIS matches on.  The far field then returns motion
+  # interpolated from its surroundings instead of measured from the people
+  # who are actually there, which is why distant crowds and the far
+  # carriageway of a road read as static.
+  #
+  # This runs a second flow pass over the far field alone, at higher
+  # resolution, and feathers it into the base field.  Raising
+  # downsample_target_px for the whole frame achieves the same thing at
+  # quadratic cost, nearly all of it spent on the near field that was already
+  # resolved well enough.
+  far_field_refinement: true
+  far_field_roi:      [0.0, 0.0, 1.0, 0.45]
+                             # Normalised [x1, y1, x2, y2].  Default is the top
+                             # 45% of the frame, which is where the horizon sits
+                             # on a typical mounted camera.  Set it to match
+                             # YOUR camera: for a high mount looking down, the
+                             # far field is a narrow band near the top; for a
+                             # low mount it can be half the frame.  Getting this
+                             # wrong costs time, not correctness — the pass is
+                             # skipped when it would not be finer than the base.
+  far_field_target_px: 960   # Longest side of the ROI for the refinement pass.
+                             # Capped at the ROI's native size: asking for more
+                             # pixels than the source has just interpolates.
+  far_field_blend_px:  48    # Source-px feather between the two passes.
+                             # Divergence and curl are spatial derivatives, so a
+                             # hard seam differentiates into a line of fake
+                             # divergence — on the metric that drives crush
+                             # alerts.  Do not set this to 0.
+                             #
+                             # Measured on uniform translation, where the true
+                             # divergence is zero everywhere, as mean |div| in
+                             # the seam band over mean |div| elsewhere:
+                             #
+                             #    0 px  1.39x     48 px  1.07x
+                             #   24 px  1.20x     96 px  1.03x
+                             #
+                             # It flattens after 96 (160 px also gives 1.03x).
+                             # 48 is the knee: the residual is already far below
+                             # anything a threshold reacts to, and a wider
+                             # feather fades the refinement over more of the ROI
+                             # for no further benefit.
+
   temporal_smooth_alpha: 0.4 # EMA α for temporal smoothing (higher = faster
                              # response, more noise).  0.4 at 30fps ≈ 2.5-frame
                              # effective window.
@@ -117,7 +164,18 @@ crowd_flow:
   # untouched.  A uniform alpha tints the whole frame — including everything
   # that is perfectly still — and the result is a washed-out image in which
   # the moving subjects are no easier to see than in the raw video.
-  flow_overlay_alpha:  0.6  # HSV flow overlay opacity at max_magnitude_px
+  flow_overlay_alpha:  0.85 # HSV flow overlay opacity at the reference speed.
+  flow_min_alpha:      0.5  # Opacity for motion that only just clears the
+                            # display floor.  The ramp runs between this and
+                            # flow_overlay_alpha rather than from zero.
+                            #
+                            # Colour now encodes DIRECTION only — saturation and
+                            # value are held at full.  Magnitude used to be
+                            # encoded in the HSV value as well as the alpha,
+                            # which faded slow and distant traffic twice over
+                            # (dim colour, then transparent) and left the far
+                            # carriageway looking static.  Opacity carries
+                            # speed; hue carries direction; neither doubles up.
   heatmap_alpha:       0.55 # Divergence heatmap opacity at ±div_scale
   arrow_step_px:       32   # Sparse arrow grid step in pixels.  At 20 px an HD
                             # frame carries ~2300 arrows, which reads as texture
@@ -196,6 +254,25 @@ crowd_flow:
     # single zone so the module produces usable output on arbitrary footage
     # without per-camera calibration.
     default:
+      # Where this camera's far field sits in the frame.  Overrides the global
+      # far_field_roi; omit it and the global value applies.
+      #
+      # This band was measured, not guessed.  Profiling mean flow magnitude by
+      # image row on "Nashik Crowd.mp4" shows the top third is sky and rooftops
+      # (near-zero motion), the crowd recedes into the distance across the
+      # middle, and the near crowd and vehicles fill the bottom.  So the
+      # distant *people* — the ones too small for the base pass to resolve —
+      # are in the middle band, not at the top of the frame.
+      #
+      # Measured effect on far-field pixels clearing the display floor:
+      #   refinement off ................. 3.1%
+      #   generic ROI (top 45%) .......... 3.1%   (refines the sky)
+      #   this ROI ....................... 8.3%
+      #
+      # To find it for a new camera: profile mean flow magnitude by row, or
+      # simply look at the frame and mark where people stop being individually
+      # distinguishable.
+      far_field_roi: [0.0, 0.30, 1.0, 0.75]
       zones:
         - name: "full_frame"
           polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]

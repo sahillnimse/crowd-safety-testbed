@@ -2,12 +2,13 @@
 Background runner for the dense-flow validation routes.
 
 Keeps the API thin: the endpoints in webapp/app.py start a run and poll for
-the report, and everything heavyweight (torch, ultralytics) is imported
+the report, and everything heavyweight (torch, transformers) is imported
 inside the worker thread so the page still loads instantly.
 
-Only one validation run is allowed at a time.  The routes are CPU-bound and
-route (c) loads a detector; letting the UI queue several would starve any
-model job running alongside them.
+Only one validation run is allowed at a time.  Routes (a) and (b) are pure
+CPU; route (c) runs a detector on the GPU and takes JobManager's GPU lock to
+do it, so it queues behind a running model job rather than competing with one
+for the card.
 """
 
 from __future__ import annotations
@@ -142,15 +143,19 @@ class ValidationRunner:
                 self._message = f"{exc.__class__.__name__}: {exc}"
                 self._finished_at = time.time()
 
-    @staticmethod
-    def _build_report(source: str, routes: str, max_frames: int):
+    def _set_message(self, message: str) -> None:
+        """Update the status line the UI polls, without touching run state."""
+        with self._lock:
+            self._message = message
+
+    def _build_report(self, source: str, routes: str, max_frames: int):
         import cv2
         import yaml
 
         from models.crowd_flow.flow_field import FlowField
         from models.crowd_flow.validation import (
             CrossCameraValidator, CrossFamilyValidator, SyntheticWarpValidator,
-            ValidationReport, find_person_weights,
+            ValidationReport,
         )
         from models.crowd_flow.validation.report import RouteResult
 
@@ -159,6 +164,14 @@ class ValidationRunner:
         if os.path.exists(cfg_path):
             with open(cfg_path) as f:
                 cfg = (yaml.safe_load(f) or {}).get("crowd_flow", {})
+
+        # Validation has to measure the field the analyser actually produces.
+        # Any setting that changes the flow and is not mirrored here means the
+        # routes are grading a different field than the one that ships — which
+        # is worse than not measuring at all, because it still reports a
+        # number.  The far-field ROI is resolved per-camera exactly as
+        # DenseFlowAnalyser.load() resolves it.
+        cam_cfg = cfg.get("cameras", {}).get("default", {})
 
         def flow_factory():
             return FlowField(
@@ -169,6 +182,13 @@ class ValidationRunner:
                 global_motion_compensation=cfg.get(
                     "global_motion_compensation", True),
                 gmc_max_correction_px=cfg.get("gmc_max_correction_px", 8.0),
+                far_field=cfg.get("far_field_refinement", True),
+                far_field_roi=tuple(
+                    cam_cfg.get("far_field_roi")
+                    or cfg.get("far_field_roi", (0.0, 0.0, 1.0, 0.45))
+                ),
+                far_field_target_px=cfg.get("far_field_target_px", 960),
+                far_field_blend_px=cfg.get("far_field_blend_px", 48),
             )
 
         report = ValidationReport(source=os.path.basename(source))
@@ -208,25 +228,35 @@ class ValidationRunner:
 
         # ---- route (c) ----
         if "c" in routes:
-            weights = find_person_weights(PROJECT_ROOT)
             os.makedirs(REPORT_DIR, exist_ok=True)
             video_out = os.path.join(REPORT_DIR, "cross_family_comparison.mp4")
-            report.routes.append(
-                CrossFamilyValidator(
-                    weights_path=weights,
-                    # Pinned to CPU on purpose.  JobManager serialises model
-                    # runs behind a GPU lock because two networks on a 4 GB
-                    # card will OOM both; this runner is a separate thread and
-                    # does not hold that lock, so putting its detector on the
-                    # GPU would race any job the user has going.  The person
-                    # detector is a few megabytes — CPU costs a little speed
-                    # and removes the interaction entirely, which also means
-                    # validation never has to queue behind a long model run.
-                    device="cpu",
-                ).run(
-                    source, flow_factory=flow_factory, max_frames=max_frames,
-                    annotate_path=video_out)
-            )
+            # Route (c) is the only route that runs a network, so it is the
+            # only one that takes the card — and it takes it under
+            # JobManager's own GPU lock rather than alongside it.
+            #
+            # This used to pin the detector to CPU instead.  That was the
+            # right call when it ran one inference per frame; it stops being
+            # affordable now that the detector is worth tiling (a 3x3 grid is
+            # nine inferences per frame, and CPU turns a two-minute check into
+            # a twenty-minute one).  Holding the lock costs a wait when a job
+            # is already running, which is visible in the UI, instead of
+            # costing an OOM that kills both.
+            from pipeline.device import resolve_device
+            from webapp.jobs import MANAGER
+
+            device = resolve_device(None)
+            with MANAGER.gpu_guard(
+                on_wait=lambda: self._set_message(
+                    "Queued — route (c) is waiting for the running model job "
+                    "to release the GPU."
+                )
+            ):
+                self._set_message(f"Running route (c) on {device}…")
+                report.routes.append(
+                    CrossFamilyValidator(device=device).run(
+                        source, flow_factory=flow_factory,
+                        max_frames=max_frames, annotate_path=video_out)
+                )
 
         return report
 

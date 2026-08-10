@@ -6,7 +6,7 @@ this tracker, which assigns persistent IDs and classifies each ID as
 "moving" or "parked" based on how much its centroid has drifted over a
 recent window of time.
 
-This mirrors models/fall/_tracker.py's role for pose-based fall models —
+This mirrors models/_tracker.py's role for the shared IoU tracker —
 kept separate from any one detector so all traffic models share identical
 moving/parked classification logic instead of re-implementing it per file.
 
@@ -158,3 +158,19 @@ class ParkedMovingClassifier:
         self._last_update_sec = None
         self._intervals.clear()
         self._warned_sampling = False
+
+
+def _stable_track_id(track_id) -> int:
+    """DeepSORT IDs are strings. Use int() when possible, and a stable hash
+    otherwise — Python's built-in hash() is randomized per process, so it
+    would give the same vehicle a different ID on every run.
+
+    Lives here rather than beside one detector: it is shared by the traffic
+    wrappers, and it previously sat in the RT-DETR module purely because that
+    was the first place that needed it.
+    """
+    text = str(track_id)
+    if text.isdigit():
+        return int(text)
+    import zlib
+    return zlib.crc32(text.encode()) % 100000

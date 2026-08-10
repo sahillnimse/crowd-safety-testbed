@@ -25,7 +25,7 @@ import os
 
 from models.base import BaseModelWrapper, Detection
 from models.traffic._tracker import ParkedMovingClassifier
-from models.traffic.rtdetr_traffic import _stable_track_id
+from models.traffic._tracker import _stable_track_id
 
 
 class RoboflowTrafficDetector(BaseModelWrapper):

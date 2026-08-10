@@ -4,17 +4,21 @@ while tuning a single model, without running the whole stack.
 
 Usage:
     # Local file already on disk:
-    python scripts/run_single.py --video test_videos/clip.mp4 --model fall_yolo_pose
+    python scripts/run_single.py --video test_videos/clip.mp4 --model dense_flow
 
     # Or fetch from YouTube (cached in test_videos/ by video ID):
-    python scripts/run_single.py --video_url "https://youtube.com/watch?v=..." --model fire_smoke_yolo
-    python scripts/run_single.py --video_url "..." --model fall_yolo_pose --pose_size s
-    python scripts/run_single.py --video_url "..." --model violence_x3d
+    python scripts/run_single.py --video_url "https://youtube.com/watch?v=..." --model rtdetrv2_traffic
+    python scripts/run_single.py --video_url "..." --model violence_x3d --threshold 0.5
 
-Writes three artifacts per run, named <video>_<model>:
-    outputs/annotated/<video>_<model>.mp4   detections burned onto the frames
-    outputs/logs/<video>_<model>.json       structured log for compare_models.py
-    outputs/logs/<video>_<model>.csv        same, flat
+`--model` accepts any key in webapp/registry.py; run with `--help` for the
+current list.
+
+Writes three artifacts per run into outputs/runs/<video>/<model>/ — the same
+layout the web UI writes and reads, so a run started here appears in the UI's
+history:
+    annotated.mp4     detections burned onto the frames
+    detections.json   structured log for compare_models.py
+    detections.csv    same, flat
 """
 
 import argparse
@@ -28,51 +32,15 @@ from pipeline.runner import PipelineRunner
 from pipeline.annotate import export_annotated_video, export_detection_log, export_detection_csv
 from pipeline.device import resolve_device, require_gpu, print_gpu_report
 
-from models.fire_smoke_yolo import FireSmokeYOLO
-from models.optical_flow_crush import OpticalFlowCrushDetector
+from webapp import registry
+from webapp.jobs import RUN_CSV, RUN_JSON, RUN_VIDEO, run_dir
 
-from models.fall import (
-    YOLOPoseFallDetector,
-    MediaPipeFallDetector,
-    AlphaPoseFallDetector,
-    STGCNFallDetector,
-    PoseC3DFallDetector,
-    MoveNetFallDetector,
-    OpticalFlowFallDetector,
-)
-from models.violence import (
-    X3DViolenceClassifier,
-    SlowFastViolenceClassifier,
-    VideoMAEViolenceClassifier,
-    I3DViolenceClassifier,
-    C3DViolenceClassifier,
-    TSMViolenceClassifier,
-    MMActionSlowOnlyClassifier,
-)
-
-
-MODEL_FACTORY = {
-    "fire_smoke_yolo": lambda args, device: FireSmokeYOLO(device=device),
-    "optical_flow_crush": lambda args, device: OpticalFlowCrushDetector(device=device),
-
-    # Fall detection (7)
-    "fall_yolo_pose": lambda args, device: YOLOPoseFallDetector(model_size=args.pose_size, device=device),
-    "fall_mediapipe_pose": lambda args, device: MediaPipeFallDetector(device=device),
-    "fall_alphapose_lstm": lambda args, device: AlphaPoseFallDetector(device=device),
-    "fall_stgcn": lambda args, device: STGCNFallDetector(device=device),
-    "fall_posec3d": lambda args, device: PoseC3DFallDetector(device=device),
-    "fall_movenet": lambda args, device: MoveNetFallDetector(device=device),
-    "fall_optical_flow": lambda args, device: OpticalFlowFallDetector(device=device),
-
-    # Violence / altercation detection (7)
-    "violence_x3d": lambda args, device: X3DViolenceClassifier(device=device),
-    "violence_slowfast": lambda args, device: SlowFastViolenceClassifier(device=device),
-    "violence_videomae": lambda args, device: VideoMAEViolenceClassifier(device=device),
-    "violence_i3d": lambda args, device: I3DViolenceClassifier(device=device),
-    "violence_c3d": lambda args, device: C3DViolenceClassifier(device=device),
-    "violence_tsm": lambda args, device: TSMViolenceClassifier(device=device),
-    "violence_mmaction_slowonly": lambda args, device: MMActionSlowOnlyClassifier(device=device),
-}
+# Model names come from webapp/registry.py — the same table the web UI and
+# run_all.py build from.  This script previously kept its own MODEL_FACTORY
+# covering 12 of the project's models, so --model rtdetrv2_traffic was
+# rejected by argparse as an invalid choice even though the model exists and
+# works.  Deleted models also lingered in the choices list.
+MODEL_KEYS = sorted(registry.BY_KEY)
 
 
 def main():
@@ -80,10 +48,12 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--video_url", help="YouTube URL to fetch (cached in test_videos/)")
     source.add_argument("--video", help="Path to a local video file, skipping any download")
-    parser.add_argument("--model", required=True, choices=list(MODEL_FACTORY.keys()))
-    parser.add_argument("--pose_size", default="s", choices=["n", "s", "m", "l", "x"],
-                         help="Only used by --model fall_yolo_pose")
+    parser.add_argument("--model", required=True, choices=MODEL_KEYS)
     parser.add_argument("--sample_every_n_frames", type=int, default=1)
+    parser.add_argument(
+        "--threshold", type=float, default=None,
+        help="Confidence threshold override. Default: the model's own.",
+    )
     parser.add_argument(
         "--device", default=None,
         help="cuda / cuda:0 / cpu. Default: auto-detect. "
@@ -110,7 +80,9 @@ def main():
     else:
         video_path = fetch_youtube_video(args.video_url)
 
-    model = MODEL_FACTORY[args.model](args, device)
+    base_name = os.path.splitext(os.path.basename(video_path))[0]
+    model = registry.build_model(args.model, device, video_name=base_name,
+                                 threshold=args.threshold)
     tag = "GPU" if (model.gpu_accelerated and device.startswith("cuda")) else "CPU"
     print(f"  [{tag}] {model.name} (device={model.device})")
     runner = PipelineRunner(models=[model], sample_every_n_frames=args.sample_every_n_frames)
@@ -119,13 +91,12 @@ def main():
     detections = runner.run(video_path)
     print(f"\n{len(detections)} detections found.")
 
-    base_name = os.path.splitext(os.path.basename(video_path))[0]
-    out_video = f"outputs/annotated/{base_name}_{args.model}.mp4"
-    out_log = f"outputs/logs/{base_name}_{args.model}.json"
-    out_csv = f"outputs/logs/{base_name}_{args.model}.csv"
-
-    os.makedirs("outputs/annotated", exist_ok=True)
-    os.makedirs("outputs/logs", exist_ok=True)
+    # outputs/runs/<video>/<model>/ — the layout the web UI reads, so a CLI
+    # run shows up in the UI's history instead of being invisible to it.
+    out_dir = run_dir(base_name, args.model, create=True)
+    out_video = os.path.join(out_dir, RUN_VIDEO)
+    out_log = os.path.join(out_dir, RUN_JSON)
+    out_csv = os.path.join(out_dir, RUN_CSV)
 
     export_annotated_video(video_path, detections, out_video)
     export_detection_log(detections, out_log)

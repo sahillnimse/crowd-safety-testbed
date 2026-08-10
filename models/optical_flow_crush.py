@@ -37,6 +37,11 @@ from models.base import BaseModelWrapper, Detection
 class OpticalFlowCrushDetector(BaseModelWrapper):
     consumption_type = "flow_pair"
     name = "optical_flow_crush"
+    # Farnebäck dense flow through OpenCV: no torch, no CUDA, nothing that a
+    # device setting reaches.  This inherited the base class's default of True
+    # simply by not declaring anything, which reported it as GPU-accelerated
+    # in every run summary and made the CPU-only set look smaller than it is.
+    gpu_accelerated = False
 
     # Defaults are the ~p99 of each statistic measured over the crowd footage
     # in test_videos/, i.e. they flag roughly the top 1% of moving cells.

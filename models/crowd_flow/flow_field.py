@@ -130,6 +130,15 @@ _GMC_WARN_DURATION_SEC: float = 5.0
 # this figure into the tens.
 _DISCONTINUITY_MIN_BASELINE: float = 8.0
 
+# Far-field refinement: an ROI smaller than this on either side is not worth a
+# second flow pass, and DIS is unreliable on tiny inputs regardless.
+_FAR_FIELD_MIN_ROI_PX: int = 64
+
+# Minimum resolution gain over the base pass before the refinement earns its
+# cost.  Below this the second pass is recomputing what the first already
+# resolved, at roughly the price of the first.
+_FAR_FIELD_MIN_GAIN: float = 1.5
+
 # Mean absolute inter-frame difference below which the two frames are treated
 # as duplicates (a frozen source, or a container padded to a higher nominal
 # frame rate than the content).
@@ -195,6 +204,10 @@ class FlowField:
         lowlight_gradient_threshold: float = 12.0,
         brightness_jump_threshold: float = 30.0,
         min_flow_reliability: float = 0.35,
+        far_field: bool = True,
+        far_field_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.45),
+        far_field_target_px: int = 960,
+        far_field_blend_px: int = 48,
     ) -> None:
         if backend not in ("dis", "farneback"):
             raise ValueError(
@@ -217,11 +230,27 @@ class FlowField:
         self.lowlight_gradient_threshold = lowlight_gradient_threshold
         self.brightness_jump_threshold = brightness_jump_threshold
         self.min_flow_reliability = min_flow_reliability
+        self.far_field = far_field
+        self.far_field_roi = tuple(far_field_roi)
+        self.far_field_target_px = far_field_target_px
+        self.far_field_blend_px = far_field_blend_px
+
+        if not (0.0 <= self.far_field_roi[0] < self.far_field_roi[2] <= 1.0
+                and 0.0 <= self.far_field_roi[1] < self.far_field_roi[3] <= 1.0):
+            raise ValueError(
+                "far_field_roi must be normalised (x1, y1, x2, y2) with "
+                f"x1 < x2 and y1 < y2 inside [0, 1]; got {self.far_field_roi!r}"
+            )
 
         # Source-quality warnings are logged once per run, not once per frame.
         self._discontinuity_warned: bool = False
         self._frozen_warned: bool = False
         self._frozen_run: int = 0
+        self._far_field_skipped_warned: bool = False
+        self._far_field_logged: bool = False
+
+        # Blend-weight cache, keyed by (shape, blend_px, feather flags).
+        self._blend_cache: dict[tuple, np.ndarray] = {}
 
         # Lazily initialised
         self._dis: Optional[cv2.DISOpticalFlow] = None
@@ -315,6 +344,13 @@ class FlowField:
 
         # Raw flow -----------------------------------------------------------
         raw_flow = self._compute_raw_flow(prev_small, curr_small)  # (h_c, w_c, 2)
+
+        # Second pass at higher resolution over the far field.  Composited into
+        # the raw field before anything else reads it, so reliability, GMC and
+        # smoothing all see one coherent field rather than two.
+        raw_flow = self._refine_far_field(
+            prev_gray, curr_gray, raw_flow, sx, sy
+        )
 
         # Validity check on the RAW field, before GMC and smoothing muddy it.
         # A low reliability only means something when there was a substantial
@@ -524,6 +560,179 @@ class FlowField:
         new_h = max(1, int(round(h * scale)))
         small = cv2.resize(frame_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
         return small, w / new_w, h / new_h
+
+    # ------------------------------------------------------------------
+    # Far-field refinement
+    # ------------------------------------------------------------------
+
+    def _refine_far_field(
+        self,
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray,
+        raw_flow: np.ndarray,
+        sx: float,
+        sy: float,
+    ) -> np.ndarray:
+        """
+        Recompute flow over the far field at higher resolution and blend it in.
+
+        Why this exists
+        ---------------
+        The whole frame is downsampled to ``target_px`` before flow is
+        computed, which sets one pixel budget for a scene that does not have
+        one scale.  Perspective means a pedestrian near the camera spans a
+        few hundred source pixels while one at the back of the same crowd
+        spans a dozen.  At a 480 px compute width the distant pedestrian is
+        two or three pixels across — below the size of the patch DIS matches
+        on — so the far field returns flow interpolated from its
+        surroundings rather than measured from the people actually there.
+
+        Raising ``target_px`` for the whole frame fixes it at quadratic cost,
+        almost all of which is spent on the near field that was already
+        adequately resolved.  This pass spends the resolution only where the
+        deficit is.
+
+        Units
+        -----
+        The returned field stays in **compute-resolution px/frame**, the same
+        units as ``raw_flow``, so everything downstream is unchanged.  The
+        crop is measured in its own pixels, converted to source px/frame, then
+        into compute px/frame.
+
+        Seams
+        -----
+        Divergence and curl are spatial derivatives taken by central
+        differences.  A hard edge between the two passes would differentiate
+        into a line of large fake divergence — on the metric that drives
+        crush alerts.  The two fields are therefore feathered together over
+        ``far_field_blend_px``, and only on ROI edges that fall inside the
+        frame; an edge lying on the frame border has nothing to blend with.
+        """
+        if not self.far_field:
+            return raw_flow
+
+        h_src, w_src = prev_gray.shape[:2]
+        h_c, w_c = raw_flow.shape[:2]
+
+        rx1, ry1, rx2, ry2 = self.far_field_roi
+        x1 = max(0, min(w_src, int(round(rx1 * w_src))))
+        x2 = max(0, min(w_src, int(round(rx2 * w_src))))
+        y1 = max(0, min(h_src, int(round(ry1 * h_src))))
+        y2 = max(0, min(h_src, int(round(ry2 * h_src))))
+        roi_w, roi_h = x2 - x1, y2 - y1
+        if roi_w < _FAR_FIELD_MIN_ROI_PX or roi_h < _FAR_FIELD_MIN_ROI_PX:
+            return raw_flow
+
+        # Never upsample past the source: interpolated pixels carry no motion
+        # information the original frame did not already have.
+        scale = min(1.0, self.far_field_target_px / max(roi_w, roi_h))
+        rw = max(1, int(round(roi_w * scale)))
+        rh = max(1, int(round(roi_h * scale)))
+
+        # How much of this ROI the base pass already resolved.  If the second
+        # pass would not be meaningfully finer, it is pure cost.
+        base_w = roi_w / sx
+        base_h = roi_h / sy
+        if rw <= base_w * _FAR_FIELD_MIN_GAIN or rh <= base_h * _FAR_FIELD_MIN_GAIN:
+            if not self._far_field_skipped_warned:
+                logger.info(
+                    "Far-field refinement skipped: the ROI is already resolved "
+                    "at %.0fx%.0f by the base pass and the refinement would "
+                    "give %dx%d, less than a %.2fx gain.  Raise "
+                    "far_field_target_px, shrink far_field_roi, or lower "
+                    "downsample_target_px if you want it to engage.",
+                    base_w, base_h, rw, rh, _FAR_FIELD_MIN_GAIN,
+                )
+                self._far_field_skipped_warned = True
+            return raw_flow
+
+        crop_prev = prev_gray[y1:y2, x1:x2]
+        crop_curr = curr_gray[y1:y2, x1:x2]
+        if (rw, rh) != (roi_w, roi_h):
+            crop_prev = cv2.resize(crop_prev, (rw, rh), interpolation=cv2.INTER_AREA)
+            crop_curr = cv2.resize(crop_curr, (rw, rh), interpolation=cv2.INTER_AREA)
+
+        fine = self._compute_raw_flow(crop_prev, crop_curr)   # crop px/frame
+
+        # crop px/frame → source px/frame → compute px/frame
+        fine[..., 0] *= (roi_w / rw) / sx
+        fine[..., 1] *= (roi_h / rh) / sy
+
+        # Footprint of the ROI in compute coordinates.
+        cx1 = max(0, min(w_c, int(round(x1 / sx))))
+        cx2 = max(0, min(w_c, int(round(x2 / sx))))
+        cy1 = max(0, min(h_c, int(round(y1 / sy))))
+        cy2 = max(0, min(h_c, int(round(y2 / sy))))
+        cw, ch = cx2 - cx1, cy2 - cy1
+        if cw < 2 or ch < 2:
+            return raw_flow
+
+        fine = cv2.resize(fine, (cw, ch), interpolation=cv2.INTER_LINEAR)
+
+        # The blend margin is configured in source px; the blend happens at
+        # compute resolution.
+        blend_c = max(0, int(round(self.far_field_blend_px / max(sx, sy, 1e-6))))
+        weights = self._blend_weights(
+            (ch, cw),
+            blend_px=blend_c,
+            feather_top=cy1 > 0,
+            feather_bottom=cy2 < h_c,
+            feather_left=cx1 > 0,
+            feather_right=cx2 < w_c,
+        )[..., None]
+
+        patch = raw_flow[cy1:cy2, cx1:cx2]
+        raw_flow[cy1:cy2, cx1:cx2] = patch * (1.0 - weights) + fine * weights
+
+        if not self._far_field_logged:
+            logger.info(
+                "Far-field refinement active: ROI %dx%d source px recomputed "
+                "at %dx%d (base pass gave it %.0fx%.0f), blended over %d "
+                "compute px.",
+                roi_w, roi_h, rw, rh, base_w, base_h, blend_c,
+            )
+            self._far_field_logged = True
+
+        return raw_flow
+
+    def _blend_weights(
+        self,
+        shape: tuple[int, int],
+        blend_px: int,
+        feather_top: bool,
+        feather_bottom: bool,
+        feather_left: bool,
+        feather_right: bool,
+    ) -> np.ndarray:
+        """
+        Weight map for the refined patch: 1 in the interior, ramping to 0 over
+        ``blend_px`` on each feathered edge.  Cached — it depends only on the
+        geometry, which does not change between frames.
+        """
+        key = (shape, blend_px, feather_top, feather_bottom,
+               feather_left, feather_right)
+        cached = self._blend_cache.get(key)
+        if cached is not None:
+            return cached
+
+        h, w = shape
+        wy = np.ones(h, dtype=np.float32)
+        wx = np.ones(w, dtype=np.float32)
+        if blend_px > 0:
+            ramp_y = np.clip(np.arange(h, dtype=np.float32) / blend_px, 0.0, 1.0)
+            ramp_x = np.clip(np.arange(w, dtype=np.float32) / blend_px, 0.0, 1.0)
+            if feather_top:
+                wy = np.minimum(wy, ramp_y)
+            if feather_bottom:
+                wy = np.minimum(wy, ramp_y[::-1])
+            if feather_left:
+                wx = np.minimum(wx, ramp_x)
+            if feather_right:
+                wx = np.minimum(wx, ramp_x[::-1])
+
+        weights = np.outer(wy, wx).astype(np.float32)
+        self._blend_cache[key] = weights
+        return weights
 
     def _compute_raw_flow(
         self, prev_small: np.ndarray, curr_small: np.ndarray

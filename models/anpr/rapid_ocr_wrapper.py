@@ -15,14 +15,14 @@ from models.anpr._ocr import DEFAULT_MIN_PLATE_WIDTH
 class RapidOCRDetector(ANPRDetector):
     name = "rapid_ocr"
 
-    def __init__(self, weights: str = "yolo11n.pt", conf_threshold: float = 0.35,
+    def __init__(self, conf_threshold: float = 0.35,
                  plate_conf: float = 0.5,
                  min_plate_width: int = DEFAULT_MIN_PLATE_WIDTH,
                  read_every_n_frames: int = 3,
                  gallery_dir: str = None, video_name: str = "run",
                  save_gallery: bool = True, device=None):
         super().__init__(
-            weights=weights, conf_threshold=conf_threshold, plate_conf=plate_conf,
+            conf_threshold=conf_threshold, plate_conf=plate_conf,
             min_plate_width=min_plate_width, read_every_n_frames=read_every_n_frames,
             gallery_dir=gallery_dir, video_name=video_name, save_gallery=save_gallery,
             ocr_backend="rapidocr", device=device,

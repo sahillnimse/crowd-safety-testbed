@@ -49,7 +49,7 @@ from models.crowd_flow.flow_field import FlowField
 from models.crowd_flow.validation.report import (
     Measurement, RouteResult, STATUS_PASS,
 )
-from models.fall._tracker import IoUTracker
+from models._tracker import IoUTracker
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,6 @@ ROUTE_CAVEAT = (
 
 # COCO class index for 'person'.
 _PERSON_CLASS = 0
-
-# Candidate detector weights, in preference order.
-_WEIGHT_CANDIDATES = ("yolo11n.pt", "yolov8n.pt", "yolo11s.pt", "yolov8s.pt")
 
 # Spread of tracked speeds (std, px/frame) below which a correlation between
 # track speed and flow speed carries no information.
@@ -130,23 +127,12 @@ class Comparison:
         return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
 
-def find_person_weights(project_root: str) -> Optional[str]:
-    """First available person-capable YOLO checkpoint in the project root."""
-    for name in _WEIGHT_CANDIDATES:
-        path = os.path.join(project_root, name)
-        if os.path.exists(path):
-            return path
-    return None
-
-
 class CrossFamilyValidator:
     """
     Compares tracked-person velocities against the dense flow field.
 
     Parameters
     ----------
-    weights_path:
-        YOLO checkpoint for person detection.  Auto-discovered if None.
     conf_threshold:
         Detection confidence floor.
     min_track_age:
@@ -165,11 +151,35 @@ class CrossFamilyValidator:
         Mean persons per frame above which the result is marked
         density-limited (tracking, and therefore this route, is no longer
         dependable).
+    tile_grid:
+        Detector tiling, as (nx, ny).  **Defaults to None, deliberately.**
+
+        Tiling does what it promises — on this project's Nashik clip it takes
+        the detector from 35 people per frame to 109 — but measured end to
+        end it makes this route *worse*, not better:
+
+            tiling   persons/frame   comparisons   speed err   agree   verdict
+            none              ~35           435   0.40 px/f     ...    PASS
+            (2, 2)             79           737   0.48 px/f   62.1%    FAIL
+            (3, 3)            100           987   0.49 px/f   61.3%    FAIL
+
+        The people tiling recovers are the small, distant ones — precisely
+        the ones whose boxes jitter most and whose tracks fragment fastest.
+        They also push density from ~35 to ~100 per frame, three to four
+        times ``density_warn_persons``, which is the point at which this
+        route documents itself as unable to tell you anything.
+
+        So the failure is not evidence that the flow field got worse; it is
+        the route being driven past where it can measure.  More detections
+        make the *product* better and this *instrument* worse, and conflating
+        the two would be how a benchmark stops meaning anything.
+
+        Set it explicitly if you want the recall — but read the density
+        figure before believing the verdict.
     """
 
     def __init__(
         self,
-        weights_path: Optional[str] = None,
         device: Optional[str] = None,
         conf_threshold: float = 0.35,
         min_track_age: int = 3,
@@ -179,9 +189,10 @@ class CrossFamilyValidator:
         max_speed_error_px: float = 1.5,
         max_angular_deg: float = 35.0,
         min_comparisons: int = 50,
+        tile_grid: Optional[tuple[int, int]] = None,
     ) -> None:
-        self.weights_path = weights_path
         self.device = device
+        self.tile_grid = tile_grid
         self.conf_threshold = conf_threshold
         self.min_track_age = min_track_age
         self.min_track_speed_px = min_track_speed_px
@@ -197,23 +208,14 @@ class CrossFamilyValidator:
     def _load(self) -> None:
         if self._model is not None:
             return
-        from ultralytics import YOLO
-        if not self.weights_path or not os.path.exists(self.weights_path):
-            raise FileNotFoundError(
-                f"Person-detector weights not found: {self.weights_path!r}.  "
-                f"Place one of {', '.join(_WEIGHT_CANDIDATES)} in the project "
-                f"root, or pass weights_path explicitly."
-            )
-        self._model = YOLO(self.weights_path)
+        from models._detectors import get_detector
+        self._model = get_detector(device=self.device)
+        self._model.load()
 
     def _detect_persons(self, frame: np.ndarray) -> list[list[float]]:
-        res = self._model.predict(
-            frame, conf=self.conf_threshold, classes=[_PERSON_CLASS],
-            verbose=False, device=self.device,
-        )[0]
-        if res.boxes is None or len(res.boxes) == 0:
-            return []
-        return [[float(v) for v in b] for b in res.boxes.xyxy.cpu().numpy()]
+        return self._model.detect(frame, classes=(_PERSON_CLASS,),
+                                  conf_threshold=self.conf_threshold,
+                                  tile_grid=self.tile_grid)
 
     def _sample_flow(
         self, field_xy: np.ndarray, box: list[float]

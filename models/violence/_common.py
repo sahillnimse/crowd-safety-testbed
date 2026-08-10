@@ -177,21 +177,19 @@ class PersonROI:
 
     def __init__(self, conf: float = 0.3, pad: float = 0.25,
                  sample_frames: int = 8, smoothing: float = 0.6,
-                 min_area_frac: float = 0.01, weights: str = "yolov8n.pt"):
+                 min_area_frac: float = 0.01):
         self.conf = conf
         self.pad = pad
         self.sample_frames = sample_frames
         self.smoothing = smoothing        # 0 = snap instantly, ->1 = very sticky
         self.min_area_frac = min_area_frac
-        self.weights = weights
         self._detector = None
         self._last: Optional[tuple] = None
 
     def load(self, device: Optional[str] = None):
-        from ultralytics import YOLO
-        self._detector = YOLO(_resolve_weight_path(self.weights))
-        if device:
-            self._detector.to(device)
+        from models._detectors import get_detector
+        self._detector = get_detector(device=device)
+        self._detector.load()
         self._last = None
 
     def reset(self):
@@ -207,12 +205,9 @@ class PersonROI:
         xs1, ys1, xs2, ys2 = [], [], [], []
 
         for frame in frames[::step]:
-            result = self._detector.predict(frame, conf=self.conf, classes=[0],
-                                            device=device, verbose=False)
-            if not result:
-                continue
-            for box in result[0].boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
+            from models._detectors import COCO_PERSON
+            for x1, y1, x2, y2 in self._detector.detect(
+                    frame, classes=(COCO_PERSON,), conf_threshold=self.conf):
                 xs1.append(x1); ys1.append(y1); xs2.append(x2); ys2.append(y2)
 
         if not xs1:

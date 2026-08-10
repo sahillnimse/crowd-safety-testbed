@@ -8,16 +8,13 @@ videos:
   - url: "https://youtu.be/chzr4s3rWCM?si=5jNH0qtQip4nGosd"
     category: fall_and_crowd_crush_test
     models:
-      # Fall detection (7)
-      - fall_yolo_pose
+      # Fall detection (3)
       - fall_mediapipe_pose
-      - fall_stgcn
       - fall_movenet
       - fall_optical_flow
-      - fall_posec3d
-      - fall_alphapose_lstm
-      # Crowd-crush (1)
+      # Crowd-crush / dense flow (2)
       - optical_flow_crush
+      - dense_flow
       - dense_flow
     ground_truth: []
 
@@ -38,32 +35,24 @@ videos:
   - url: "https://youtu.be/cJatWBDNabE"
     category: traffic_and_anpr_test
     models:
-      # Traffic monitoring (4)
-      - yolo_traffic
-      - rtdetr_traffic
+      # Traffic monitoring (3)
+      - rtdetrv2_traffic
       - roboflow_traffic
       - mog2_parked
-      # ANPR / Number plate detection (3)
+      # ANPR / Number plate detection (4)
       - anpr
       - indian_anpr
       - rapid_ocr
+      - rtdetrv2_anpr
     ground_truth: []
 
   - url: "https://youtu.be/sample_umbrella_crowd"
     category: umbrella_and_crowd_test
     models:
-      # Umbrella detection (5)
-      - umbrella_yolo
+      # Umbrella detection (4)
       - umbrella_ssd
-      - umbrella_world
       - umbrella_rfdetr
-      - umbrella_yolo26n
-    ground_truth: []
-
-  - url: "https://youtu.be/sample_fire_smoke"
-    category: fire_and_smoke_test
-    models:
-      # Fire / Smoke detection (1)
-      - fire_smoke_yolo
+      - umbrella_rtdetrv2
+      - umbrella_trained
     ground_truth: []
 

@@ -19,24 +19,13 @@ import json
 import os
 from collections import Counter, defaultdict
 
-from webapp.jobs import ANNOTATED_DIR, LOG_DIR, POSITIVE_LABELS
+from webapp.jobs import (POSITIVE_LABELS, RUNS_DIR, RUN_CSV,
+                         RUN_JSON, RUN_VIDEO)
 from webapp.registry import BY_KEY
 
 # path -> (mtime, size, summary dict)
 _CACHE: dict[str, tuple[float, int, dict]] = {}
 
-
-def _split_name(stem: str) -> tuple[str, str] | None:
-    """'pG4HqTGkHPg_fall_yolo_pose' -> ('pG4HqTGkHPg', 'fall_yolo_pose').
-
-    Split against the known model keys rather than on the last underscore:
-    model keys contain underscores themselves, and video IDs can too.
-    """
-    for key in sorted(BY_KEY, key=len, reverse=True):
-        suffix = "_" + key
-        if stem.endswith(suffix):
-            return stem[: -len(suffix)], key
-    return None
 
 
 def _summarize(path: str) -> dict:
@@ -72,46 +61,58 @@ def _summarize(path: str) -> dict:
 
 
 def scan() -> list[dict]:
-    """All completed runs on disk, grouped by video, newest video first."""
-    if not os.path.isdir(LOG_DIR):
+    """
+    All completed runs on disk, grouped by video, newest video first.
+
+    Walks outputs/runs/<video>/<model>/ rather than parsing filenames.  The
+    previous layout stored "<video>_<model>.json" flat and split on the last
+    underscore to recover the pair — which is ambiguous the moment a video
+    name contains an underscore, and most do.  Directory structure carries
+    the same information without the guess.
+    """
+    if not os.path.isdir(RUNS_DIR):
         return []
 
     by_video: dict[str, list] = defaultdict(list)
     newest: dict[str, float] = {}
 
-    for name in os.listdir(LOG_DIR):
-        if not name.endswith(".json"):
+    for video in os.listdir(RUNS_DIR):
+        video_dir = os.path.join(RUNS_DIR, video)
+        if not os.path.isdir(video_dir):
             continue
-        parsed = _split_name(name[:-len(".json")])
-        if parsed is None:
-            continue  # not one of ours; leave it alone
-        video, model_key = parsed
 
-        json_path = os.path.join(LOG_DIR, name)
-        summary = _summarize(json_path)
-        mtime = os.path.getmtime(json_path)
+        for model_key in os.listdir(video_dir):
+            model_dir = os.path.join(video_dir, model_key)
+            json_path = os.path.join(model_dir, RUN_JSON)
+            if not os.path.isfile(json_path):
+                continue  # no detections written; not a completed run
 
-        csv_name = f"{video}_{model_key}.csv"
-        mp4_name = f"{video}_{model_key}.mp4"
-        spec = BY_KEY.get(model_key)
+            summary = _summarize(json_path)
+            mtime = os.path.getmtime(json_path)
+            spec = BY_KEY.get(model_key)
+            rel = f"{video}/{model_key}"
 
-        by_video[video].append({
-            "model_key": model_key,
-            "model_label": spec.label if spec else model_key,
-            "status": "done",
-            "progress": 1.0,
-            "detections": summary["detections"],
-            "positives": summary["positives"],
-            "label_counts": summary["label_counts"],
-            "scoring_modes": summary["scoring_modes"],
-            "error": summary["error"],
-            "elapsed_sec": None,          # not recorded on disk
-            "modified_at": mtime,
-            "log_json": name,
-            "log_csv": csv_name if os.path.exists(os.path.join(LOG_DIR, csv_name)) else None,
-            "annotated": mp4_name if os.path.exists(os.path.join(ANNOTATED_DIR, mp4_name)) else None,
-        })
-        newest[video] = max(newest.get(video, 0), mtime)
+            by_video[video].append({
+                "model_key": model_key,
+                "model_label": spec.label if spec else model_key,
+                "status": "done",
+                "progress": 1.0,
+                "detections": summary["detections"],
+                "positives": summary["positives"],
+                "label_counts": summary["label_counts"],
+                "scoring_modes": summary["scoring_modes"],
+                "error": summary["error"],
+                "elapsed_sec": None,          # not recorded on disk
+                "modified_at": mtime,
+                "log_json": f"{rel}/{RUN_JSON}",
+                "log_csv": (f"{rel}/{RUN_CSV}"
+                            if os.path.exists(os.path.join(model_dir, RUN_CSV))
+                            else None),
+                "annotated": (f"{rel}/{RUN_VIDEO}"
+                              if os.path.exists(os.path.join(model_dir, RUN_VIDEO))
+                              else None),
+            })
+            newest[video] = max(newest.get(video, 0), mtime)
 
     out = []
     for video, stages in by_video.items():

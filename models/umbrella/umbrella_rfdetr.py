@@ -32,9 +32,9 @@ the real model loads, and a genuine failure raises.
 import os
 
 from models.base import BaseModelWrapper, Detection
-from models.fall._tracker import IoUTracker
+from models._tracker import IoUTracker
 from models.umbrella._common import DEFAULT_MIN_AREA_FRAC, emit_umbrellas
-from models.umbrella.umbrella_yolo import UMBRELLA_COCO_CLASS
+from models.umbrella._common import UMBRELLA_COCO_CLASS
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 

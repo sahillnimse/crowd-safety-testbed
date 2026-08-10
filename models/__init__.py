@@ -1,15 +1,10 @@
 from models.base import BaseModelWrapper, Detection
-from models.fire_smoke_yolo import FireSmokeYOLO
 from models.optical_flow_crush import OpticalFlowCrushDetector
 from models.roboflow_combined import RoboflowCombinedDetector
 from models.crowd_flow import DenseFlowAnalyser
 
 from models.fall import (
-    YOLOPoseFallDetector,
     MediaPipeFallDetector,
-    AlphaPoseFallDetector,
-    STGCNFallDetector,
-    PoseC3DFallDetector,
     MoveNetFallDetector,
     OpticalFlowFallDetector,
 )
@@ -23,8 +18,6 @@ from models.violence import (
     MMActionSlowOnlyClassifier,
 )
 from models.traffic import (
-    YoloTrafficDetector,
-    RtdetrTrafficDetector,
     RTDetrV2TrafficDetector,
     RoboflowTrafficDetector,
     Mog2ParkedDetector,
@@ -36,28 +29,21 @@ from models.anpr import (
     RTDetrV2ANPRDetector,
 )
 from models.umbrella import (
-    UmbrellaDetector,
     UmbrellaSSDDetector,
-    UmbrellaWorldDetector,
-    YOLO26NanoUmbrellaDetector,
     RFDETRNanoUmbrellaDetector,
     RTDetrV2UmbrellaDetector,
+    TrainedUmbrellaDetector,
 )
 
 __all__ = [
     "BaseModelWrapper",
     "Detection",
-    "FireSmokeYOLO",
     "OpticalFlowCrushDetector",
     "RoboflowCombinedDetector",
     # Dense optical flow crowd-safety
     "DenseFlowAnalyser",
-    # Fall detection (7)
-    "YOLOPoseFallDetector",
+    # Fall detection (3)
     "MediaPipeFallDetector",
-    "AlphaPoseFallDetector",
-    "STGCNFallDetector",
-    "PoseC3DFallDetector",
     "MoveNetFallDetector",
     "OpticalFlowFallDetector",
     # Violence / altercation detection (7)
@@ -68,9 +54,7 @@ __all__ = [
     "C3DViolenceClassifier",
     "TSMViolenceClassifier",
     "MMActionSlowOnlyClassifier",
-    # Traffic detection/counting (5)
-    "YoloTrafficDetector",
-    "RtdetrTrafficDetector",
+    # Traffic detection/counting (3)
     "RTDetrV2TrafficDetector",
     "RoboflowTrafficDetector",
     "Mog2ParkedDetector",
@@ -79,11 +63,9 @@ __all__ = [
     "IndianANPRDetector",
     "RapidOCRDetector",
     "RTDetrV2ANPRDetector",
-    # Umbrella detection (6)
-    "UmbrellaDetector",
+    # Umbrella detection (4)
     "UmbrellaSSDDetector",
-    "UmbrellaWorldDetector",
-    "YOLO26NanoUmbrellaDetector",
     "RFDETRNanoUmbrellaDetector",
     "RTDetrV2UmbrellaDetector",
+    "TrainedUmbrellaDetector",
 ]

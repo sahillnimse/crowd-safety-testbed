@@ -1,5 +1,16 @@
 """
-Shared greedy IoU tracker for the fall detectors.
+Shared greedy IoU tracker.
+
+Used across the project by anything that needs stable per-object identity
+between frames without a learned tracker: the pose-based fall models, the
+umbrella detectors, ANPR's vehicle capture, and the dense-flow cross-family
+validation route.
+
+It lived in ``models/fall/`` until five other families were importing it from
+there — ANPR reaching into the fall package to track vehicles is the sort of
+dependency that reads as an accident, because it was one: fall detection
+simply needed it first.  See models/traffic/_tracker.py for the traffic
+family's own centroid/parked classifier, which is a different thing.
 
 Replaces the per-wrapper trackers, which had two bugs that quietly
 corrupted every temporal model built on them:

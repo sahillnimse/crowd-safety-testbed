@@ -1,17 +1,19 @@
 """
 Fall detection via MediaPipe BlazePose.
 
-Google's lightweight single-person pose estimator. Much cheaper than
-YOLO-pose or AlphaPose, runs comfortably on CPU/edge devices, and is a
-useful "lightweight baseline" comparison point — but it's fundamentally
-single-person per detector instance, so multi-person/crowd frames need
-an upstream person detector + crop-and-run-per-person, which adds latency
-and compounds detection error. Expect this to degrade faster than the
-other pose backbones as crowd density increases.
+Google's lightweight single-person pose estimator. Cheap enough to run
+comfortably on CPU/edge devices and a useful "lightweight baseline"
+comparison point — but it's fundamentally single-person per detector
+instance, so multi-person/crowd frames need an upstream person detector +
+crop-and-run-per-person, which adds latency and compounds detection error.
+Expect this to degrade faster than MoveNet as crowd density increases.
+
+The upstream person detector is the shared RT-DETRv2 in
+models/_detectors.py.
 
 Uses the same posture scoring, keypoint gating, tracking and temporal
 confirmation as the other pose wrappers (models/fall/_geometry.py,
-_tracker.py) for apples-to-apples comparison between backbones.
+models/_tracker.py) for apples-to-apples comparison between backbones.
 
 BlazePose landmarks carry a `visibility` score which is used here as the
 per-keypoint confidence — landmarks for occluded joints are still
@@ -24,7 +26,6 @@ import os
 import urllib.request
 
 from models.base import BaseModelWrapper, Detection
-from models._weights import resolve as _resolve_weight_path
 from models.fall._geometry import (
     DEFAULT_MIN_KP_CONF,
     angle_threshold_to_score,
@@ -33,7 +34,7 @@ from models.fall._geometry import (
     posture_score,
     torso_angle_deg,
 )
-from models.fall._tracker import IoUTracker, sustained
+from models._tracker import IoUTracker, sustained
 
 # BlazePose landmark indices (33-point model)
 LM_LEFT_SHOULDER, LM_RIGHT_SHOULDER = 11, 12
@@ -65,7 +66,9 @@ def _get_model_path(model_complexity: int) -> str:
 class MediaPipeFallDetector(BaseModelWrapper):
     consumption_type = "frame"
     name = "fall_mediapipe_pose"
-    gpu_accelerated = False  # CPU-only (MediaPipe/BlazePose has no first-class GPU path in this stack); only the upstream YOLO person-detector uses self.device
+    # CPU-only: MediaPipe/BlazePose has no first-class GPU path in this stack.
+    # Only the upstream RT-DETRv2 person detector uses self.device.
+    gpu_accelerated = False
 
     def __init__(self, model_complexity: int = 1, conf_threshold: float = 0.5,
                  horizontal_angle_threshold_deg: float = 45.0,
@@ -101,10 +104,11 @@ class MediaPipeFallDetector(BaseModelWrapper):
         )
         self._mp = mp
         self._model = vision.PoseLandmarker.create_from_options(options)
-        # BlazePose is single-person; use a lightweight YOLO person detector
-        # upstream to crop each person before running pose on crowd frames.
-        from ultralytics import YOLO
-        self._person_detector = YOLO(_resolve_weight_path("yolov8n.pt"))
+        # BlazePose is single-person; a person detector runs upstream to crop
+        # each person before pose is applied on crowd frames.
+        from models._detectors import get_detector
+        self._person_detector = get_detector(device=self.device)
+        self._person_detector.load()
         self._tracker.reset()
 
     def _landmarks_to_arrays(self, landmarks, crop_w: int, crop_h: int,
@@ -123,14 +127,14 @@ class MediaPipeFallDetector(BaseModelWrapper):
 
         h, w = frame.shape[:2]
 
-        person_results = self._person_detector.predict(
-            frame, conf=self.person_detector_conf, classes=[0], device=self.device, verbose=False
+        from models._detectors import COCO_PERSON
+        raw = self._person_detector.detect_with_labels(
+            frame, classes=(COCO_PERSON,),
+            conf_threshold=self.person_detector_conf,
         )
-        raw_boxes = person_results[0].boxes if person_results else []
 
         boxes, det_confs = [], []
-        for box in raw_boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
+        for (x1, y1, x2, y2), _label, score in raw:
             # Clamp to the frame on all four sides — an unclamped x2/y2 makes
             # the crop silently smaller than the box, which then misplaces
             # every landmark mapped back through it.
@@ -139,7 +143,7 @@ class MediaPipeFallDetector(BaseModelWrapper):
             if x2 - x1 < 2 or y2 - y1 < 2:
                 continue
             boxes.append([x1, y1, x2, y2])
-            det_confs.append(float(box.conf[0]))
+            det_confs.append(float(score))
 
         if not boxes:
             return []

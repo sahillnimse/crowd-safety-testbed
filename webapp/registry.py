@@ -35,6 +35,12 @@ class ModelSpec:
     check: Optional[Callable[[], tuple[bool, str, str]]] = None
     default_stride: int = 5
     default_threshold: float | None = None
+    # False for a model whose confidence scores are not on the same scale as
+    # the rest, so the run-wide threshold must not be applied to it.  SSDLite
+    # scores run materially lower than the transformer detectors', and giving
+    # it the same numeric threshold is not a fair comparison but a handicap.
+    # Such a model keeps default_threshold and is documented as doing so.
+    comparable_threshold: bool = True
     tags: list = field(default_factory=list)
 
     def status(self) -> dict:
@@ -51,6 +57,7 @@ class ModelSpec:
             "note": note,
             "default_stride": self.default_stride,
             "default_threshold": self.default_threshold,
+            "comparable_threshold": self.comparable_threshold,
             "tags": self.tags,
         }
 
@@ -146,27 +153,15 @@ def _trained_umbrella_check():
 
 MODELS: list[ModelSpec] = [
     # ---------------- Fall detection ----------------
-    ModelSpec("fall_yolo_pose", "YOLOv8-Pose", "fall",
-              "Pose keypoints + posture heuristic, temporally confirmed.",
-              default_threshold=0.4, tags=["pose", "gpu"]),
     ModelSpec("fall_movenet", "MoveNet", "fall",
-              "Google MoveNet multipose, same posture heuristic.",
+              "Google MoveNet multipose, posture heuristic.",
               default_threshold=0.4, tags=["pose", "cpu"]),
     ModelSpec("fall_mediapipe_pose", "MediaPipe BlazePose", "fall",
-              "Lightweight per-person pose; YOLO detector upstream for crowds.",
+              "Per-person pose; RT-DETRv2 person detector upstream for crowds.",
               default_threshold=0.4, tags=["pose", "cpu"]),
     ModelSpec("fall_optical_flow", "Optical Flow (fall)", "fall",
               "Pose-free: sustained downward flow that settles. Classical CV.",
               tags=["flow", "cpu"]),
-    ModelSpec("fall_stgcn", "ST-GCN", "fall",
-              "Skeleton graph-conv classifier over tracked keypoint sequences.",
-              default_threshold=0.4, tags=["skeleton", "gpu"]),
-    ModelSpec("fall_posec3d", "PoseC3D", "fall",
-              "3D-CNN over gaussian pose-heatmap volumes.",
-              default_threshold=0.4, tags=["skeleton", "gpu"]),
-    ModelSpec("fall_alphapose_lstm", "AlphaPose + LSTM", "fall",
-              "Tracked keypoint sequences classified by a temporal LSTM.",
-              default_threshold=0.4, tags=["skeleton", "gpu"]),
 
     # ---------------- Violence detection ----------------
     ModelSpec("roboflow_combined", "Roboflow (violence/fall)", "violence",
@@ -217,14 +212,6 @@ MODELS: list[ModelSpec] = [
               default_threshold=0.5, tags=["clip", "gpu"]),
 
     # ---------------- Traffic / vehicle counting ----------------
-    ModelSpec("yolo_traffic", "YOLOv11 Traffic", "traffic",
-              "COCO-pretrained vehicle detector + ByteTrack; classifies each "
-              "tracked vehicle as moving or parked from centroid drift.",
-              default_threshold=0.35, tags=["frame", "gpu"]),
-    ModelSpec("rtdetr_traffic", "RT-DETR Traffic", "traffic",
-              "Transformer detector, stronger on small/occluded vehicles. "
-              "Falls back to DeepSORT if ByteTrack IDs don't come through.",
-              default_threshold=0.35, tags=["frame", "gpu"]),
     ModelSpec("rtdetrv2_traffic", "RT-DETRv2 Traffic (Moving / Parked)", "traffic",
               "RT-DETRv2-S vehicle detector + centroid drift classifier for "
               "moving vs. parked cars (Apache 2.0, 20M params, 217 FPS).",
@@ -272,45 +259,20 @@ MODELS: list[ModelSpec] = [
               default_stride=2, default_threshold=0.35, tags=["frame", "gpu", "ocr", "transformer", "apache2"]),
 
     # ---------------- Umbrella detection ----------------
-    ModelSpec("umbrella_yolo", "Umbrella Detection", "umbrella",
-              "Detects and counts umbrellas, with persistent IDs so unique "
-              "umbrellas can be distinguished from one held for many frames.",
-              check=lambda: (True, "ready",
-                             "Uses COCO's built-in 'umbrella' class - no extra "
-                             "weights to download (yolo11n is 5.6 MB). Pass "
-                             "model_size='s' (~19 MB) for better recall on "
-                             "small or distant umbrellas."),
-              default_stride=3, default_threshold=0.35, tags=["frame", "gpu"]),
     ModelSpec("umbrella_ssd", "Umbrella (SSDLite MobileNetV3)", "umbrella",
-              "Lighter, older architecture than YOLO - the comparison point "
-              "for how much detection quality comes from the architecture.",
+              "Lighter, older architecture than the transformers - the "
+              "comparison point for how much detection quality comes from the "
+              "architecture.",
               check=lambda: (True, "ready",
                              "torchvision SSDLite320 + MobileNetV3, ~13.8 MB, "
                              "320x320 input so it is genuinely usable on CPU. "
-                             "Scores run lower than YOLO's, hence its lower "
-                             "default threshold - not a weaker setting."),
-              default_stride=3, default_threshold=0.25, tags=["frame", "cpu", "gpu"]),
-    ModelSpec("umbrella_world", "Umbrella (YOLO-World open-vocab)", "umbrella",
-              "Text-prompted detection: finds parasols and sun umbrellas that "
-              "COCO's single fixed 'umbrella' class was never trained on.",
-              check=lambda: (True, "ready",
-                             "yolov8s-worldv2, ~25.9 MB. Prompts default to "
-                             "umbrella/parasol/beach umbrella/sun umbrella. "
-                             "Higher recall but looser than the fixed-class "
-                             "models - each detection records which prompt "
-                             "matched in extra.matched_class."),
-              default_stride=3, default_threshold=0.25, tags=["frame", "gpu", "open-vocab"]),
-    ModelSpec("umbrella_yolo26n", "YOLO26-Nano (umbrella-finetuned)", "umbrella",
-              "Ultralytics YOLO26 nano variant, NMS-free, edge-optimized + ByteTrack.",
-              check=_real_arch_check(
-                  "weights/yolo26n_umbrella.pt",
-                  "Fine-tuned YOLO26 umbrella checkpoint found.",
-                  "Real YOLO26-Nano COCO weights (yolo26n.pt), detecting COCO's "
-                  "umbrella class. NMS-free end-to-end head - a genuinely "
-                  "different architecture from the YOLO11 wrapper, so it is an "
-                  "independent data point. Drop weights/yolo26n_umbrella.pt in "
-                  "to use a fine-tuned version instead."),
-              default_stride=3, default_threshold=0.35, tags=["frame", "gpu", "edge"]),
+                             "Scores run lower than the transformer models', "
+                             "hence its lower default threshold - not a weaker "
+                             "setting.  The run-wide threshold is NOT applied "
+                             "to this model for that reason; it always runs at "
+                             "0.25."),
+              default_stride=3, default_threshold=0.25,
+              comparable_threshold=False, tags=["frame", "cpu", "gpu"]),
     ModelSpec("umbrella_rfdetr", "RF-DETR Nano (umbrella-finetuned)", "umbrella",
               "Roboflow RF-DETR Nano transformer with DINOv2 backbone for small/occluded umbrella recall.",
               check=_real_arch_check(
@@ -335,10 +297,6 @@ MODELS: list[ModelSpec] = [
                              "COCO umbrella class 25 — no fine-tuning required."),
               default_stride=3, default_threshold=0.35, tags=["frame", "gpu", "transformer", "apache2"]),
     # ---------------- Fire / Smoke & Crowd Crush ----------------
-    ModelSpec("fire_smoke_yolo", "Fire / Smoke YOLO", "fire",
-              "YOLO fire and smoke detector.",
-              check=lambda: (True, "ready", "Runs local fire/smoke model with Roboflow cloud fallback."),
-              default_threshold=0.35, tags=["frame", "gpu"]),
     ModelSpec("optical_flow_crush", "Optical Flow (crowd crush)", "crush",
               "Circular-variance turbulence + convergence. Classical CV.",
               tags=["flow", "cpu"]),
@@ -357,7 +315,6 @@ CATEGORY_LABELS = {
     "traffic": "Traffic / vehicle counting",
     "anpr": "ANPR / number plates",
     "umbrella": "Umbrella detection",
-    "fire": "Fire & smoke detection",
     "crush": "Crowd crush detection",
     "other": "Other detectors",
 }
@@ -367,17 +324,14 @@ def list_models() -> list[dict]:
     return [m.status() for m in MODELS]
 
 
-def build_model(key: str, device: Optional[str], pose_size: str = "s",
+def build_model(key: str, device: Optional[str],
                 video_name: str = "run", threshold: Optional[float] = None):
     """Construct a wrapper instance. Imports are deferred to call time so the
     API can list models without paying torch's import cost."""
-    from models.fire_smoke_yolo import FireSmokeYOLO
     from models.optical_flow_crush import OpticalFlowCrushDetector
     from models.roboflow_combined import RoboflowCombinedDetector
     from models.fall import (
-        AlphaPoseFallDetector, MediaPipeFallDetector, MoveNetFallDetector,
-        OpticalFlowFallDetector, PoseC3DFallDetector, STGCNFallDetector,
-        YOLOPoseFallDetector,
+        MediaPipeFallDetector, MoveNetFallDetector, OpticalFlowFallDetector,
     )
     from models.violence import (
         C3DViolenceClassifier, I3DViolenceClassifier, MMActionSlowOnlyClassifier,
@@ -385,9 +339,8 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         VideoMAEViolenceClassifier, X3DViolenceClassifier,
     )
     from models.traffic import (
-        YoloTrafficDetector, RtdetrTrafficDetector,
         RoboflowTrafficDetector, Mog2ParkedDetector,
-    )   
+    )
 
     def _kw(extra: dict = None):
         kw = dict(extra) if extra else {}
@@ -396,11 +349,7 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         return kw
 
     factories = {
-        "fire_smoke_yolo": lambda: FireSmokeYOLO(device=device, **_kw()),
-        "umbrella_yolo": lambda: _build_umbrella(device, threshold=threshold),
         "umbrella_ssd": lambda: _build_umbrella_ssd(device, threshold=threshold),
-        "umbrella_world": lambda: _build_umbrella_world(device, threshold=threshold),
-        "umbrella_yolo26n": lambda: _build_umbrella_yolo26n(device, threshold=threshold),
         "umbrella_rfdetr": lambda: _build_umbrella_rfdetr(device, threshold=threshold),
         "umbrella_rtdetrv2": lambda: _build_umbrella_rtdetrv2(device, threshold=threshold),
         "umbrella_trained": lambda: _build_umbrella_trained(device, threshold=threshold),
@@ -408,11 +357,7 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         "optical_flow_crush": lambda: OpticalFlowCrushDetector(device=device),
         "dense_flow": lambda: _build_dense_flow(device),
         "roboflow_combined": lambda: RoboflowCombinedDetector(device=device, **_kw()),
-        "fall_yolo_pose": lambda: YOLOPoseFallDetector(model_size=pose_size, device=device, **_kw()),
         "fall_mediapipe_pose": lambda: MediaPipeFallDetector(device=device, **_kw()),
-        "fall_alphapose_lstm": lambda: AlphaPoseFallDetector(device=device, **_kw()),
-        "fall_stgcn": lambda: STGCNFallDetector(device=device, **_kw()),
-        "fall_posec3d": lambda: PoseC3DFallDetector(device=device, **_kw()),
         "fall_movenet": lambda: MoveNetFallDetector(device=device, **_kw()),
         "fall_optical_flow": lambda: OpticalFlowFallDetector(device=device),
         "violence_x3d": lambda: X3DViolenceClassifier(device=device, **_kw()),
@@ -427,8 +372,6 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
         "anpr": lambda: _build_anpr(device, video_name, threshold=threshold),
         "indian_anpr": lambda: _build_indian_anpr(device, video_name, threshold=threshold),
         "rtdetrv2_anpr": lambda: _build_rtdetrv2_anpr(device, video_name, threshold=threshold),
-        "yolo_traffic": lambda: YoloTrafficDetector(device=device, **_kw()),
-        "rtdetr_traffic": lambda: RtdetrTrafficDetector(device=device, **_kw()),
         "rtdetrv2_traffic": lambda: _build_rtdetrv2_traffic(device, threshold=threshold),
         "roboflow_traffic": lambda: RoboflowTrafficDetector(device=device, **_kw()),
         "mog2_parked": lambda: Mog2ParkedDetector(device=device),
@@ -436,14 +379,6 @@ def build_model(key: str, device: Optional[str], pose_size: str = "s",
     if key not in factories:
         raise KeyError(f"Unknown model: {key}")
     return factories[key]()
-
-
-def _build_umbrella(device, threshold=None):
-    from models.umbrella import UmbrellaDetector
-    kw = {"device": device}
-    if threshold is not None:
-        kw["conf_threshold"] = threshold
-    return UmbrellaDetector(**kw)
 
 
 def _build_umbrella_ssd(device, threshold=None):
@@ -454,28 +389,12 @@ def _build_umbrella_ssd(device, threshold=None):
     return UmbrellaSSDDetector(**kw)
 
 
-def _build_umbrella_world(device, threshold=None):
-    from models.umbrella import UmbrellaWorldDetector
-    kw = {"device": device}
-    if threshold is not None:
-        kw["conf_threshold"] = threshold
-    return UmbrellaWorldDetector(**kw)
-
-
 def _build_umbrella_trained(device, threshold=None):
     from models.umbrella import TrainedUmbrellaDetector
     kw = {"device": device}
     if threshold is not None:
         kw["conf_threshold"] = threshold
     return TrainedUmbrellaDetector(**kw)
-
-
-def _build_umbrella_yolo26n(device, threshold=None):
-    from models.umbrella import YOLO26NanoUmbrellaDetector
-    kw = {"device": device}
-    if threshold is not None:
-        kw["conf_threshold"] = threshold
-    return YOLO26NanoUmbrellaDetector(**kw)
 
 
 def _build_umbrella_rfdetr(device, threshold=None):

@@ -40,6 +40,26 @@
   --shadow-lg: 0 20px 50px -10px rgba(0, 0, 0, 0.7);
   --font-main: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-code: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  /* Spacing scale. Padding and gaps were previously chosen per-rule, which is
+     why panels, cards and tables never quite lined up. Everything below steps
+     through these. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  --sidebar-w: 340px;
+
+  /* Motion. Durations are short on purpose: this is a dashboard people scan,
+     not a landing page. Respect prefers-reduced-motion below. */
+  --t-fast: 120ms ease;
+  --t-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  --ring: 0 0 0 3px var(--accent-glow);
 }
 
 * { box-sizing: border-box; }
@@ -270,74 +290,12 @@ code { font-family: var(--font-code); font-size: .92em; }
   min-width: 0;
 }
 
-.thresh-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 7px;
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: rgba(99, 102, 241, 0.07);
-  border: 1px solid rgba(99, 102, 241, 0.15);
-}
 
-.thresh-label {
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  color: var(--accent);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
 
-.thresh-slider {
-  flex: 1;
-  height: 4px;
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--border);
-  border-radius: 999px;
-  outline: none;
-  cursor: pointer;
-  transition: background .15s;
-  min-width: 0;
-}
 
-.thresh-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
-  box-shadow: 0 0 0 3px var(--accent-glow);
-  transition: box-shadow .15s;
-}
 
-.thresh-slider:hover::-webkit-slider-thumb {
-  box-shadow: 0 0 0 5px var(--accent-glow);
-}
 
-.thresh-slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border: none;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
-}
 
-.thresh-value {
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-  white-space: nowrap;
-  min-width: 2.6ch;
-  text-align: right;
-  flex-shrink: 0;
-}
 
 
 .pill {
@@ -1258,3 +1216,267 @@ button.danger-ghost:hover {
   margin-bottom: 10px;
   display: block;
 }
+
+/* ------------------------------------------- global confidence threshold */
+
+/* One control for every selected model. Spans the settings grid so it reads
+   as a run-wide setting rather than another per-model dropdown. */
+.threshold-setting {
+  grid-column: 1 / -1;
+}
+
+.threshold-control {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.threshold-control input[type="range"] {
+  flex: 1;
+  min-width: 180px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  appearance: none;
+  cursor: pointer;
+}
+
+.threshold-control input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 0 1px var(--accent);
+  cursor: pointer;
+}
+
+.threshold-control input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--panel);
+  cursor: pointer;
+}
+
+.threshold-control output {
+  min-width: 3.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.threshold-setting .hint {
+  margin: 6px 0 0;
+  line-height: 1.5;
+  max-width: 70ch;
+}
+
+/* ==========================================================================
+   Production layer: accessibility, responsiveness, and the utility classes
+   that replace the inline styles that used to live in app.js templates.
+   ========================================================================== */
+
+/* --- focus visibility -----------------------------------------------------
+   Keyboard users had nothing: the default outline was never restyled after
+   `outline: none` on inputs, so tabbing through the model list was invisible.
+   :focus-visible keeps mouse clicks clean while making keyboard focus loud. */
+
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.model:focus-within {
+  border-color: var(--border-highlight);
+  box-shadow: var(--ring);
+}
+
+/* --- motion ---------------------------------------------------------------
+   Every transition is opt-out. Vestibular triggers are a real accessibility
+   issue and a dashboard has no reason to animate through one. */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* --- screen-reader-only ---------------------------------------------------
+   For labels that would be redundant visually but are needed by a screen
+   reader (icon-only buttons, table captions). */
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- utilities ------------------------------------------------------------
+   These exist so JS templates stop carrying `style="..."`. An inline style
+   cannot be themed, cannot respond to a media query, and cannot be found by
+   searching the stylesheet — which is how spacing drifted per-component. */
+
+.u-num          { text-align: right; font-variant-numeric: tabular-nums; }
+.u-strong       { font-weight: 700; color: var(--text); }
+.u-accent       { color: var(--accent); font-weight: 700; font-size: 12px; }
+.u-mono-sm      { font-size: 11px; color: var(--subtle); font-family: var(--font-code); }
+.u-row          { display: flex; align-items: center; gap: var(--sp-2); }
+.u-clickable    { cursor: pointer; }
+.u-mt-0         { margin-top: 0; }
+.u-mt-3         { margin-top: var(--sp-3); }
+.u-mb-2         { margin-bottom: var(--sp-2); }
+.u-mb-3         { margin-bottom: var(--sp-3); }
+.u-mb-5         { margin-bottom: var(--sp-5); }
+.u-mb-6         { margin-bottom: var(--sp-6); }
+
+.u-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: var(--sp-1);
+}
+
+.u-caption {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: var(--sp-2);
+}
+
+/* Framed, scrollable table container. Wide tables used to widen the page
+   instead of scrolling inside it. */
+.table-frame {
+  margin-bottom: var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.table-frame table { margin-bottom: 0; }
+
+tr.is-active {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+/* --- consistent states ----------------------------------------------------
+   Empty, loading and error blocks were styled three different ways depending
+   on which panel rendered them. */
+
+.empty, .loading {
+  padding: var(--sp-6);
+  text-align: center;
+  color: var(--subtle);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.loading::before {
+  content: "";
+  display: inline-block;
+  width: 13px; height: 13px;
+  margin-right: var(--sp-2);
+  vertical-align: -2px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.err {
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--bad-border);
+  background: var(--bad-bg);
+  color: var(--bad);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* --- interaction polish ---------------------------------------------------
+   Hover/active feedback was inconsistent — some controls moved, some changed
+   colour, some did nothing. */
+
+button, .link-btn, .model, .card {
+  transition: background var(--t-fast), border-color var(--t-fast),
+              color var(--t-fast), transform var(--t-fast),
+              box-shadow var(--t-fast);
+}
+
+button:not(:disabled):active { transform: translateY(1px); }
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.panel { transition: box-shadow var(--t-base); }
+
+/* --- responsive -----------------------------------------------------------
+   The layout was fixed at a 340px sidebar plus whatever remained, with no
+   breakpoints at all: below roughly 1000px the content column collapsed to an
+   unusable width, and the settings grid never reflowed. */
+
+@media (max-width: 1100px) {
+  .settings { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .panel { padding: var(--sp-5); }
+}
+
+@media (max-width: 900px) {
+  .app { flex-direction: column; }
+
+  .sidebar {
+    width: 100%;
+    flex: 1 1 auto;
+    height: auto;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    box-shadow: none;
+  }
+
+  /* Cap the model list so the sidebar cannot push the run controls off
+     screen on a phone. */
+  .model-list { max-height: 46vh; }
+
+  .settings { grid-template-columns: 1fr; }
+  .cards-grid { grid-template-columns: 1fr; }
+  .panel { padding: var(--sp-4); margin-bottom: var(--sp-4); }
+  .panel-head { flex-wrap: wrap; gap: var(--sp-2); }
+}
+
+@media (max-width: 560px) {
+  body { font-size: 13px; }
+  .run-row { flex-direction: column; align-items: stretch; }
+  .run-row button { width: 100%; }
+  .head-actions { flex-wrap: wrap; }
+  .meas-grid { grid-template-columns: 1fr; }
+}
+
+/* Wide content must scroll inside its own container, never widen the page. */
+table { width: 100%; }
+.modal-body { overflow-x: hidden; }
+.modal-body pre { overflow-x: auto; }
+
+/* Utilities referenced from JS templates that had no rule yet. */
+.u-mr-1  { margin-right: var(--sp-1); }
+.u-muted { color: var(--muted); }
+
+/* Legend swatches in the validation tab. Colours match the arrows drawn into
+   cross_family_comparison.mp4 — if one changes, change both. */
+.swatch-tracker { color: #ffffff; font-weight: 700; }
+.swatch-flow    { color: #00dcff; font-weight: 700; }

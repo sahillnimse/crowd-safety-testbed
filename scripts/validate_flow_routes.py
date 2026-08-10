@@ -50,7 +50,7 @@ from models.crowd_flow.flow_field import FlowField
 from models.crowd_flow.ground_plane import CameraCalibration
 from models.crowd_flow.validation import (
     CameraView, CrossCameraValidator, CrossFamilyValidator,
-    SyntheticWarpValidator, ValidationReport, find_person_weights,
+    SyntheticWarpValidator, ValidationReport,
     STATUS_PASS, STATUS_FAIL, STATUS_SKIPPED, STATUS_ERROR,
 )
 
@@ -372,8 +372,7 @@ def main() -> None:
                 C_KEY, C_TITLE, "No --source given.", C_CAVEAT,
             ))
         else:
-            weights = find_person_weights(str(_PROJECT_ROOT))
-            validator = CrossFamilyValidator(weights_path=weights)
+            validator = CrossFamilyValidator()
             video_out = None
             if args.comparison_video:
                 video_out = os.path.join(

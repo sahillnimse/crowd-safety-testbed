@@ -48,10 +48,7 @@ from models.crowd_flow.validation.cross_camera import (
     CrossCameraValidator,
     CameraView,
 )
-from models.crowd_flow.validation.cross_family import (
-    CrossFamilyValidator,
-    find_person_weights,
-)
+from models.crowd_flow.validation.cross_family import CrossFamilyValidator
 
 __all__ = [
     "Measurement", "RouteResult", "ValidationReport",
@@ -60,5 +57,5 @@ __all__ = [
     "warp_frame", "endpoint_error",
     "translation_field", "radial_field", "shear_field", "rotation_field",
     "CrossCameraValidator", "CameraView",
-    "CrossFamilyValidator", "find_person_weights",
+    "CrossFamilyValidator",
 ]

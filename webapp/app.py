@@ -23,7 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from webapp import registry
-from webapp.jobs import ANNOTATED_DIR, LOG_DIR, MANAGER, PROJECT_ROOT
+from webapp.jobs import (ANNOTATED_DIR, LOG_DIR, MANAGER, PROJECT_ROOT,
+                         RUNS_DIR, RUN_JSON, run_dir)
 
 TEST_VIDEOS_DIR = os.path.join(PROJECT_ROOT, "test_videos")
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
@@ -70,8 +71,17 @@ class JobRequest(BaseModel):
     sample_every_n_frames: int = 5
     device: str | None = None          # None = auto-detect
     export_video: bool = True
-    pose_size: str = "s"
-    thresholds: dict[str, float] = Field(default_factory=dict)
+    # One confidence threshold applied to every selected model.  Per-model
+    # values were a false affordance: comparing detectors is only meaningful
+    # when they are all judged at the same operating point, and a grid of
+    # sliders invited tuning each one until it looked good, which is how a
+    # benchmark stops measuring anything.  Models whose scores are not
+    # comparable to the rest (SSD runs lower) keep their own default and are
+    # documented as such rather than silently rescaled.
+    threshold: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Global confidence threshold for all selected models.",
+    )
 
 
 @app.get("/api/health")
@@ -140,9 +150,24 @@ def create_job(req: JobRequest):
     if unknown:
         raise HTTPException(400, f"Unknown model(s): {', '.join(unknown)}")
 
-    unknown_thresh = [m for m in req.thresholds if m not in registry.BY_KEY]
-    if unknown_thresh:
-        raise HTTPException(400, f"Unknown model(s) in thresholds: {', '.join(unknown_thresh)}")
+    # Fan the single global threshold out to every selected model that has a
+    # threshold at all.  Models with default_threshold=None are classical-CV
+    # detectors with no confidence score to compare against, so applying one
+    # to them would be meaningless rather than merely unused.
+    #
+    # Two kinds of model are left out.  default_threshold=None means a
+    # classical-CV detector with no confidence score at all, so a threshold
+    # would be meaningless rather than merely unused.  comparable_threshold
+    # =False means the scores exist but are not on the same scale as the rest
+    # (SSDLite runs lower); handing it the same number is a handicap, not a
+    # fair operating point, so it keeps its own documented default.
+    thresholds: dict[str, float] = {}
+    if req.threshold is not None:
+        thresholds = {
+            key: req.threshold for key in req.models
+            if registry.BY_KEY[key].default_threshold is not None
+            and registry.BY_KEY[key].comparable_threshold
+        }
 
     # A local filename in test_videos/ skips the download path entirely.
     local_path = None
@@ -163,9 +188,8 @@ def create_job(req: JobRequest):
         sample_every_n_frames=req.sample_every_n_frames,
         device=req.device or None,
         export_video=req.export_video,
-        pose_size=req.pose_size,
         local_path=local_path,
-        thresholds=req.thresholds,
+        thresholds=thresholds,
     )
     return job.to_dict()
 
@@ -245,10 +269,10 @@ def history_detections(video: str, model_key: str, limit: int = 500,
 
     from webapp.jobs import POSITIVE_LABELS
 
-    name = f"{os.path.basename(video)}_{os.path.basename(model_key)}.json"
-    path = os.path.join(LOG_DIR, name)
+    path = os.path.join(
+        run_dir(os.path.basename(video), os.path.basename(model_key)), RUN_JSON)
     if not os.path.exists(path):
-        raise HTTPException(404, f"No log named {name}")
+        raise HTTPException(404, f"No run for {video} / {model_key}")
 
     with open(path, encoding="utf-8") as f:
         rows = json.load(f)
@@ -286,7 +310,7 @@ def get_detections(job_id: str, model_key: str, limit: int = 500,
     if stage is None or not stage.log_json:
         raise HTTPException(404, "No results for that model yet")
 
-    with open(os.path.join(LOG_DIR, stage.log_json)) as f:
+    with open(os.path.join(RUNS_DIR, stage.log_json), encoding="utf-8") as f:
         rows = json.load(f)
 
     from webapp.jobs import POSITIVE_LABELS
@@ -348,6 +372,26 @@ def stream_validation_file(name: str):
     return FileResponse(path, media_type=media)
 
 
+@app.get("/api/files/run/{video}/{model_key}/{name}")
+def stream_run_file(video: str, model_key: str, name: str):
+    """
+    Serve one artifact from outputs/runs/<video>/<model>/.
+
+    Every path component is reduced to a basename before use: these are URL
+    segments, and joining them raw would let "../.." walk out of outputs/.
+    """
+    path = os.path.join(
+        run_dir(os.path.basename(video), os.path.basename(model_key)),
+        os.path.basename(name),
+    )
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Not found")
+    media = ("video/mp4" if path.lower().endswith(".mp4")
+             else "text/csv" if path.lower().endswith(".csv")
+             else "application/json")
+    return FileResponse(path, media_type=media)
+
+
 @app.get("/api/files/logs/{name}")
 def download_log(name: str):
     path = os.path.join(LOG_DIR, os.path.basename(name))
@@ -370,21 +414,13 @@ def delete_history_video(video: str):
     video_stem = os.path.basename(video)
     removed = 0
 
-    if os.path.isdir(LOG_DIR):
-        for name in os.listdir(LOG_DIR):
-            if name.startswith(f"{video_stem}_"):
-                path = os.path.join(LOG_DIR, name)
-                if os.path.isfile(path):
-                    os.remove(path)
-                    removed += 1
-
-    if os.path.isdir(ANNOTATED_DIR):
-        for name in os.listdir(ANNOTATED_DIR):
-            if name.startswith(f"{video_stem}_"):
-                path = os.path.join(ANNOTATED_DIR, name)
-                if os.path.isfile(path):
-                    os.remove(path)
-                    removed += 1
+    # One directory holds everything this video produced, so the prefix
+    # matching the old flat layout needed — which also deleted "clip_2" when
+    # asked to delete "clip" — is gone.
+    video_runs = os.path.join(RUNS_DIR, video_stem)
+    if os.path.isdir(video_runs):
+        shutil.rmtree(video_runs, ignore_errors=True)
+        removed += 1
 
     anpr_folder = os.path.join(ANPR_DIR, video_stem)
     if os.path.isdir(anpr_folder):
@@ -397,21 +433,15 @@ def delete_history_video(video: str):
 @app.delete("/api/history/{video}/{model_key}")
 def delete_history_stage(video: str, model_key: str):
     """Delete a single model's saved outputs for a video."""
-    video_stem = os.path.basename(video)
-    model_stem = os.path.basename(model_key)
-    stem = f"{video_stem}_{model_stem}"
+    target = run_dir(os.path.basename(video), os.path.basename(model_key))
     removed = 0
-
-    for ext in (".json", ".csv"):
-        path = os.path.join(LOG_DIR, f"{stem}{ext}")
-        if os.path.isfile(path):
-            os.remove(path)
-            removed += 1
-
-    mp4_path = os.path.join(ANNOTATED_DIR, f"{stem}.mp4")
-    if os.path.isfile(mp4_path):
-        os.remove(mp4_path)
+    if os.path.isdir(target):
+        shutil.rmtree(target, ignore_errors=True)
         removed += 1
+        # Drop the video directory too once its last model run is gone.
+        parent = os.path.dirname(target)
+        if os.path.isdir(parent) and not os.listdir(parent):
+            os.rmdir(parent)
 
     return {"ok": True, "removed": removed}
 
@@ -433,12 +463,17 @@ def clear_outputs():
     """Wipe generated artifacts. Only ever touches outputs/, never the
     source videos in test_videos/."""
     removed = 0
-    for d in (LOG_DIR, ANNOTATED_DIR):
+    for d in (LOG_DIR, ANNOTATED_DIR, RUNS_DIR):
         if not os.path.isdir(d):
             continue
         for name in os.listdir(d):
             path = os.path.join(d, name)
-            if os.path.isfile(path):
+            # runs/ holds a directory per video; logs/ and annotated/ hold
+            # loose files from before the restructure. Handle both.
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+            elif os.path.isfile(path):
                 try:
                     os.remove(path)
                     removed += 1

@@ -73,3 +73,8 @@ def emit_umbrellas(boxes: Sequence, confidences: Sequence,
         )
         for bbox, conf, area, tid in kept
     ]
+
+
+# COCO class index for "umbrella".  Shared by every backend that scores
+# against COCO rather than a fine-tuned single-class head.
+UMBRELLA_COCO_CLASS = 25

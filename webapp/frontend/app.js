@@ -7,7 +7,7 @@ const state = {
   models: [],
   categories: {},
   selected: new Set(),
-  thresholds: {},          // model_key -> float (only set when user moves a slider)
+  threshold: 0.35,         // one confidence threshold for every selected model
   sourceTab: 'url',
   pollTimer: null,
   openJobs: new Set(),
@@ -23,6 +23,7 @@ const state = {
   activeModalTab: 'overview',
   validation: null,
   validationTimer: null,
+  modalOpener: null,
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -117,7 +118,7 @@ async function loadModels() {
 
 function renderModels() {
   const host = $('#model-list');
-  const order = ['fall', 'violence', 'traffic', 'anpr', 'umbrella', 'fire', 'crush', 'other'];
+  const order = ['fall', 'violence', 'traffic', 'anpr', 'umbrella', 'crush', 'other'];
   const query = state.searchQuery || '';
 
   host.innerHTML = '';
@@ -145,32 +146,21 @@ function renderModels() {
 
     items.forEach((m) => {
       const checked = state.selected.has(m.key);
-      const hasThresh = m.default_threshold !== null && m.default_threshold !== undefined;
-      const curThresh = state.thresholds[m.key] !== undefined
-        ? state.thresholds[m.key]
-        : (hasThresh ? m.default_threshold : null);
-
       const el = document.createElement('label');
       el.className = 'model' + (checked ? ' checked' : '') +
         (m.status === 'blocked' ? ' blocked' : '');
       el.innerHTML = `
         <input type="checkbox" ${checked ? 'checked' : ''}
-               ${m.status === 'blocked' ? 'disabled' : ''} data-key="${m.key}" />
+               ${m.status === 'blocked' ? 'disabled' : ''} data-key="${m.key}"
+               aria-label="${esc(m.label)} — ${esc(m.status)}" />
         <div class="model-body">
           <div class="name">${esc(m.label)}
             <span class="pill ${m.status}">${m.status}</span></div>
           <div class="blurb">${esc(m.blurb)}</div>
+          ${m.comparable_threshold === false ? `<div class="note fallback">Runs at its own threshold (${
+            m.default_threshold != null ? m.default_threshold.toFixed(2) : 'default'
+          }) — its scores are not on the same scale as the other detectors, so the run-wide threshold does not apply.</div>` : ''}
           ${m.note ? `<div class="note ${m.status}">${esc(m.note)}</div>` : ''}
-          ${hasThresh ? `
-          <div class="thresh-row" title="Confidence threshold — lower = more detections, higher = fewer false positives">
-            <span class="thresh-label">Threshold</span>
-            <input type="range" class="thresh-slider"
-              id="thresh-${m.key}"
-              min="0" max="1" step="0.01"
-              value="${curThresh.toFixed(2)}"
-              data-model-key="${m.key}" />
-            <span class="thresh-value" id="thresh-val-${m.key}">${curThresh.toFixed(2)}</span>
-          </div>` : ''}
         </div>`;
 
       const cb = el.querySelector('input[type=checkbox]');
@@ -192,19 +182,6 @@ function renderModels() {
         }
       });
 
-      if (hasThresh) {
-        const slider = el.querySelector('.thresh-slider');
-        const valSpan = el.querySelector(`#thresh-val-${m.key}`);
-        slider.addEventListener('input', (e) => {
-          e.stopPropagation();
-          const v = parseFloat(slider.value);
-          state.thresholds[m.key] = v;
-          valSpan.textContent = v.toFixed(2);
-        });
-        // Prevent clicks on the slider row from toggling the checkbox
-        slider.addEventListener('click', (e) => e.stopPropagation());
-      }
-
       host.appendChild(el);
     });
   });
@@ -214,6 +191,7 @@ function renderModels() {
   }
 
   $('#selected-count').textContent = `${state.selected.size} selected of ${state.models.length}`;
+  host.setAttribute('aria-busy', 'false');
 }
 
 /* ------------------------------------------------------------------ videos */
@@ -292,8 +270,8 @@ function jobCard(job) {
       <div class="job-msg">${esc(job.message || '')}${job.error ? ` — ${esc(job.error)}` : ''}</div>
       <table class="stages">
         <thead><tr>
-          <th>Model</th><th>Progress</th><th style="text-align:right">Events</th>
-          <th style="text-align:right">Rows</th><th style="text-align:right">Time</th><th>Actions</th>
+          <th>Model</th><th>Progress</th><th class="u-num">Events</th>
+          <th class="u-num">Rows</th><th class="u-num">Time</th><th>Actions</th>
         </tr></thead>
         <tbody>${job.stages.map((s) => stageRow(job, s)).join('')}</tbody>
       </table>
@@ -372,9 +350,9 @@ function historyOutputCard(group) {
       ? '<span class="pill fallback">Geometric Fallback</span>'
       : (s.scoring_modes && s.scoring_modes.kinetics_zeroshot
         ? '<span class="pill ready">Kinetics Zero-Shot</span>' : '');
-    return `<div style="display:flex; align-items:center; gap:6px; margin-top:3px;">
-      <span style="font-weight:700; color:var(--text); font-size:12.5px;">${esc(s.model_label)}</span>
-      <span class="${s.positives > 0 ? 'pos' : 'zero'}" style="font-size:11.5px; font-weight:700;">(${s.positives} alerts)</span>
+    return `<div class="u-row">
+      <span class="u-strong">${esc(s.model_label)}</span>
+      <span class="${s.positives > 0 ? 'pos' : 'zero'} u-strong">(${s.positives} alerts)</span>
       ${tag}
     </div>`;
   }).join('');
@@ -400,7 +378,7 @@ function historyOutputCard(group) {
     </div>
 
     <div>
-      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:700; margin-bottom:4px;">Models & Classifications</div>
+      <div class="u-label">Models & Classifications</div>
       ${modelPills}
     </div>
 
@@ -605,6 +583,7 @@ async function refreshAnpr() {
 
 /* ------------------------------------------------------------------ DETAILED MODAL */
 async function openHistoryDetailModal(videoName) {
+  state.modalOpener = document.activeElement;
   const group = state.historyData.find(g => g.video === videoName);
   if (!group) return;
 
@@ -644,6 +623,7 @@ async function openHistoryDetailModal(videoName) {
 }
 
 async function openJobDetailModal(jobId, modelKey) {
+  state.modalOpener = document.activeElement;
   $('#modal-title').textContent = `Job Details — ${jobId}`;
   $('#modal-body').innerHTML = '<div class="loading">Loading detections…</div>';
   $('#modal').classList.remove('hidden');
@@ -666,7 +646,9 @@ async function openJobDetailModal(jobId, modelKey) {
 function renderModalTab(tabName) {
   state.activeModalTab = tabName;
   $$('#modal-nav .modal-tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.mtab === tabName);
+    const isActive = btn.dataset.mtab === tabName;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
   });
 
   const detail = state.currentDetail;
@@ -683,7 +665,7 @@ function renderModalTab(tabName) {
     const mainLabel = d.rows && d.rows.length ? (d.rows[0].label || 'detection') : 'N/A';
 
     const labelsList = s.label_counts
-      ? Object.entries(s.label_counts).map(([k, v]) => `<span class="plate-badge" style="margin-right:6px;">${esc(k)}: ${v}</span>`).join(' ')
+      ? Object.entries(s.label_counts).map(([k, v]) => `<span class="plate-badge u-mr-1">${esc(k)}: ${v}</span>`).join(' ')
       : 'None';
 
     host.innerHTML = `
@@ -710,7 +692,7 @@ function renderModalTab(tabName) {
           <tr><td class="key">Category</td><td class="val">${esc(s.model_key ? s.model_key.split('_')[0] : 'general')}</td></tr>
           <tr><td class="key">Detected Labels</td><td class="val">${labelsList}</td></tr>
           ${s.modified_at ? `<tr><td class="key">Run Date</td><td class="val">${new Date(s.modified_at * 1000).toLocaleString()}</td></tr>` : ''}
-          ${s.log_json ? `<tr><td class="key">Log Artifact</td><td class="val"><a href="/api/files/logs/${esc(s.log_json)}" target="_blank" class="link-btn">Download ${esc(s.log_json)}</a></td></tr>` : ''}
+          ${s.log_json ? `<tr><td class="key">Log Artifact</td><td class="val"><a href="/api/files/run/${esc(s.log_json)}" target="_blank" class="link-btn">Download ${esc(s.log_json)}</a></td></tr>` : ''}
         </tbody>
       </table>
     `;
@@ -728,19 +710,19 @@ function renderModalTab(tabName) {
 
     const selectorRows = allStages.map(s => {
       const isActive = s.model_key === activeKey;
-      return `<tr class="video-select-row${isActive ? ' active-video-row' : ''}" data-load-model="${esc(s.model_key)}" data-model-label="${esc(s.model_label)}" style="cursor:pointer;${isActive ? ' background:rgba(99,102,241,0.15);' : ''}">
-        <td style="font-weight:700; color:var(--text);">${esc(s.model_label)}</td>
-        <td class="${s.positives > 0 ? 'pos' : 'zero'}" style="font-weight:700;">${s.positives} alerts</td>
+      return `<tr class="video-select-row u-clickable${isActive ? ' active-video-row is-active' : ''}" data-load-model="${esc(s.model_key)}" data-model-label="${esc(s.model_label)}">
+        <td class="u-strong">${esc(s.model_label)}</td>
+        <td class="${s.positives > 0 ? 'pos' : 'zero'} u-strong">${s.positives} alerts</td>
         <td>${s.detections} rows</td>
-        <td><span style="color:var(--accent); font-weight:700; font-size:12px;">${isActive ? '⬤ Viewing' : '▶ Load'}</span></td>
+        <td><span class="u-accent">${isActive ? '⬤ Viewing' : '▶ Load'}</span></td>
       </tr>`;
     }).join('');
 
     host.innerHTML = `
-      <div class="detail-section-title" style="margin-top:0;">⏱️ Select a Model to View Detections</div>
-      <p class="hint" style="margin-bottom:10px;">${allStages.length} models scored this video — click any row to load its detection rows below.</p>
-      <table style="margin-bottom:20px; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;">
-        <thead><tr><th>Model</th><th style="text-align:right">Alerts</th><th style="text-align:right">Total Rows</th><th></th></tr></thead>
+      <div class="detail-section-title u-mt-0">⏱️ Select a Model to View Detections</div>
+      <p class="hint u-mb-3">${allStages.length} models scored this video — click any row to load its detection rows below.</p>
+      <table class="table-frame">
+        <thead><tr><th>Model</th><th class="u-num">Alerts</th><th class="u-num">Total Rows</th><th></th></tr></thead>
         <tbody>${selectorRows}</tbody>
       </table>
       <div id="timeline-detections-host"><div class="loading">Loading detections…</div></div>
@@ -791,7 +773,7 @@ function renderModalTab(tabName) {
           </tr>`;
         }).join('');
         detectHost.innerHTML = `
-          <div class="hint" style="margin-bottom:10px;">Showing top ${d.rows.length} of ${d.total} positive detection rows for <strong>${esc(modelLabel)}</strong>.</div>
+          <div class="hint u-mb-3">Showing top ${d.rows.length} of ${d.total} positive detection rows for <strong>${esc(modelLabel)}</strong>.</div>
           <table><thead><tr><th>Timestamp</th><th>Class Label</th><th>Conf</th>
             <th>Track ID</th>${hasPlates ? '<th>Plate Read</th>' : ''}<th>Details</th></tr></thead>
             <tbody>${rows}</tbody></table>`;
@@ -817,8 +799,8 @@ function renderModalTab(tabName) {
     } else if (allVids.length === 1) {
       // Single video — just play it directly
       host.innerHTML = `
-        <video controls autoplay src="/api/files/annotated/${esc(allVids[0].file)}"></video>
-        <p class="hint" style="margin-top:12px;"><strong>${esc(allVids[0].label)}</strong> — annotated video output with bounding box overlays.</p>
+        <video controls autoplay src="/api/files/run/${esc(allVids[0].file)}"></video>
+        <p class="hint u-mt-3"><strong>${esc(allVids[0].label)}</strong> — annotated video output with bounding box overlays.</p>
       `;
     } else {
       // Multiple videos — show selection table then player
@@ -827,18 +809,18 @@ function renderModalTab(tabName) {
 
       const tableRows = allVids.map((v) => {
         const isActive = v.file === currentFile;
-        return `<tr class="video-select-row${isActive ? ' active-video-row' : ''}" data-play-video="${esc(v.file)}" data-play-label="${esc(v.label)}" style="cursor:pointer;${isActive ? ' background:rgba(99,102,241,0.15);' : ''}">
-          <td style="font-weight:700; color:var(--text);">${esc(detail.videoName)}</td>
-          <td style="color:var(--muted);">${esc(v.label)}</td>
-          <td style="font-size:11px; color:var(--subtle); font-family:var(--font-code);">${esc(v.file)}</td>
-          <td><span style="color:var(--accent); font-weight:700; font-size:12px;">${isActive ? '▶ Playing' : '▶ Play'}</span></td>
+        return `<tr class="video-select-row u-clickable${isActive ? ' active-video-row is-active' : ''}" data-play-video="${esc(v.file)}" data-play-label="${esc(v.label)}">
+          <td class="u-strong">${esc(detail.videoName)}</td>
+          <td class="u-muted">${esc(v.label)}</td>
+          <td class="u-mono-sm">${esc(v.file)}</td>
+          <td><span class="u-accent">${isActive ? '▶ Playing' : '▶ Play'}</span></td>
         </tr>`;
       }).join('');
 
       host.innerHTML = `
-        <div class="detail-section-title" style="margin-top:0;">🎬 Select a Model Output Video</div>
-        <p class="hint" style="margin-bottom:10px;">${allVids.length} annotated outputs available — click any row to switch playback.</p>
-        <table style="margin-bottom:20px; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;">
+        <div class="detail-section-title u-mt-0">🎬 Select a Model Output Video</div>
+        <p class="hint u-mb-3">${allVids.length} annotated outputs available — click any row to switch playback.</p>
+        <table class="table-frame">
           <thead><tr>
             <th>Video File</th>
             <th>Model</th>
@@ -847,8 +829,8 @@ function renderModalTab(tabName) {
           </tr></thead>
           <tbody>${tableRows}</tbody>
         </table>
-        <div style="margin-bottom:8px; font-size:12px; color:var(--muted);">Now playing: <strong style="color:var(--text);" id="video-now-playing">${esc(currentEntry.label)}</strong></div>
-        <video id="modal-video-player" controls autoplay src="/api/files/annotated/${esc(currentFile)}"></video>
+        <div class="u-caption">Now playing: <strong class="u-strong" id="video-now-playing">${esc(currentEntry.label)}</strong></div>
+        <video id="modal-video-player" controls autoplay src="/api/files/run/${esc(currentFile)}"></video>
       `;
 
       // Wire up row clicks to switch video
@@ -859,7 +841,7 @@ function renderModalTab(tabName) {
           detail.activeAnnotatedVideo = file;
 
           const player = $('#modal-video-player');
-          if (player) { player.src = `/api/files/annotated/${file}`; player.play(); }
+          if (player) { player.src = `/api/files/run/${file}`; player.play(); }
 
           const nowPlaying = $('#video-now-playing');
           if (nowPlaying) nowPlaying.textContent = label;
@@ -867,7 +849,7 @@ function renderModalTab(tabName) {
           // Update row highlighting
           host.querySelectorAll('.video-select-row').forEach(r => {
             const isNowActive = r.dataset.playVideo === file;
-            r.style.background = isNowActive ? 'rgba(99,102,241,0.15)' : '';
+            r.classList.toggle('is-active', isNowActive);
             const actionCell = r.querySelector('span');
             if (actionCell) actionCell.textContent = isNowActive ? '▶ Playing' : '▶ Play';
           });
@@ -927,13 +909,19 @@ function renderDetections(d) {
   }).join('');
 
   $('#modal-body').innerHTML = `
-    <div class="hint" style="margin-bottom:12px;">Total positive detections: ${d.total}; showing top ${d.rows.length} rows.</div>
+    <div class="hint u-mb-3">Total positive detections: ${d.total}; showing top ${d.rows.length} rows.</div>
     <table><thead><tr><th>Timestamp</th><th>Class Label</th><th>Conf</th>
       <th>Track ID</th>${hasPlates ? '<th>Plate Read</th>' : ''}<th>Details</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
 }
 
 function closeModal() {
+  // Return focus to the trigger; without this, dismissing the dialog drops
+  // the caret back to the top of the document.
+  if (state.modalOpener && document.contains(state.modalOpener)) {
+    state.modalOpener.focus({ preventScroll: true });
+  }
+  state.modalOpener = null;
   $('#modal').classList.add('hidden');
   $('#modal-body').innerHTML = '';
   state.currentDetail = null;
@@ -959,29 +947,15 @@ async function runJob() {
   btn.textContent = 'Starting job…';
 
   try {
-    // Build thresholds payload: only models that have been explicitly adjusted
-    // OR that have a default_threshold (so the backend always gets the right value).
-    const thresholdsPayload = {};
-    for (const key of state.selected) {
-      const model = state.models.find((m) => m.key === key);
-      if (!model) continue;
-      if (state.thresholds[key] !== undefined) {
-        // User moved the slider
-        thresholdsPayload[key] = state.thresholds[key];
-      } else if (model.default_threshold !== null && model.default_threshold !== undefined) {
-        // Use the model's published default so the backend is explicit
-        thresholdsPayload[key] = model.default_threshold;
-      }
-    }
-
+    // One threshold for every selected model. The backend fans it out and
+    // skips models that have no confidence score to threshold.
     await postJSON('/api/jobs', {
       source,
       models: [...state.selected],
       sample_every_n_frames: parseInt($('#stride').value, 10),
       device: $('#device').value || null,
       export_video: $('#export-video').checked,
-      pose_size: $('#pose-size').value,
-      thresholds: thresholdsPayload,
+      threshold: state.threshold,
     });
     state.openJobs.clear();
     refreshJobs();
@@ -1147,15 +1121,15 @@ function renderValidationTab(host, detail) {
 
     ${video ? `
     <h4 class="vt-heading">See it: tracker vs optical flow</h4>
-    <p class="hint" style="margin-bottom:10px;">
-      Every person carries two arrows. <strong style="color:#fff;">White</strong>
-      is what the person-tracker measured; <strong style="color:#00dcff;">cyan</strong>
+    <p class="hint u-mb-3">
+      Every person carries two arrows. <strong class="swatch-tracker">White</strong>
+      is what the person-tracker measured; <strong class="swatch-flow">cyan</strong>
       is what dense optical flow measured. Arrows on top of each other means the
       two independent methods agree. Arrows splitting apart means they disagree —
       the box turns red and shows the angle between them.
     </p>
     <video class="vt-video" controls src="/api/files/validation/${esc(video)}"></video>
-    <p class="hint" style="margin-bottom:22px;">
+    <p class="hint u-mb-6">
       Arrows are drawn longer than life so they are visible; both use the same
       exaggeration, so the comparison between them stays fair.
     </p>` : ''}
@@ -1229,6 +1203,7 @@ function wire() {
     tab.addEventListener('click', () => {
       $$('#source-tabs .tab').forEach((t) => t.classList.remove('active'));
       tab.classList.add('active');
+      tab.setAttribute('aria-selected', 'true');
       state.sourceTab = tab.dataset.tab;
       $$('.tab-body').forEach((b) => b.classList.toggle('hidden', b.dataset.body !== state.sourceTab));
       if (state.sourceTab === 'local') loadVideos();
@@ -1261,6 +1236,17 @@ function wire() {
       renderModalTab(btn.dataset.mtab);
     });
   });
+
+  const thresh = $('#threshold');
+  if (thresh) {
+    const out = $('#threshold-value');
+    const sync = () => {
+      state.threshold = parseFloat(thresh.value);
+      if (out) out.textContent = state.threshold.toFixed(2);
+    };
+    thresh.addEventListener('input', sync);
+    sync();
+  }
 
   $('#run-btn').addEventListener('click', runJob);
   $('#refresh-jobs').addEventListener('click', refreshJobs);

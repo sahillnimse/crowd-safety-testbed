@@ -3,7 +3,7 @@ ANPR: vehicle capture with number-plate reading.
 
 Pipeline per frame:
 
-    YOLO vehicle detect + ByteTrack
+    RT-DETRv2 vehicle detect + shared IoU tracker
         -> crop each tracked vehicle
         -> DETR plate detection inside that crop
         -> OCR the plate, correct against the Indian plate format
@@ -41,7 +41,6 @@ import cv2
 import numpy as np
 
 from models.base import BaseModelWrapper, Detection
-from models._weights import resolve as _resolve_weight_path
 from models.anpr._ocr import (
     DEFAULT_MIN_PLATE_WIDTH,
     PlateDetector,
@@ -93,14 +92,17 @@ class ANPRDetector(BaseModelWrapper):
     name = "anpr"
     gpu_accelerated = True
 
-    def __init__(self, weights: str = "yolo11n.pt", conf_threshold: float = 0.35,
+    def __init__(self, conf_threshold: float = 0.35,
                  plate_conf: float = 0.5,
                  min_plate_width: int = DEFAULT_MIN_PLATE_WIDTH,
                  read_every_n_frames: int = 3,
                  gallery_dir: str = None, video_name: str = "run",
                  save_gallery: bool = True, ocr_backend: str = "easyocr", device=None):
+        # No `weights` parameter: the vehicle detector is the shared
+        # RT-DETRv2 in models/_detectors.py, which owns its own checkpoint.
+        # The old parameter survived the YOLO removal as an empty string that
+        # nothing read.
         super().__init__(device=device)
-        self.weights = weights
         self.conf_threshold = conf_threshold
         self.plate_conf = plate_conf
         self.min_plate_width = min_plate_width
@@ -117,11 +119,17 @@ class ANPRDetector(BaseModelWrapper):
         self._classifier = ParkedMovingClassifier(model_name=self.name)
         self._plate_detector = PlateDetector(conf_threshold=plate_conf)
         self._ocr = get_ocr_engine(ocr_backend, min_plate_width=min_plate_width)
+        # RT-DETRv2 is a detector, not a tracker.  ANPR needs stable per-vehicle
+        # identity to accumulate plate votes and pick a best portrait, so
+        # association is done with the project's shared IoU tracker.
+        from models._tracker import IoUTracker
+        self._tracker = IoUTracker(iou_threshold=0.3, max_age=30)
 
     def load(self):
-        from ultralytics import YOLO
-        self._model = YOLO(_resolve_weight_path(self.weights))
-        self._model.to(self.device)
+        from models._detectors import get_detector
+        self._model = get_detector(device=self.device)
+        self._model.load()
+        self._tracker.reset()
 
         self._plate_detector.device = self.device
         self._plate_detector.load()
@@ -133,23 +141,21 @@ class ANPRDetector(BaseModelWrapper):
 
     # ------------------------------------------------------------------
     def predict(self, frame, frame_index: int, timestamp_sec: float) -> list[Detection]:
-        results = self._model.track(
-            frame, persist=True, classes=list(_VEHICLE_COCO_CLASSES),
-            conf=self.conf_threshold, tracker="bytetrack.yaml",
-            verbose=False, device=self.device,
+        raw = self._model.detect_with_labels(
+            frame, classes=tuple(_VEHICLE_COCO_CLASSES),
+            conf_threshold=self.conf_threshold,
         )
-        r = results[0]
-        if r.boxes is None or r.boxes.id is None:
+        if not raw:
             return []
+
+        det_boxes = [b for b, _c, _s in raw]
+        track_ids = self._tracker.update(det_boxes, frame_index)
 
         h, w = frame.shape[:2]
         read_this_frame = (frame_index % self.read_every_n_frames == 0)
         detections = []
 
-        for box, tid, cls_id, conf in zip(
-            r.boxes.xyxy.tolist(), r.boxes.id.tolist(),
-            r.boxes.cls.tolist(), r.boxes.conf.tolist(),
-        ):
+        for (box, cls_id, conf), tid in zip(raw, track_ids):
             x1, y1, x2, y2 = (int(round(v)) for v in box)
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)

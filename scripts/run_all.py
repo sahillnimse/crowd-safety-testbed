@@ -4,6 +4,13 @@ each video's category, and exports annotated videos + logs for all of them.
 
 Usage:
     python scripts/run_all.py --config configs/test_videos.yaml
+
+Models come from webapp/registry.py, the same table the web UI builds from.
+This script used to keep its own MODEL_REGISTRY dict, and the two drifted:
+the local copy covered 12 of the project's models and never gained traffic,
+ANPR or umbrella, so `--only-model rtdetrv2_traffic` failed with a KeyError
+that read like a broken model rather than a missing table entry.  It also
+kept listing models after they were deleted.  One table, one source of truth.
 """
 
 import argparse
@@ -18,65 +25,13 @@ from ingestion.youtube_fetch import fetch_youtube_video
 from pipeline.runner import PipelineRunner
 from pipeline.annotate import export_annotated_video, export_detection_log, export_detection_csv
 from pipeline.device import resolve_device, require_gpu, print_gpu_report
-
-from models.fire_smoke_yolo import FireSmokeYOLO
-from models.optical_flow_crush import OpticalFlowCrushDetector
-
-from models.fall import (
-    YOLOPoseFallDetector,
-    MediaPipeFallDetector,
-    AlphaPoseFallDetector,
-    STGCNFallDetector,
-    PoseC3DFallDetector,
-    MoveNetFallDetector,
-    OpticalFlowFallDetector,
-)
-from models.violence import (
-    X3DViolenceClassifier,
-    SlowFastViolenceClassifier,
-    VideoMAEViolenceClassifier,
-    I3DViolenceClassifier,
-    C3DViolenceClassifier,
-    TSMViolenceClassifier,
-    MMActionSlowOnlyClassifier,
-)
+from webapp import registry
+from webapp.jobs import RUN_CSV, RUN_JSON, RUN_VIDEO, run_dir
 
 
-MODEL_REGISTRY = {
-    "fire_smoke_yolo": FireSmokeYOLO,
-    "optical_flow_crush": OpticalFlowCrushDetector,
-
-    # Fall detection (7)
-    "fall_yolo_pose": YOLOPoseFallDetector,
-    "fall_mediapipe_pose": MediaPipeFallDetector,
-    "fall_alphapose_lstm": AlphaPoseFallDetector,
-    "fall_stgcn": STGCNFallDetector,
-    "fall_posec3d": PoseC3DFallDetector,
-    "fall_movenet": MoveNetFallDetector,
-    "fall_optical_flow": OpticalFlowFallDetector,
-
-    # Violence / altercation detection (7)
-    "violence_x3d": X3DViolenceClassifier,
-    "violence_slowfast": SlowFastViolenceClassifier,
-    "violence_videomae": VideoMAEViolenceClassifier,
-    "violence_i3d": I3DViolenceClassifier,
-    "violence_c3d": C3DViolenceClassifier,
-    "violence_tsm": TSMViolenceClassifier,
-    "violence_mmaction_slowonly": MMActionSlowOnlyClassifier,
-}
-
-FALL_MODELS = [
-    "fall_yolo_pose", "fall_mediapipe_pose", "fall_alphapose_lstm",
-    "fall_stgcn", "fall_posec3d", "fall_movenet", "fall_optical_flow",
-]
-VIOLENCE_MODELS = [
-    "violence_x3d", "violence_slowfast", "violence_videomae", "violence_i3d",
-    "violence_c3d", "violence_tsm", "violence_mmaction_slowonly",
-]
-
-
-def build_models(names: list[str], device: str):
-    return [MODEL_REGISTRY[n](device=device) for n in names]
+def build_models(names: list[str], device: str, video_name: str = "run"):
+    return [registry.build_model(n, device, video_name=video_name)
+            for n in names]
 
 
 def main():
@@ -109,9 +64,6 @@ def main():
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    os.makedirs("outputs/annotated", exist_ok=True)
-    os.makedirs("outputs/logs", exist_ok=True)
-
     for entry in config["videos"]:
         url = entry["url"]
         category = entry["category"]
@@ -141,7 +93,8 @@ def main():
             if model_name not in model_names:
                 continue
             try:
-                model = build_models([model_name], device=device)[0]
+                model = build_models([model_name], device=device,
+                                     video_name=base_name)[0]
                 tag = "GPU" if (model.gpu_accelerated and device.startswith("cuda")) else "CPU"
                 print(f"\n  --- [{tag}] {model.name} (device={model.device}) ---")
 
@@ -151,14 +104,19 @@ def main():
                 detections = runner.run(video_path)
                 print(f"  {len(detections)} detections for {model.name}.")
 
-                tag_str = f"{base_name}_{category}_{model.name}"
-                out_video = f"outputs/annotated/{tag_str}.mp4"
-                out_log = f"outputs/logs/{tag_str}.json"
-                out_csv = f"outputs/logs/{tag_str}.csv"
-
-                export_annotated_video(video_path, detections, out_video)
-                export_detection_log(detections, out_log)
-                export_detection_csv(detections, out_csv)
+                # Same layout the web UI writes and reads:
+                # outputs/runs/<video>/<model>/.  The CLI used to write flat
+                # "<video>_<category>_<model>.<ext>" files into outputs/logs
+                # and outputs/annotated, so a run started here was invisible
+                # in the UI's history and vice versa.
+                out_dir = run_dir(base_name, model_name, create=True)
+                export_annotated_video(video_path, detections,
+                                       os.path.join(out_dir, RUN_VIDEO))
+                export_detection_log(detections,
+                                     os.path.join(out_dir, RUN_JSON))
+                export_detection_csv(detections,
+                                     os.path.join(out_dir, RUN_CSV))
+                print(f"  -> {out_dir}")
             except Exception as e:
                 print(f"  FAILED: {model_name} — {type(e).__name__}: {e}")
                 failed_models.append(model_name)

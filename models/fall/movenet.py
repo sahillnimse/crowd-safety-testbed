@@ -31,7 +31,7 @@ from models.fall._geometry import (
     posture_score,
     torso_angle_deg,
 )
-from models.fall._tracker import IoUTracker, sustained
+from models._tracker import IoUTracker, sustained
 
 # MoveNet emits COCO-17 keypoints, same layout as YOLO-pose; the shared
 # geometry helpers default to those indices.

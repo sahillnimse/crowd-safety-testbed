@@ -16,6 +16,7 @@ is where nearly all of the wall-clock saving over the CLI comes from when
 running several models on the same clip.
 """
 
+import contextlib
 import os
 import threading
 import time
@@ -27,8 +28,35 @@ from typing import Optional
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "outputs")
+
+# outputs/runs/<video>/<model>/{detections.json, detections.csv, annotated.mp4}
+#
+# One directory per model run, rather than flat folders of
+# "<video>_<model>.<ext>" files.  The flat layout could not be read back
+# unambiguously: video names contain underscores, so splitting a filename
+# into video and model is guesswork, and three separate folders each held one
+# file per run under the same stem — which is how an annotated output and a
+# validation artifact end up looking like the same thing.  A directory per
+# run needs no name parsing and puts everything a run produced in one place.
+RUNS_DIR = os.path.join(OUTPUT_DIR, "runs")
+
+# Retained for the ANPR gallery and for reading pre-restructure outputs.
 LOG_DIR = os.path.join(OUTPUT_DIR, "logs")
 ANNOTATED_DIR = os.path.join(OUTPUT_DIR, "annotated")
+
+# Filenames inside a run directory.  Fixed, because the directory already
+# carries the video and model identity.
+RUN_JSON = "detections.json"
+RUN_CSV = "detections.csv"
+RUN_VIDEO = "annotated.mp4"
+
+
+def run_dir(video: str, model_key: str, create: bool = False) -> str:
+    """Path to outputs/runs/<video>/<model_key>/."""
+    path = os.path.join(RUNS_DIR, video, model_key)
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return path
 
 # Labels that count as a positive event, per category. Everything else a
 # model emits ("standing", "non_violence") is context, not a detection.
@@ -100,7 +128,6 @@ class Job:
     sample_every_n_frames: int
     device: Optional[str]
     export_video: bool
-    pose_size: str = "s"
     thresholds: dict = field(default_factory=dict)
     status: str = "queued"          # queued | fetching | running | done | failed | cancelled
     message: str = ""
@@ -141,8 +168,34 @@ class JobManager:
         self._lock = threading.Lock()
         self._gpu_lock = threading.Lock()
 
+    @contextlib.contextmanager
+    def gpu_guard(self, on_wait=None):
+        """
+        Hold the GPU lock for the duration of the block.
+
+        The same lock ``_run_job`` takes, exposed so work outside the job
+        pipeline — the validation runner, which lives in its own thread — can
+        queue behind a running job instead of racing it onto the card.  Two
+        networks on a 4 GB device is a reliable way to OOM both, and that is
+        just as true when one of them belongs to validation.
+
+        ``on_wait`` is called once, only if the lock is not immediately
+        available, so the caller can tell the user it is queued rather than
+        stalled.  Acquisition then blocks: a caller that gave up here would be
+        back to racing for the card, which is the thing being prevented.
+        """
+        acquired = self._gpu_lock.acquire(blocking=False)
+        if not acquired:
+            if on_wait is not None:
+                on_wait()
+            self._gpu_lock.acquire(blocking=True)
+        try:
+            yield
+        finally:
+            self._gpu_lock.release()
+
     def create(self, source: str, model_keys: list, sample_every_n_frames: int,
-               device: Optional[str], export_video: bool, pose_size: str = "s",
+               device: Optional[str], export_video: bool,
                local_path: Optional[str] = None, thresholds: Optional[dict] = None) -> Job:
         job = Job(
             id=uuid.uuid4().hex[:12],
@@ -151,7 +204,6 @@ class JobManager:
             sample_every_n_frames=max(1, int(sample_every_n_frames)),
             device=device,
             export_video=export_video,
-            pose_size=pose_size,
             thresholds=thresholds or {},
         )
         job.video_path = local_path
@@ -249,7 +301,7 @@ class JobManager:
         job.message = f"Loading {model_key}..."
 
         try:
-            model = build_model(model_key, job.device, pose_size=job.pose_size,
+            model = build_model(model_key, job.device,
                                 video_name=job.video_name or "run", threshold=job.thresholds.get(model_key))
 
             # Give flow-pair models the actual source FPS so speed conversion
@@ -323,21 +375,19 @@ class JobManager:
         from pipeline.annotate import (export_annotated_video, export_detection_csv,
                                        export_detection_log)
 
-        os.makedirs(LOG_DIR, exist_ok=True)
-        os.makedirs(ANNOTATED_DIR, exist_ok=True)
+        video = os.path.splitext(os.path.basename(job.video_path))[0]
+        out_dir = run_dir(video, model_key, create=True)
 
-        base = os.path.splitext(os.path.basename(job.video_path))[0]
-        stem = f"{base}_{model_key}"
-
-        json_path = os.path.join(LOG_DIR, f"{stem}.json")
-        csv_path = os.path.join(LOG_DIR, f"{stem}.csv")
-        export_detection_log(detections, json_path)
-        export_detection_csv(detections, csv_path)
-        stage.log_json = f"{stem}.json"
-        stage.log_csv = f"{stem}.csv"
+        export_detection_log(detections, os.path.join(out_dir, RUN_JSON))
+        export_detection_csv(detections, os.path.join(out_dir, RUN_CSV))
+        # Stage paths are relative to outputs/runs/ so the API can serve them
+        # without the frontend needing to know the layout.
+        stage.log_json = f"{video}/{model_key}/{RUN_JSON}"
+        stage.log_csv = f"{video}/{model_key}/{RUN_CSV}"
 
         if job.export_video:
             job.message = f"Writing annotated video for {model_key}..."
+            mp4_path = os.path.join(out_dir, RUN_VIDEO)
 
             # DenseFlowAnalyser (and any future flow model) writes its own
             # annotated video with the heatmap overlay during finalize().
@@ -345,13 +395,10 @@ class JobManager:
             own_video = getattr(model, "annotated_video_path", None)
             if own_video and os.path.exists(own_video):
                 import shutil
-                mp4_path = os.path.join(ANNOTATED_DIR, f"{stem}.mp4")
                 shutil.copy2(own_video, mp4_path)
-                stage.annotated = f"{stem}.mp4"
             else:
-                mp4_path = os.path.join(ANNOTATED_DIR, f"{stem}.mp4")
                 export_annotated_video(job.video_path, detections, mp4_path)
-                stage.annotated = f"{stem}.mp4"
+            stage.annotated = f"{video}/{model_key}/{RUN_VIDEO}"
 
     @staticmethod
     def _finish(job: Job, status: str, message: str):

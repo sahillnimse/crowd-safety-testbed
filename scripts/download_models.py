@@ -5,24 +5,23 @@ Download every model weight the testbed can use into one folder.
     python scripts/download_models.py               # download everything
     python scripts/download_models.py --only umbrella anpr
 
-Why a script rather than a list of curl commands: the weights come from six
-different ecosystems (ultralytics, torch.hub, HuggingFace, EasyOCR, TF-Hub,
-MediaPipe), and each caches to its own hidden directory by default —
+Why a script rather than a list of curl commands: the weights come from five
+different ecosystems (torch.hub, HuggingFace, EasyOCR, TF-Hub, MediaPipe),
+and each caches to its own hidden directory by default —
 `~/.cache/torch`, `~/.cache/huggingface`, `~/.EasyOCR`, and so on. Pointing
 them all at one folder means setting the right environment variable for
 each *before* the library is imported, which is exactly the kind of thing
 that is easy to get subtly wrong by hand.
 
-**Not all 29 registered models have weights.** Three are classical CV with
-nothing to download, three run entirely on Roboflow's servers, and two
-umbrella variants have no distinct checkpoint of their own — they fall back
-to weights another model already uses. The script reports those explicitly
-rather than pretending it fetched something.
+**Not all 24 registered models have weights.** Four are classical CV with
+nothing to download, two run entirely on Roboflow's servers, several are
+covered by the shared RT-DETRv2 detector, and two need a fine-tuned
+checkpoint you supply. The script reports those explicitly rather than
+pretending it fetched something.
 """
 
 import argparse
 import os
-import shutil
 import sys
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -31,7 +30,6 @@ ML_DIR = os.path.join(PROJECT_ROOT, "ML Models")
 # Sub-folder per ecosystem, so it stays obvious which library owns what and
 # a partial re-download can be done by deleting one folder.
 DIRS = {
-    "ultralytics": os.path.join(ML_DIR, "ultralytics"),
     "torch_hub": os.path.join(ML_DIR, "torch_hub"),
     "huggingface": os.path.join(ML_DIR, "huggingface"),
     "easyocr": os.path.join(ML_DIR, "easyocr"),
@@ -62,24 +60,6 @@ def set_cache_env():
 
 # (key, label, approx MB, category, fn) — fn is called to fetch it.
 # Sizes are approximate download sizes, used for the dry-run estimate.
-def _ultra(name):
-    def go():
-        from ultralytics import YOLO, RTDETR
-        cls = RTDETR if name.startswith("rtdetr") else YOLO
-        cls(name)                      # triggers download into CWD
-        _collect_to(name, DIRS["ultralytics"])
-    return go
-
-
-def _collect_to(filename, dest):
-    """Ultralytics downloads to the working directory; move it into place."""
-    src = os.path.join(PROJECT_ROOT, filename)
-    if os.path.exists(src):
-        target = os.path.join(dest, filename)
-        if os.path.abspath(src) != os.path.abspath(target):
-            shutil.move(src, target)
-
-
 def _hf_detection(model_id):
     def go():
         from transformers import AutoImageProcessor, AutoModelForObjectDetection
@@ -147,25 +127,14 @@ def _rapidocr():
     return go
 
 
-def _clip():
-    def go():
-        # YOLO-World's text encoder. Downloaded by ultralytics on first
-        # set_classes(); fetching it here keeps it out of a timed run.
-        from ultralytics import YOLO
-        m = YOLO(os.path.join(DIRS["ultralytics"], "yolov8s-worldv2.pt"))
-        m.set_classes(["umbrella"])
-    return go
-
-
 TASKS = [
     # key,                     label,                             MB,   used by
-    ("yolo11n",       "yolo11n.pt",                                6,  "traffic, umbrella, ANPR", _ultra("yolo11n.pt")),
-    ("yolo11s",       "yolo11s.pt",                               19,  "umbrella (size 's')",     _ultra("yolo11s.pt")),
-    ("yolov8n",       "yolov8n.pt",                                7,  "person detector",         _ultra("yolov8n.pt")),
-    ("yolov8s_pose",  "yolov8s-pose.pt",                          23,  "all fall models",         _ultra("yolov8s-pose.pt")),
-    ("rtdetr_l",      "rtdetr-l.pt",                              64,  "rtdetr_traffic, rfdetr",  _ultra("rtdetr-l.pt")),
-    ("world",         "yolov8s-worldv2.pt",                       25,  "umbrella_world",          _ultra("yolov8s-worldv2.pt")),
-    ("clip",          "CLIP ViT-B-32 (YOLO-World text encoder)", 338,  "umbrella_world",          _clip()),
+    # The shared detector.  Every wrapper that needs person or vehicle boxes
+    # goes through models/_detectors.py, so this one checkpoint replaces the
+    # six ultralytics weights this script used to fetch — and with them the
+    # AGPL-3.0 dependency the project deliberately removed.  A download script
+    # that kept pulling YOLO would have quietly reinstated it.
+    ("rtdetrv2",      "RT-DETRv2 R18VD (COCO, Apache 2.0)",       81,  "shared person/vehicle detector", _hf_detection("PekingU/rtdetr_v2_r18vd")),
 
     ("x3d",           "X3D-S (Kinetics)",                         15,  "violence_x3d",            _torchhub_pytorchvideo("x3d_s")),
     ("slowfast",      "SlowFast R50 (Kinetics)",                 264,  "violence_slowfast",       _torchhub_pytorchvideo("slowfast_r50")),
@@ -187,23 +156,27 @@ TASKS = [
 NO_DOWNLOAD = {
     "fall_optical_flow":   "classical CV (Farneback optical flow)",
     "optical_flow_crush":  "classical CV (Farneback optical flow)",
+    "dense_flow":          "classical CV (DIS optical flow + ORB)",
     "mog2_parked":         "classical CV (MOG2 background subtraction)",
     "roboflow_combined":   "hosted - runs on Roboflow's servers",
     "roboflow_traffic":    "hosted - runs on Roboflow's servers",
     "indian_anpr":         "hosted vehicle+plate stages; OCR weights covered by easyocr",
     "violence_c3d":        "architecture built in code; needs YOUR fine-tuned checkpoint",
-    "fire_smoke_yolo":     "needs YOUR fine-tuned fire/smoke checkpoint",
-    "umbrella_yolo26n":    "no distinct weights - falls back to yolo11n.pt",
-    "umbrella_rfdetr":     "no distinct weights - falls back to rtdetr-l.pt",
+    "anpr":                "vehicle stage covered by rtdetrv2; plate stage by plate_detr",
+    "rtdetrv2_anpr":       "covered by rtdetrv2 + plate_detr",
+    "rtdetrv2_traffic":    "covered by rtdetrv2",
+    "umbrella_rtdetrv2":   "covered by rtdetrv2 (COCO umbrella class 25)",
+    "umbrella_trained":    "needs YOUR fine-tuned checkpoint in 'ML Models/umbrella_trained/'",
+    "umbrella_rfdetr":     "needs YOUR fine-tuned checkpoint; the rfdetr package fetches its own base weights",
 }
 
 CATEGORIES = {
-    "core":     ["yolo11n", "yolov8n", "yolov8s_pose"],
-    "umbrella": ["yolo11n", "yolo11s", "world", "clip", "ssdlite", "rtdetr_l"],
+    "core":     ["rtdetrv2"],
+    "umbrella": ["rtdetrv2", "ssdlite"],
     "violence": ["x3d", "slowfast", "i3d", "r3d18", "resnet50", "videomae"],
-    "anpr":     ["plate_detr", "easyocr", "rapidocr", "yolo11n"],
-    "traffic":  ["yolo11n", "rtdetr_l"],
-    "fall":     ["yolov8s_pose", "yolov8n", "mediapipe", "movenet"],
+    "anpr":     ["rtdetrv2", "plate_detr", "easyocr", "rapidocr"],
+    "traffic":  ["rtdetrv2"],
+    "fall":     ["rtdetrv2", "mediapipe", "movenet"],
 }
 
 
