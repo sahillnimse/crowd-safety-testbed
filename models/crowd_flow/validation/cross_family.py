@@ -87,6 +87,19 @@ _BOX_DISAGREE   = (60, 90, 240)     # red
 # comparison stays fair, and the factor is printed on the frame.
 _ARROW_SCALE = 12
 
+# A burst must be at least this long for tracks to settle before their
+# velocity is believed.  Measured on the Nashik clip: shortening bursts from
+# 120 to 10 frames left the flow's median speed flat at ~0.59 px/frame while
+# the TRACKER's rose 0.92 -> 1.56, because in a short burst every track is
+# freshly created and a new track has the jitteriest centroid the detector
+# produces.  The agreement figure fell from 70% to 44% purely on that.
+_MIN_BURST_FRAMES = 30
+
+# How many bursts to aim for, budget permitting.  Enough to span a clip whose
+# character changes over its length, without cutting bursts so short that
+# _MIN_BURST_FRAMES starts overriding the arithmetic.
+_TARGET_BURSTS = 6
+
 
 @dataclass
 class _TrackState:
@@ -249,6 +262,11 @@ class CrossFamilyValidator:
         """
         Compare tracked-person velocities against the flow field.
 
+        ``max_frames`` is a BUDGET, not a prefix: it is spread across the
+        whole source as a stride, so every part of the clip is sampled and the
+        comparison video spans the full duration.  ``max_frames=0`` validates
+        every frame.
+
         ``annotate_path`` writes a video showing the comparison directly: each
         compared person carries two arrows, one per instrument.  The numbers
         this route produces are medians over hundreds of samples, which say
@@ -279,20 +297,94 @@ class CrossFamilyValidator:
         writer = None
         src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
+        # Coverage plan ------------------------------------------------------
+        # Bursts of CONSECUTIVE frames, spread evenly through the video.
+        #
+        # Three constraints have to hold at once, and only bursts satisfy all
+        # three:
+        #
+        #   1. Flow needs adjacent frames.  Striding across the whole clip to
+        #      cover it within a small budget forces a large gap — on a 3207
+        #      frame source with a 240 budget that is every 13th frame, and
+        #      measured on this project's footage the flow correspondence
+        #      collapses past a gap of about 5.  It fails honestly (the
+        #      validity gate rejected the entire field) but it fails.
+        #   2. Tracks need time to settle.  A track's velocity is a centroid
+        #      difference, and a freshly created track has the jitteriest
+        #      centroid the detector produces, so a burst shorter than
+        #      _MIN_BURST_FRAMES measures detector start-up, not flow error.
+        #   3. The result should describe the whole clip, not its opening
+        #      seconds.
+        #
+        # So: several bursts, each long enough for tracks to mature, placed
+        # across the source.  The comparison video still spans the full source
+        # duration because it is written at frames_written / source_seconds
+        # rather than at the source rate — see the writer below.
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+
+        if max_frames <= 0:                      # 0 = every frame, one pass
+            max_frames = total_frames or 10 ** 9
+            burst_len = max_frames
+            starts = [0]
+        else:
+            burst_len = max(_MIN_BURST_FRAMES, max_frames // _TARGET_BURSTS)
+            n_bursts = max(1, max_frames // burst_len)
+            if total_frames > burst_len * n_bursts and n_bursts > 1:
+                span = total_frames - burst_len
+                starts = [int(round(i * span / (n_bursts - 1)))
+                          for i in range(n_bursts)]
+            else:
+                starts, burst_len = [0], min(max_frames, total_frames or max_frames)
+
+        if len(starts) > 1:
+            logger.info(
+                "Validation samples %d bursts of %d consecutive frames spread "
+                "across all %d frames of the source.  Bursts rather than a "
+                "stride because flow needs adjacent frames; %d long so tracks "
+                "settle before their velocity is believed.",
+                len(starts), burst_len, total_frames, burst_len,
+            )
+
         prev_frame = None
         idx = 0
         processed = 0
+        b_i = 0
+        in_burst = 0
+        if starts[0] > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, starts[0]); idx = starts[0]
         try:
             while processed < max_frames:
+                if in_burst >= burst_len:
+                    # Next burst.  Tracker, track states and flow history are
+                    # reset: across a jump of hundreds of frames the people are
+                    # different people, and matching across that discontinuity
+                    # would manufacture enormous false velocities.
+                    b_i += 1
+                    if b_i >= len(starts):
+                        break
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, starts[b_i]); idx = starts[b_i]
+                    in_burst = 0
+                    prev_frame = None
+                    tracker.reset(); states.clear()
+                    ff = (flow_factory or (lambda: FlowField()))()
                 ok, frame = cap.read()
                 if not ok:
                     break
+                in_burst += 1
                 if idx % frame_stride != 0:
                     idx += 1
                     continue
 
                 if prev_frame is not None:
                     flow = ff.compute(prev_frame, frame, None, idx / 30.0)
+                    if frame_stride > 1:
+                        # The pair spans frame_stride source frames, so the
+                        # displacement covers that many.  Track velocity is
+                        # already per source frame (divided by dt below), so
+                        # without this the two instruments would be compared
+                        # in units differing by exactly the stride — and the
+                        # flow would appear to overstate motion by that factor.
+                        flow.field_xy = flow.field_xy / float(frame_stride)
 
                     boxes = self._detect_persons(frame)
                     person_counts.append(len(boxes))
@@ -342,9 +434,22 @@ class CrossFamilyValidator:
                             from models.crowd_flow.dense_flow_analyser import (
                                 _AnnotatedVideoWriter)
                             h, w = annotated.shape[:2]
+                            # Played back at frames_written / source_seconds,
+                            # so the comparison video spans the FULL source
+                            # duration even though it holds only the sampled
+                            # frames.  At the source rate it ran for a few
+                            # seconds and looked like a clip of the opening,
+                            # which is exactly the wrong impression: the
+                            # frames come from throughout the video.
+                            src_seconds = ((total_frames / src_fps)
+                                           if total_frames and src_fps else 0.0)
+                            n_planned = min(max_frames,
+                                            burst_len * len(starts))
+                            play_fps = (n_planned / src_seconds
+                                        if src_seconds > 1e-6 else src_fps)
+                            play_fps = max(0.5, min(play_fps, src_fps))
                             writer = _AnnotatedVideoWriter(
-                                annotate_path, src_fps / max(1, frame_stride),
-                                w, h)
+                                annotate_path, play_fps, w, h)
                         writer.write(annotated)
 
                     processed += 1
@@ -360,7 +465,11 @@ class CrossFamilyValidator:
 
         result = self._score(comparisons, person_counts, video_path, processed)
         if annotate_path and writer is not None:
-            result.detail["comparison_video"] = os.path.basename(annotate_path)
+            # Recorded as "<video-dir>/<file>" rather than a bare filename:
+            # reports now live per source, so a bare name no longer identifies
+            # which video's comparison this is.
+            result.detail["comparison_video"] = "/".join(
+                annotate_path.replace("\\", "/").split("/")[-2:])
         return result
 
     # ------------------------------------------------------------------

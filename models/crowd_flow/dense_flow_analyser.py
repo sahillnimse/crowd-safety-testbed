@@ -12,28 +12,37 @@ Wires together:
 This class is consumption_type = "flow_pair" so the existing pipeline runner
 calls predict((prev_frame, curr_frame), frame_index, timestamp_sec) unchanged.
 
-Performance (measured, CPU, 1920×1080 source, no detectors configured)
+Performance (measured, 1280×720 source, DIS @ 480 px compute, GTX 1650)
 ----------------------------------------------------------------------
-  Flow (DIS MEDIUM at 320×180 + GMC + reliability)   ~100 ms/frame
-  Grid metrics (block-reduced over the source field) ~145 ms/frame
-  Visualisation (HSV + heatmap + arrows + labels)     ~90 ms/frame
-  Alert engine, logging                                <5 ms/frame
-  ──────────────────────────────────────────────────────────────
-  Total                                              ~415 ms/frame  (~2.4 fps)
+Flow stage, cumulative:
 
-Add ~30-60 ms per configured detector, amortised over ``detector_stride``
-frames.
+  bare flow (DIS + GMC + reliability)                  60 ms/pair
+  + far-field refinement                               95 ms   (+34)
+  + validity: structure gate                           96 ms   (+1)
+  + validity: forward/backward       DEFAULT          108 ms   (+12)
 
-This is NOT real-time at 1080p, and the module should not be described as
-such.  The dominant remaining cost is that the metrics and overlays run at
-source resolution while the flow field itself only carries information at the
-compute resolution (320 px by default) — the extra pixels are interpolation,
-not measurement.  Two levers, in order of effect:
+End to end, per frame:
 
-  - Run at a lower source resolution.  Halving each dimension quarters the
-    per-frame cost of everything downstream of the flow computation.
-  - Raise ``grid_cell_px`` and ``overlay_work_px``, or set visualise=False
-    for headless deployments, which removes the visualisation term entirely.
+  headless (visualise=False)                          181 ms   5.5 fps
+  with visualisation                 DEFAULT          249 ms   4.0 fps
+  + people overlay                          304 median / 448 mean
+  + people overlay + density                277 median / 486 mean
+
+The median/mean gap on the last two is the detector: it runs on one frame in
+`people_detect_every` and costs ~730 ms there (3x3 tiling is ten forward
+passes), against ~46 ms on the frames in between.  Quoting only the mean
+hides a spike that a real-time consumer would feel.
+
+This is NOT real-time.  The source is 25 fps, i.e. a 40 ms budget, and the
+default configuration is ~6x over it.  Levers, largest first: people overlay
+(~180 ms), visualisation (~70 ms), metrics at source resolution (~70 ms),
+far-field refinement (34 ms), forward/backward validity (12 ms).
+
+Why the metrics term is as large as it is: they run at SOURCE resolution
+while the flow field only carries information at the compute resolution
+(480 px by default) — the extra pixels are interpolation, not measurement.
+So halving the source resolution quarters the cost of everything downstream
+of the flow computation and loses nothing that was measured.
 
 Moving the metrics layer onto the compute-resolution field would remove most
 of the remaining cost, but it changes the MetricsFrame coordinate contract
@@ -190,6 +199,7 @@ class DenseFlowAnalyser(BaseModelWrapper):
         output_dir: str = "outputs",
         visualise: bool = True,
         fps: float = 30.0,
+        frame_stride: int = 1,
         device: Optional[str] = None,
     ) -> None:
         super().__init__(device=device)
@@ -198,6 +208,17 @@ class DenseFlowAnalyser(BaseModelWrapper):
         self._output_dir = output_dir
         self._visualise  = visualise
         self._fps        = fps
+        # Frames skipped between the two frames handed to predict().  The
+        # runner now pairs consecutive SAMPLED frames, so at stride 5 the two
+        # frames are 5 source frames apart and every displacement is 5x what
+        # it would be between adjacent frames.
+        #
+        # The raw field is divided by this so field_xy stays in px per SOURCE
+        # frame whatever the sampling.  That keeps every configured threshold
+        # (divergence_critical and the rest) meaning the same thing at every
+        # stride — while the measurement itself is now taken over a longer
+        # baseline, which is the whole point: same units, more signal.
+        self._frame_stride = max(1, int(frame_stride))
 
         # Playback rate of the annotated video.  This is NOT self._fps when
         # the caller samples frames: predict() is invoked once per SAMPLED
@@ -237,6 +258,12 @@ class DenseFlowAnalyser(BaseModelWrapper):
         # Latest rendered frame (exposed for the web UI preview)
         self.latest_annotated_frame: Optional[np.ndarray] = None
 
+        # Previous frame's flow, used to carry people boxes between detector
+        # frames so they follow their subject instead of freezing and jumping.
+        self._last_field: Optional[np.ndarray] = None
+        self._last_valid: Optional[np.ndarray] = None
+        self._people = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -250,6 +277,12 @@ class DenseFlowAnalyser(BaseModelWrapper):
         self._flow = FlowField(
             backend=cfg.get("flow_backend", "dis"),
             dis_preset=cfg.get("dis_preset", "medium"),
+            raft_variant=cfg.get("raft_variant", "large"),
+            validity_gating=cfg.get("validity_gating", True),
+            fb_consistency=cfg.get("fb_consistency", True),
+            max_flow_error_px=cfg.get("max_flow_error_px", 1.0),
+            structure_window=cfg.get("structure_window", 7),
+            device=self.device,
             target_px=cfg.get("downsample_target_px", 320),
             temporal_smooth_alpha=cfg.get("temporal_smooth_alpha", 0.4),
             global_motion_compensation=cfg.get("global_motion_compensation", True),
@@ -300,6 +333,44 @@ class DenseFlowAnalyser(BaseModelWrapper):
         )
         self._masks.load()
 
+        # Density estimator — supplies the persons-per-cell half of Helbing
+        # crowd pressure.  Off by default: it runs a detector, which is the
+        # one thing this module otherwise never does, so enabling it is a
+        # deliberate choice rather than a surprise cost on every run.
+        from models.crowd_flow.density import DensityEstimator
+        self._density = DensityEstimator(
+            device=self.device,
+            conf_threshold=cfg.get("density_conf_threshold", 0.35),
+            stride=cfg.get("density_stride", 5),
+            tile_grid=tuple(cfg["density_tile_grid"])
+                if cfg.get("density_tile_grid") else None,
+            smoothing=cfg.get("density_smoothing", 0.5),
+            enabled=cfg.get("density_enabled", False),
+            source=cfg.get("density_source", "boxes"),
+            head_weights=cfg.get("density_head_weights") or None,
+            person_height_m=cfg.get("density_person_height_m", 1.65),
+        )
+        self._density.reset()
+
+        # People overlay — boxes plus a per-person arrow.  On footage where
+        # per-pixel motion is below what the resolution supports, this is the
+        # readable output: where people are and roughly where each is going.
+        from models.crowd_flow.people_overlay import PeopleOverlay
+        self._people = None
+        if cfg.get("people_overlay", False):
+            self._people = PeopleOverlay(
+                device=self.device,
+                conf_threshold=cfg.get("people_conf_threshold", 0.30),
+                detect_every=cfg.get("people_detect_every", 5),
+                tile_grid=tuple(cfg["people_tile_grid"])
+                    if cfg.get("people_tile_grid") else None,
+                confirm_frames=cfg.get("people_confirm_frames", 2),
+                max_age=cfg.get("people_max_age", 30),
+                box_smoothing=cfg.get("people_box_smoothing", 0.45),
+                draw_arrows=cfg.get("people_draw_arrows", True),
+            )
+            self._people.reset()
+
         # Metrics engine (includes sign-convention self-test)
         self._metrics = CrowdMetricsEngine(
             grid_cell_px=cfg.get("grid_cell_px", 16),
@@ -307,13 +378,9 @@ class DenseFlowAnalyser(BaseModelWrapper):
             stop_go_lag_frames=cfg.get("stop_go_lag_frames", [5, 10, 15]),
         )
 
-        # Alert engine
-        self._alerts = AlertEngine(
-            zones=self._zones,
-            fps=self._fps,
-            is_calibrated=self._calib.is_calibrated,
-            speed_units=self._calib.speed_units,
-        )
+        # Alert engine.  Built through the helper so the rebuild in
+        # _resolve_zones cannot disagree with this one about the frame rate.
+        self._alerts = self._build_alert_engine()
 
         # Visualiser
         if self._visualise:
@@ -380,6 +447,24 @@ class DenseFlowAnalyser(BaseModelWrapper):
         self._masks.update(curr_frame, frame_index)
         ped_mask = self._masks.pedestrian_flow_mask(curr_frame.shape)
 
+        # 1b. Density (detector runs every density_stride frames)
+        self._density.update(
+            curr_frame, frame_index,
+            grid_cell_px=self._metrics.grid_cell_px,
+            calibration=self._calib,
+        )
+
+        # 1c. People tracking.  Runs before the flow is computed for THIS
+        # pair only in the sense that it consumes the PREVIOUS field; on the
+        # first frame there is none and boxes simply do not move until there
+        # is.  Ordering it after the flow would mean carrying boxes with a
+        # field computed from a frame they have already been matched against.
+        if self._people is not None:
+            self._people.update(
+                curr_frame, frame_index,
+                field_xy=self._last_field, valid_mask=self._last_valid,
+            )
+
         # 2. Compute flow
         t0 = time.perf_counter()
         flow_result = self._flow.compute(
@@ -387,6 +472,25 @@ class DenseFlowAnalyser(BaseModelWrapper):
             exclusion_mask=self._masks.vehicle_mask(curr_frame.shape),
             timestamp_sec=timestamp_sec,
         )
+        if self._frame_stride > 1:
+            # The pair spans _frame_stride source frames, so the measured
+            # displacement is that many frames' worth.  Normalise back to px
+            # per SOURCE frame so downstream units and every configured
+            # threshold are unchanged by the sampling setting.
+            #
+            # The two per-frame diagnostics are normalised with it.  They are
+            # px/frame quantities logged into the same CSV row as the zone
+            # metrics, so leaving them at per-PAIR scale put two different
+            # units side by side in one row — a reader comparing
+            # frame_mean_magnitude against a zone's mean_speed would be out by
+            # the stride with nothing in the file to say so.
+            inv = 1.0 / float(self._frame_stride)
+            flow_result.field_xy *= inv
+            flow_result.frame_mean_magnitude *= inv
+            flow_result.gmc_translation_px = (
+                flow_result.gmc_translation_px[0] * inv,
+                flow_result.gmc_translation_px[1] * inv,
+            )
         t_flow = (time.perf_counter() - t0) * 1000
 
         # 3. Compute metrics
@@ -398,8 +502,11 @@ class DenseFlowAnalyser(BaseModelWrapper):
             ped_mask=ped_mask,
             umbrella_layer=self._masks,
             fps=self._fps,
+            density=self._density,
         )
         t_metrics = (time.perf_counter() - t1) * 1000
+        self._last_field = flow_result.field_xy
+        self._last_valid = flow_result.valid_mask
 
         # 4. Check alerts
         vehicle_in_ped: dict[str, bool] = {
@@ -428,6 +535,8 @@ class DenseFlowAnalyser(BaseModelWrapper):
                 cell_speed=mf.cell_speed,
             )
             annotated = self._vis.sparse_arrow_grid(annotated, flow_result.field_xy)
+            if self._people is not None:
+                annotated = self._people.draw(annotated)
             annotated = self._vis.zone_overlay(
                 annotated, self._zones, mf.zones, alerts
             )
@@ -566,6 +675,23 @@ class DenseFlowAnalyser(BaseModelWrapper):
                 path, self._frames_written,
             )
 
+    def _build_alert_engine(self) -> AlertEngine:
+        """
+        Construct the AlertEngine for the current zone list.
+
+        Its clock is predict() CALLS, which happen once per SAMPLED frame — not
+        once per source frame.  Handing it the source rate makes every
+        min_duration_sec wrong by exactly the stride: at the UI default of
+        every-5th-frame, a 2.0 s threshold would need 50 calls = 250 source
+        frames = 10 real seconds before an alert could fire.
+        """
+        return AlertEngine(
+            zones=self._zones,
+            fps=self._fps / self._frame_stride,
+            is_calibrated=self._calib.is_calibrated,
+            speed_units=self._calib.speed_units,
+        )
+
     def _resolve_zones(self, width: int, height: int) -> None:
         """
         Resolve zone polygons against the actual frame size, once per run.
@@ -617,13 +743,11 @@ class DenseFlowAnalyser(BaseModelWrapper):
 
         # AlertEngine holds references to the pre-resolution Zone objects and
         # keys its threshold state by zone name, so it must be rebuilt against
-        # the resolved list (which may be shorter).
-        self._alerts = AlertEngine(
-            zones=self._zones,
-            fps=self._fps,
-            is_calibrated=self._calib.is_calibrated,
-            speed_units=self._calib.speed_units,
-        )
+        # the resolved list (which may be shorter).  Through the same helper
+        # load() uses: rebuilding it inline here passed the SOURCE fps and
+        # silently reverted the stride correction on the first frame, so at the
+        # UI default of every-5th-frame every min_duration_sec was 5x too long.
+        self._alerts = self._build_alert_engine()
 
     def _alert_to_detection(
         self, alert, frame_index: int, timestamp_sec: float

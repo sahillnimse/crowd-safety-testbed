@@ -23,11 +23,56 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 REPORT_DIR = os.path.join(PROJECT_ROOT, "outputs", "validation")
-REPORT_PATH = os.path.join(REPORT_DIR, "flow_validation.json")
+REPORT_JSON = "flow_validation.json"
+REPORT_VIDEO = "cross_family_comparison.mp4"
 
-# Route (c) runs a detector per frame, so the default is kept modest; the
-# statistic stabilises well before the frame budget is exhausted.
-DEFAULT_MAX_FRAMES = 120
+# Legacy single-slot location, still read so a report written before the
+# per-video split is not orphaned.
+REPORT_PATH = os.path.join(REPORT_DIR, REPORT_JSON)
+
+
+def video_report_dir(source: str, create: bool = False) -> str:
+    """
+    outputs/validation/<video>/ — one directory per source.
+
+    Validation measures a SPECIFIC video: routes (a) and (c) both run against
+    that footage, and the verdict is about that footage.  Writing every run to
+    one shared slot meant validating clip B silently destroyed clip A's
+    report, and the UI could show a green result beside a video it was never
+    computed from.  A directory per source removes both.
+
+    This mirrors outputs/runs/<video>/<model>/ and is deliberately NOT the
+    same directory: a run is the product, a validation is the measuring stick
+    held against it.  Mixing them is what made a validation artifact get
+    mistaken for the dense-flow output before.
+    """
+    stem = os.path.splitext(os.path.basename(source or "unknown"))[0]
+    path = os.path.join(REPORT_DIR, stem)
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return path
+
+# Route (c) runs a detector on every frame, so the budget is a direct cost.
+# It is spent as DEFAULT_SEGMENTS bursts spread through the source rather
+# than one run from frame 0: reading the first N frames validates the opening
+# seconds and reports the verdict as if it covered the clip.
+#
+# max_frames <= 0 validates the WHOLE video in one continuous pass, so the
+# comparison video spans the source exactly.  Cost is linear in frames:
+# measured on Song.mp4 (3207 frames, 128 s) at roughly 1.1 s per validated
+# frame on a free GPU —
+#
+#     max_frames   coverage   video     GPU time
+#            240       7.5%     9.6s      ~4.5 min
+#            600      18.7%    24.0s     ~11.2 min
+#           1500      46.8%    60.0s     ~28 min
+#           3207 (0)  100.0%   128.3s    ~60 min
+#
+# The budget is spread across the WHOLE source as a stride, so the default
+# already covers the full clip and the comparison video spans its full
+# duration.  Raising max_frames buys temporal resolution within that coverage,
+# not more of the video.
+DEFAULT_MAX_FRAMES = 240
 
 
 class ValidationRunner:
@@ -46,18 +91,28 @@ class ValidationRunner:
     # ------------------------------------------------------------------
 
     def _load_persisted(self) -> None:
-        """Restore the last report from disk so it survives a restart."""
-        if not os.path.exists(REPORT_PATH):
+        """Restore the most recent report from disk so it survives a restart."""
+        candidates = []
+        if os.path.isdir(REPORT_DIR):
+            for name in os.listdir(REPORT_DIR):
+                p = os.path.join(REPORT_DIR, name, REPORT_JSON)
+                if os.path.isfile(p):
+                    candidates.append(p)
+        if os.path.isfile(REPORT_PATH):        # pre-split location
+            candidates.append(REPORT_PATH)
+        if not candidates:
             return
+        newest = max(candidates, key=os.path.getmtime)
         try:
             import json
-            with open(REPORT_PATH, encoding="utf-8") as f:
+            with open(newest, encoding="utf-8") as f:
                 self._report = json.load(f)
             self._status = "done"
-            self._message = "Loaded the previous report from disk."
-            self._finished_at = os.path.getmtime(REPORT_PATH)
+            self._message = (f"Loaded the previous report for "
+                             f"{self._report.get('source', 'unknown')}.")
+            self._finished_at = os.path.getmtime(newest)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not read %s: %s", REPORT_PATH, exc)
+            logger.warning("Could not read %s: %s", newest, exc)
 
     def state(self) -> dict:
         with self._lock:
@@ -85,14 +140,18 @@ class ValidationRunner:
                             "finish before deleting, or the run will just "
                             "write the files again.")
 
+        # Reports now live in per-video subdirectories; loose files from
+        # before that split are still cleaned so a wipe means a wipe.
+        import shutil
         removed = 0
         if os.path.isdir(REPORT_DIR):
             for name in os.listdir(REPORT_DIR):
                 path = os.path.join(REPORT_DIR, name)
-                if not os.path.isfile(path):
-                    continue
                 try:
-                    os.remove(path)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        os.remove(path)
                     removed += 1
                 except OSError as exc:
                     logger.warning("Could not delete %s: %s", path, exc)
@@ -129,8 +188,8 @@ class ValidationRunner:
     def _run(self, source: str, routes: str, max_frames: int) -> None:
         try:
             report = self._build_report(source, routes, max_frames)
-            os.makedirs(REPORT_DIR, exist_ok=True)
-            report.write_json(REPORT_PATH)
+            out_dir = video_report_dir(source, create=True)
+            report.write_json(os.path.join(out_dir, REPORT_JSON))
             with self._lock:
                 self._report = report.to_dict()
                 self._status = "done"
@@ -174,14 +233,36 @@ class ValidationRunner:
         cam_cfg = cfg.get("cameras", {}).get("default", {})
 
         def flow_factory():
+            # Every keyword DenseFlowAnalyser.load() passes to FlowField is
+            # mirrored here, with the same defaults.  The set used to be
+            # partial: per-pixel validity, forward-backward consistency, the
+            # structure-tensor settings, the reliability floor and the RAFT
+            # variant were all left at FlowField's own defaults.  That silently
+            # agreed with the shipped config while it kept those defaults and
+            # would have diverged the moment anyone turned validity gating off
+            # or raised max_flow_error_px — leaving the routes grading a field
+            # the analyser does not produce, which still reports a number.
             return FlowField(
                 backend=cfg.get("flow_backend", "dis"),
                 dis_preset=cfg.get("dis_preset", "medium"),
+                raft_variant=cfg.get("raft_variant", "large"),
+                validity_gating=cfg.get("validity_gating", True),
+                fb_consistency=cfg.get("fb_consistency", True),
+                max_flow_error_px=cfg.get("max_flow_error_px", 1.0),
+                structure_window=cfg.get("structure_window", 7),
                 target_px=cfg.get("downsample_target_px", 320),
                 temporal_smooth_alpha=cfg.get("temporal_smooth_alpha", 0.4),
                 global_motion_compensation=cfg.get(
                     "global_motion_compensation", True),
+                gmc_warn_threshold_px=cfg.get("gmc_warn_threshold_px", 3.0),
                 gmc_max_correction_px=cfg.get("gmc_max_correction_px", 8.0),
+                gmc_min_improvement=cfg.get("gmc_min_improvement", 0.9),
+                rain_mag_threshold=cfg.get("rain_mag_threshold", 8.0),
+                lowlight_gradient_threshold=cfg.get(
+                    "lowlight_gradient_threshold", 12.0),
+                brightness_jump_threshold=cfg.get(
+                    "brightness_jump_threshold", 30.0),
+                min_flow_reliability=cfg.get("min_flow_reliability", 0.35),
                 far_field=cfg.get("far_field_refinement", True),
                 far_field_roi=tuple(
                     cam_cfg.get("far_field_roi")
@@ -228,8 +309,8 @@ class ValidationRunner:
 
         # ---- route (c) ----
         if "c" in routes:
-            os.makedirs(REPORT_DIR, exist_ok=True)
-            video_out = os.path.join(REPORT_DIR, "cross_family_comparison.mp4")
+            out_dir = video_report_dir(source, create=True)
+            video_out = os.path.join(out_dir, REPORT_VIDEO)
             # Route (c) is the only route that runs a network, so it is the
             # only one that takes the card — and it takes it under
             # JobManager's own GPU lock rather than alongside it.

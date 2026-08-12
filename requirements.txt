@@ -2,6 +2,29 @@
 yt-dlp>=2024.1.1
 
 # Core CV / ML
+#
+# opencv-python, NOT opencv-python-headless.  Three scripts open a window —
+# annotate_heads.py, calibrate_ground_plane.py and run_flow_analysis.py — and
+# on a headless build cv2.namedWindow raises
+#
+#     error: (-2:Unspecified error) The function is not implemented.
+#            Rebuild the library with Windows, GTK+ 2.x or Cocoa support
+#
+# which is fatal rather than degraded: calibrate_ground_plane.py is how a
+# camera gets its homography, so a headless install silently makes speed in
+# m/s and Helbing crowd pressure unreachable.
+#
+# The trap is that easyocr depends on opencv-python-headless, so a plain
+# `pip install -r requirements.txt` installs BOTH.  They unpack into the same
+# cv2/ directory and whichever lands last wins, so the working build can be
+# replaced by the headless one at any time with no error and no warning.  If
+# a GUI script starts failing, this is why:
+#
+#     pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python
+#     pip install opencv-python==5.0.0.93
+#
+# Check with:  python -c "import cv2; print(cv2.getBuildInformation())" | findstr GUI
+# It must say WIN32UI (or GTK/Cocoa), not NONE.
 opencv-python>=4.9.0
 numpy>=1.26.0
 

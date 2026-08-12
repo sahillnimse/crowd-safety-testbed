@@ -24,9 +24,37 @@
 crowd_flow:
 
   # ── Flow computation ────────────────────────────────────────────────────────
-  flow_backend:   "dis"      # "dis" | "farneback"
-                             # DIS is faster and more robust to CCTV compression
-                             # artifacts.  Farneback as a labelled fallback.
+  flow_backend:   "dis"      # "dis" | "farneback" | "raft"
+                             #
+                             # raft = torchvision RAFT on the GPU (official
+                             # weights, fetched on first use).  Added expecting
+                             # it to beat classical DIS; measured, it does not
+                             # for THIS application, so the default stands.
+                             #
+                             # Far-field pixels clearing the display floor on
+                             # the Nashik clip — i.e. "is the distant crowd
+                             # visible at all":
+                             #
+                             #   dis                     2.8%    56 ms/pair
+                             #   dis + far-field         8.2%    85 ms
+                             #   raft-large              0.0%   236 ms
+                             #   raft-large + far-field  1.4%   492 ms
+                             #
+                             # Not an integration fault: on a known translation
+                             # both recover the exact shift to within 0.1 px,
+                             # down to 0.4 px sub-pixel.  RAFT optimises a
+                             # globally smooth field — right for the driving
+                             # benchmarks it was trained on, wrong for a
+                             # hundred pedestrians each moving one pixel per
+                             # frame against a static street, which it smooths
+                             # into the background.
+                             #
+                             # Use raft on footage dominated by large coherent
+                             # motion (a carriageway, a moving camera).
+  raft_variant:   "large"    # "small" | "large".  small measured WORSE than
+                             # DIS on both synthetic and real footage, so it
+                             # is not a speed/accuracy trade — it is just
+                             # worse.  Only "large" is worth running.
   dis_preset:     "medium"   # "ultrafast" | "fast" | "medium"
                              # medium ≈ 4-8 ms on 320×180 at CPU; upgrade if
                              # flow quality on oblique ghat cameras looks noisy.
@@ -97,6 +125,56 @@ crowd_flow:
                              # feather fades the refinement over more of the ROI
                              # for no further benefit.
 
+  # ── Per-pixel validity ──────────────────────────────────────────────────────
+  # Dense optical flow returns a vector for EVERY pixel whether or not that
+  # pixel carried enough information to measure one.  Over a clear sky, a
+  # blank road surface or still water there is nothing to match, so the
+  # algorithm fills the region in from its neighbours: the result is smooth,
+  # confident and invented.  Nothing downstream can tell it from real motion,
+  # so it becomes divergence, turbulence and counterflow exactly as a moving
+  # crowd does.  This is why sky, tarmac and painted lane lines "move".
+  #
+  # Two derived tests decide, per pixel, whether the flow was MEASURED:
+  #
+  #   structure       The local structure tensor's smaller eigenvalue says how
+  #                   well the neighbourhood constrains flow.  Flat -> both
+  #                   components invented (sky, tarmac).  Edge-like -> the
+  #                   component ALONG the edge is invented, which is exactly
+  #                   why a painted lane line appears to slide along itself.
+  #   forward-back    A correct correspondence is invertible.  Following the
+  #                   flow forward and the backward flow back must return you
+  #                   to where you started (Sundaram et al. 2010).
+  #
+  # Neither threshold is hand-picked: image noise is estimated per frame
+  # (Immerkaer) and the structure requirement follows from it via the standard
+  # flow-uncertainty relation sigma_v ~ sigma_noise / sqrt(lambda_min).
+  validity_gating: true
+  fb_consistency:  true      # Costs a second flow computation (~2x). Turn off
+                             # for throughput; the structure gate alone still
+                             # removes most invented motion.
+  max_flow_error_px: 1.0     # Flow uncertainty tolerated before a pixel is
+                             # declared unmeasurable.  The ONE tunable here.
+                             #
+                             # Measured — motion retained on detected people
+                             # and vehicles vs. motion retained everywhere
+                             # else, as a fraction of the ungated field:
+                             #
+                             #                 Nashik crowd      Foreign traffic
+                             #   no gate     100% / 100%  3.9x   100% / 100% 14.5x
+                             #   1.0 px       98% /  50%  7.5x    90% /  63% 20.9x
+                             #   0.5 px       94% /  40%  9.1x    82% /  52% 22.8x
+                             #   0.25 px      74% /  24% 11.9x    70% /  35% 28.6x
+                             #
+                             # 1.0 is the knee: half the background removed for
+                             # a 2-10% signal cost.  Default favours keeping
+                             # real motion, because for a safety system a
+                             # missed crush is worse than a spurious reading.
+                             # Tighten to 0.5 if false motion still dominates.
+  structure_window: 7        # Box-filter window for the structure tensor, in
+                             # compute px.  Larger = smoother validity regions
+                             # but blurs the boundary between measurable and
+                             # unmeasurable.
+
   temporal_smooth_alpha: 0.4 # EMA α for temporal smoothing (higher = faster
                              # response, more noise).  0.4 at 30fps ≈ 2.5-frame
                              # effective window.
@@ -140,6 +218,155 @@ crowd_flow:
   detector_stride:      5   # Run detectors every Nth flow frame.
                             # Higher = faster but larger mask lag.
   detector_conf_threshold: 0.35
+
+  # ── People overlay (boxes + one arrow per person) ────────────────────────────
+  # On 720p footage of a deep crowd the honest per-pixel answer is often "not
+  # measurable": a person 40 m away is a dozen pixels tall and moves a fraction
+  # of a pixel per frame, so after validity gating that region is correctly
+  # blank.  Truthful, but not useful to an operator.
+  #
+  # What IS recoverable at that resolution is where people are and roughly
+  # which way each is going: a detector recognises a person from their whole
+  # appearance rather than a sub-pixel brightness change, and averaging flow
+  # over a whole body turns many weak measurements into one usable vector.
+  #
+  # Measured on the Nashik clip, people drawn and how much the count changes
+  # between consecutive frames (i.e. visible flicker):
+  #
+  #   raw detection every frame          106.6 people   flicker 2.73
+  #   tracked, detect_every=5, confirm=2 109.5 people   flicker 1.57
+  #
+  # Same number of people, 42% less flicker, and the detector runs on one
+  # frame in five instead of every frame.
+  #
+  # Cost, measured end to end over 30 frames at 720p on a GTX 1650:
+  #   people_overlay: false   253 ms/frame mean
+  #   people_overlay: true    +449 ms/frame amortised at 3x3 / detect_every 5
+  #                           (729 ms on detector frames, 46 ms in between)
+  #
+  # The gap between mean and median is the point: 466 ms lands on the one
+  # frame in five that runs the detector, 16 ms on the four that carry boxes
+  # on the flow field, plus ~66 ms to draw ~130 boxes.  Raise
+  # people_detect_every to spread the spike further.
+  people_overlay: false
+  people_conf_threshold: 0.20
+                             # Deliberately below a detector's usual operating
+                             # point.  A confidence threshold is a per-frame
+                             # decision with no memory; requiring a track to be
+                             # seen `people_confirm_frames` times across frames
+                             # is a stronger test, so recall is bought at the
+                             # detector and precision recovered at the tracker.
+  people_detect_every: 5     # Detector every Nth frame.  Boxes are carried by
+                             # the flow field in between, so raising this
+                             # costs recall, not smoothness.  Measured at
+                             # steady state on the Nashik clip with 3x3/0.20:
+                             #
+                             #    every 5    329 people   1.7% flicker   449 ms/f
+                             #    every 10   260 people   2.1% flicker    92 ms/f
+                             #
+                             # 5 is the default because recall was the problem;
+                             # 10 is 4.9x cheaper for 21% fewer people and is
+                             # the right choice if throughput matters more.
+  people_tile_grid: [3, 3]   # The processor resizes to 640x640, so a 720p
+                             # frame is halved before the model sees it and a
+                             # distant person arrives at ~10 px.
+                             #
+                             # Measured on the Nashik mid-distance band, which
+                             # is where people were visibly being missed:
+                             #
+                             #   2x2 @ 0.30    33 people in band   104 in frame
+                             #   3x3 @ 0.20   108 people in band   230 in frame
+                             #   4x4 @ 0.15   175 people in band   384 in frame
+                             #
+                             # 3x3 @ 0.20 is the default: it triples recall in
+                             # that band with boxes that land on actual people.
+                             # 4x4 @ 0.15 finds more still, at visibly more
+                             # clutter on railings and building fixtures.
+  people_confirm_frames: 2   # Detector sightings before a person is drawn.
+                             # 1 draws ~20% more but includes single-frame
+                             # detections with no corroboration.
+  people_max_age: 30         # Frames a track survives unseen.  THE anti-
+                             # flicker control: it carries a person through
+                             # the frames where the detector loses them.
+  people_box_smoothing: 0.45 # EMA on box coordinates and velocity.  Box
+                             # corners jitter a few px on a stationary person;
+                             # that jitter is what reads as flicker.
+  people_draw_arrows: true
+
+  # ── Crowd density and pressure ──────────────────────────────────────────────
+  # Everything else in this module comes from the flow field alone and knows
+  # only how the crowd is MOVING.  Crowd pressure needs to know how many people
+  # are there:
+  #
+  #     P = rho * Var(v)      (Helbing et al.)
+  #
+  # It is the most externally validated crush predictor available, and unlike
+  # every other threshold in this file its trigger points are not tuned here:
+  # 0.02 s^-2 is the onset of crowd turbulence and 0.04 s^-2 the onset of
+  # stampede conditions, established from video of the 2006 Hajj disaster.
+  #
+  # Off by default because it runs a person detector, which is the one thing
+  # this module otherwise never does.  Enabling it changes the cost profile of
+  # a run and should be a decision rather than a surprise.
+  #
+  # REQUIRES A CALIBRATED CAMERA to be useful.  Without a homography there is
+  # no m^2, so density comes out in persons per 1000 px^2 and the pressure
+  # thresholds are refused for that camera — exactly as the speed thresholds
+  # already are.  Run scripts/calibrate_ground_plane.py first.
+  density_enabled: false
+  density_source: "boxes"    # "boxes" | "heads"
+                             #
+                             # boxes: the shared RT-DETRv2 person detector.
+                             #   Nothing to train, but it counts BODIES, so it
+                             #   degrades exactly where density matters most —
+                             #   at the back of a crowd bodies are almost
+                             #   entirely occluded and boxes merge.
+                             #
+                             # heads: models/head_count, a density-map counter
+                             #   trained on point labels from YOUR footage.
+                             #   Heads stay visible where bodies do not, and
+                             #   the count is an integral over a density map
+                             #   rather than a number of successful detections,
+                             #   so it does not collapse when individuals stop
+                             #   being separable.  This is the better source
+                             #   and it requires you to label and train:
+                             #     scripts/extract_patches.py
+                             #     scripts/annotate_heads.py
+                             #     scripts/train_head_count.py
+  density_head_weights: ""   # Checkpoint for density_source: "heads".  With
+                             # this empty the head model runs on a randomly
+                             # initialised density head and every count it
+                             # produces is arbitrary — it warns loudly rather
+                             # than quietly returning a plausible number.
+  density_person_height_m: 1.65
+                             # Assumed standing stature, used to find the
+                             # ground point under a detected head.  A head is
+                             # NOT a ground contact: mapping one straight
+                             # through a ground-plane homography places that
+                             # person a stature further from the camera, which
+                             # at the back of a crowd is several cells, in the
+                             # direction that inflates density where it is
+                             # already highest.  Only used by the "heads"
+                             # source; boxes already have a foot edge.
+  density_stride:  5         # Detector every Nth frame.  Density is a property
+                             # of where the crowd IS, which changes over
+                             # seconds; the fast half of the product, Var(v),
+                             # is recomputed every frame regardless.
+  density_conf_threshold: 0.35
+  density_tile_grid: [2, 2]  # Detector tiling.  The processor resizes its
+                             # input to 640x640, so a 720p frame is halved
+                             # before the model sees anything and a distant
+                             # pedestrian arrives at ~10 px.  Measured on this
+                             # project's Nashik clip: 35 people full-frame, 96
+                             # at 2x2, 109 at 3x3, 145 at 4x4 — for 3.5x, 6.5x
+                             # and 10.7x the compute.  2x2 is the knee.  Set
+                             # null to disable; an undercount here propagates
+                             # straight into an underestimate of pressure, and
+                             # underestimating this particular metric is the
+                             # failure mode that matters.
+  density_smoothing: 0.5     # EMA on per-cell counts.  A detector flips a
+                             # person between two cells at a boundary, and
+                             # density is not meant to be a per-frame signal.
 
   # ── Metrics ─────────────────────────────────────────────────────────────────
   grid_cell_px:   16        # Grid cell size at source resolution.  Smaller
@@ -253,6 +480,24 @@ crowd_flow:
     # whose geometry has not been surveyed.  Covers the whole frame as a
     # single zone so the module produces usable output on arbitrary footage
     # without per-camera calibration.
+    # Zones may declare what moves through them:
+    #
+    #   zone_type: pedestrian | vehicle | mixed     (default: pedestrian)
+    #
+    # This selects the motion floor and the density ceiling, both of which
+    # are scale-dependent and cannot have one correct global value:
+    #
+    #                    motion floor      max density
+    #   pedestrian        0.5 px/frame      12  /m²
+    #   vehicle           3.0 px/frame      0.3 /m²
+    #   mixed             0.8 px/frame      12  /m²
+    #
+    # Pedestrians move 1-2 px/frame and vehicles 10-50.  A single floor of
+    # 0.8 sits inside the pedestrian signal (discarding people who are
+    # genuinely walking) and far below the vehicle signal (admitting noisy
+    # background cells, which drags the zone mean down and reads as
+    # congestion).  Override per zone with `min_magnitude:` when you have
+    # measured the scene.
     default:
       # Where this camera's far field sits in the frame.  Overrides the global
       # far_field_roi; omit it and the global value applies.

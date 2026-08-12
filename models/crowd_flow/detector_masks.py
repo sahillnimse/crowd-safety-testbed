@@ -77,7 +77,7 @@ class DetectorMaskLayer:
         self.vehicle_model_path  = vehicle_model_path
         self.umbrella_model_path = umbrella_model_path
         self.device              = device
-        self.stride              = stride
+        self.stride              = max(1, int(stride))
         self.conf_threshold      = conf_threshold
         self.vehicle_margin      = vehicle_mask_margin_px
         self.umbrella_margin     = umbrella_mask_margin_px
@@ -95,6 +95,9 @@ class DetectorMaskLayer:
         # Carry-forward state
         self._vehicle_boxes:  list[list[float]] = []
         self._umbrella_boxes: list[list[float]] = []
+
+        # update() calls seen, which is what `stride` counts.  See update().
+        self._calls = 0
 
         # Track whether detectors actually loaded
         self._vehicle_loaded  = False
@@ -182,10 +185,22 @@ class DetectorMaskLayer:
         """
         Run detectors and refresh box state.
 
-        Only actually runs inference every ``stride`` frames; carry-forward
-        happens automatically on the intervening frames.
+        Only actually runs inference every ``stride`` calls; carry-forward
+        happens automatically on the intervening ones.
+
+        ``stride`` counts CALLS, not source frame indices.  It used to test
+        ``frame_index % stride``, and frame_index is the index in the source
+        video while update() is invoked once per SAMPLED frame — so whenever
+        the sampling interval was a multiple of the stride the test was true
+        every time and both detectors ran on every frame.  That is the default
+        configuration: the web UI samples every 5th frame and detector_stride
+        is 5, giving frame indices 0, 5, 10, 15 ... every one of which is
+        divisible by 5.  ``frame_index`` is kept in the signature for callers
+        and logging.
         """
-        if frame_index % self.stride != 0:
+        due = (self._calls % self.stride) == 0
+        self._calls += 1
+        if not due:
             return
 
         if self._vehicle_loaded:

@@ -76,7 +76,7 @@ class PipelineRunner:
 
         all_detections: list[Detection] = []
         error_counts: dict[str, int] = defaultdict(int)
-        prev_frame = None
+        prev_sampled = None   # previous SAMPLED frame, for flow_pair models
         frame_index = 0
         sampled_index = 0  # counts only the frames we actually process
 
@@ -101,11 +101,24 @@ class PipelineRunner:
                             )
 
                         elif model.consumption_type == "flow_pair":
-                            if prev_frame is None:
+                            # Pair with the previous SAMPLED frame, not the
+                            # previous source frame.
+                            #
+                            # Using the source frame made the flow baseline
+                            # always one frame, whatever the sampling setting
+                            # said: at "every 5th frame" the model was handed
+                            # frames 4 and 5, then 9 and 10.  So the setting
+                            # controlled how OFTEN flow was computed and never
+                            # how far apart the two frames were, and the
+                            # measurement was permanently pinned to the
+                            # smallest displacement — the worst signal-to-noise
+                            # the footage can offer.  Every other consumption
+                            # type already works on the sampled stream.
+                            if prev_sampled is None:
                                 dets = []
                             else:
                                 dets = model.predict(
-                                    (prev_frame, frame), frame_index, timestamp_sec
+                                    (prev_sampled, frame), frame_index, timestamp_sec
                                 )
                         else:
                             raise ValueError(f"Unknown consumption_type: {model.consumption_type}")
@@ -115,9 +128,9 @@ class PipelineRunner:
                     except Exception as e:
                         self._report_error(model, frame_index, e, error_counts)
 
+                prev_sampled = frame
                 sampled_index += 1
 
-            prev_frame = frame
             frame_index += 1
             pbar.update(1)
 

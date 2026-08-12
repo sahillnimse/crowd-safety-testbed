@@ -92,6 +92,42 @@ Known limitations (flagged, not silently elided):
     DIS is substantially less susceptible than Farneback because it works on
     image pyramids rather than raw pixel differences.  No specific heuristic is
     applied; this is documented, not assumed away.
+
+Backends: why the default is still DIS
+--------------------------------------
+``backend="raft"`` runs torchvision's RAFT (official ImageNet-scale training,
+weights fetched by torchvision) on the GPU.  It was added expecting a
+step-change in accuracy over classical DIS.  Measured, it is not one for this
+application, and the default was left unchanged on the evidence.
+
+Synthetic scene, blobs translating by a known (1.6, 0.4) px/frame:
+
+    backend        far EPE   near EPE   ms/pair
+    DIS              1.269      1.140      74.5
+    RAFT-small       3.166      1.419     192.8      <- worse than DIS
+    RAFT-large       0.933      0.640     265.6      <- better, 3.6x cost
+
+Real footage (Nashik, fraction of far-field pixels clearing the display
+floor, which is what "is the distant crowd visible at all" reduces to):
+
+    DIS                        2.8%      56 ms
+    DIS + far-field            8.2%      85 ms
+    RAFT-large                 0.0%     236 ms
+    RAFT-large + far-field     1.4%     492 ms
+
+The integration is not at fault: on a known-answer test both backends recover
+an exact translation to within 0.1 px, down to a 0.4 px sub-pixel shift.  The
+difference is what each does with *sparse small independent* motions.  RAFT
+optimises a globally smooth field, which is the right prior for the driving
+and stereo benchmarks it was trained on and the wrong one for a hundred
+pedestrians each moving a pixel per frame against a static street: those
+motions get smoothed into the background.  DIS, matching patches locally with
+no smoothness prior across objects, keeps them.
+
+So RAFT is available and correct, and is the better choice on footage
+dominated by large coherent motion — a carriageway, a camera on a vehicle.
+It is not the better choice here, and "learned beats classical" turned out to
+be a claim about benchmarks rather than about this problem.
 """
 
 from __future__ import annotations
@@ -148,6 +184,12 @@ _FROZEN_FRAME_BASELINE: float = 0.05
 # duplicate is an ordinary dropped frame and not worth a warning.
 _FROZEN_RUN_FRAMES: int = 10
 
+# A 3x3 Sobel sums eight weighted samples, so it multiplies per-pixel noise
+# by the root of the sum of its squared coefficients: sqrt(1+4+1+1+4+1) ~ 3.46.
+# Applied so the noise estimate and the structure tensor are in the same
+# units and the validity threshold does not need a fudge factor.
+_SOBEL_NOISE_GAIN: float = 3.46
+
 
 @dataclass
 class FlowResult:
@@ -172,6 +214,12 @@ class FlowResult:
     frame_mean_magnitude: float             # diagnostic
     flow_reliability: float = 1.0           # [0,1]; fraction of the inter-frame
                                             # difference the flow explains
+    #: (H_src, W_src) uint8, 1 = flow here was measured, 0 = it was
+    #: interpolated by the algorithm into a region carrying no motion
+    #: information and has been zeroed.  None when validity gating is off.
+    valid_mask: Optional[np.ndarray] = None
+    #: Fraction of the frame that was actually measurable.
+    valid_fraction: float = 1.0
     is_discontinuity_flagged: bool = False  # True → frames are not temporally
                                             # adjacent (cut / time-lapse);
                                             # the field is not trustworthy
@@ -208,10 +256,20 @@ class FlowField:
         far_field_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.45),
         far_field_target_px: int = 960,
         far_field_blend_px: int = 48,
+        raft_variant: str = "small",
+        device: Optional[str] = None,
+        validity_gating: bool = True,
+        fb_consistency: bool = True,
+        max_flow_error_px: float = 1.0,
+        structure_window: int = 7,
     ) -> None:
-        if backend not in ("dis", "farneback"):
+        if backend not in ("dis", "farneback", "raft"):
             raise ValueError(
-                f"backend must be 'dis' or 'farneback', got {backend!r}"
+                f"backend must be 'dis', 'farneback' or 'raft', got {backend!r}"
+            )
+        if raft_variant not in ("small", "large"):
+            raise ValueError(
+                f"raft_variant must be 'small' or 'large', got {raft_variant!r}"
             )
         if dis_preset not in _DIS_PRESETS:
             raise ValueError(
@@ -219,6 +277,15 @@ class FlowField:
             )
 
         self.backend = backend
+        self.raft_variant = raft_variant
+        self.device = device
+        self.validity_gating = validity_gating
+        self.fb_consistency = fb_consistency
+        self.max_flow_error_px = max_flow_error_px
+        # Odd, so the box filter is centred on the pixel it describes.
+        self.structure_window = int(structure_window) | 1
+        self._raft = None
+        self._raft_torch = None
         self.dis_preset = dis_preset
         self.target_px = target_px
         self.alpha = temporal_smooth_alpha
@@ -248,6 +315,7 @@ class FlowField:
         self._frozen_run: int = 0
         self._far_field_skipped_warned: bool = False
         self._far_field_logged: bool = False
+        self._validity_logged: bool = False
 
         # Blend-weight cache, keyed by (shape, blend_px, feather flags).
         self._blend_cache: dict[tuple, np.ndarray] = {}
@@ -331,6 +399,16 @@ class FlowField:
         # Downsample ---------------------------------------------------------
         prev_small, sx, sy = self._downsample(prev_gray)
         curr_small, _, _   = self._downsample(curr_gray)
+
+        # RAFT was trained on RGB and loses accuracy on a greyscale-replicated
+        # input, so the colour frames are carried alongside rather than
+        # reconstructed from the grey ones.  Everything else in this module —
+        # GMC, reliability, the source-quality flags — is intentionally
+        # greyscale and unaffected.
+        prev_bgr = curr_bgr = None
+        if self.backend == "raft":
+            prev_bgr = self._downsample_colour(prev_frame, prev_small.shape)
+            curr_bgr = self._downsample_colour(curr_frame, curr_small.shape)
         h_c, w_c = prev_small.shape
 
         # Downsample exclusion mask to compute resolution --------------------
@@ -343,13 +421,15 @@ class FlowField:
             )
 
         # Raw flow -----------------------------------------------------------
-        raw_flow = self._compute_raw_flow(prev_small, curr_small)  # (h_c, w_c, 2)
+        raw_flow = self._compute_raw_flow(prev_small, curr_small,
+                                          prev_bgr, curr_bgr)  # (h_c, w_c, 2)
 
         # Second pass at higher resolution over the far field.  Composited into
         # the raw field before anything else reads it, so reliability, GMC and
         # smoothing all see one coherent field rather than two.
         raw_flow = self._refine_far_field(
-            prev_gray, curr_gray, raw_flow, sx, sy
+            prev_gray, curr_gray, raw_flow, sx, sy,
+            prev_frame, curr_frame,
         )
 
         # Validity check on the RAW field, before GMC and smoothing muddy it.
@@ -479,6 +559,18 @@ class FlowField:
                     gmc_tx * sx, gmc_ty * sy, timestamp_sec
                 )
 
+        # Per-pixel validity --------------------------------------------------
+        # Everything above produces a value for EVERY pixel, whether or not
+        # that pixel carried enough information to measure one.  This is where
+        # invented motion is removed.
+        valid_small = None
+        if self.validity_gating:
+            valid_small = self._flow_validity(
+                prev_small, curr_small, raw_flow,
+                prev_bgr=prev_bgr, curr_bgr=curr_bgr,
+            )
+            raw_flow[~valid_small] = 0.0
+
         # Zero out excluded pixels -------------------------------------------
         if bg_mask_small is not None:
             excl = bg_mask_small.astype(bool)
@@ -505,6 +597,20 @@ class FlowField:
         else:
             field_src = self._smoothed_field.copy()
 
+        # Validity mask back to source resolution ----------------------------
+        valid_src = None
+        valid_fraction = 1.0
+        if valid_small is not None:
+            valid_fraction = float(valid_small.mean())
+            vs = valid_small.astype(np.uint8)
+            if (h_src, w_src) != vs.shape[:2]:
+                # NEAREST: a validity mask is categorical.  Interpolating it
+                # invents half-valid pixels along every boundary, which is the
+                # ambiguity the mask exists to remove.
+                vs = cv2.resize(vs, (w_src, h_src),
+                                interpolation=cv2.INTER_NEAREST)
+            valid_src = vs
+
         # Mean magnitude (for rain heuristic and diagnostics) ----------------
         magnitudes = np.sqrt(field_src[..., 0] ** 2 + field_src[..., 1] ** 2)
         frame_mean_magnitude = float(magnitudes.mean())
@@ -525,6 +631,8 @@ class FlowField:
             frame_mean_gradient=frame_mean_gradient,
             frame_mean_magnitude=frame_mean_magnitude,
             flow_reliability=reliability,
+            valid_mask=valid_src,
+            valid_fraction=valid_fraction,
             is_discontinuity_flagged=is_discontinuous,
         )
 
@@ -542,6 +650,24 @@ class FlowField:
     # ------------------------------------------------------------------
 
     def _ensure_built(self) -> None:
+        if self.backend == "raft" and self._raft is None:
+            import torch
+            from torchvision.models.optical_flow import (
+                raft_large, raft_small, Raft_Large_Weights, Raft_Small_Weights,
+            )
+            from pipeline.device import resolve_device
+
+            self._raft_device = resolve_device(self.device)
+            if self.raft_variant == "large":
+                weights = Raft_Large_Weights.DEFAULT
+                net = raft_large(weights=weights, progress=False)
+            else:
+                weights = Raft_Small_Weights.DEFAULT
+                net = raft_small(weights=weights, progress=False)
+            logger.info("Loading RAFT-%s (%s) on %s ...",
+                        self.raft_variant, weights.name, self._raft_device)
+            self._raft = net.to(self._raft_device).eval()
+            self._raft_torch = torch
         if self.backend == "dis" and self._dis is None:
             self._dis = cv2.DISOpticalFlow_create(_DIS_PRESETS[self.dis_preset])
         if self.gmc and self._orb is None:
@@ -572,6 +698,8 @@ class FlowField:
         raw_flow: np.ndarray,
         sx: float,
         sy: float,
+        prev_bgr: Optional[np.ndarray] = None,
+        curr_bgr: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Recompute flow over the far field at higher resolution and blend it in.
@@ -648,11 +776,19 @@ class FlowField:
 
         crop_prev = prev_gray[y1:y2, x1:x2]
         crop_curr = curr_gray[y1:y2, x1:x2]
+        cprev_bgr = ccurr_bgr = None
+        if self.backend == "raft" and prev_bgr is not None:
+            cprev_bgr = prev_bgr[y1:y2, x1:x2]
+            ccurr_bgr = curr_bgr[y1:y2, x1:x2]
         if (rw, rh) != (roi_w, roi_h):
             crop_prev = cv2.resize(crop_prev, (rw, rh), interpolation=cv2.INTER_AREA)
             crop_curr = cv2.resize(crop_curr, (rw, rh), interpolation=cv2.INTER_AREA)
+            if cprev_bgr is not None:
+                cprev_bgr = cv2.resize(cprev_bgr, (rw, rh), interpolation=cv2.INTER_AREA)
+                ccurr_bgr = cv2.resize(ccurr_bgr, (rw, rh), interpolation=cv2.INTER_AREA)
 
-        fine = self._compute_raw_flow(crop_prev, crop_curr)   # crop px/frame
+        fine = self._compute_raw_flow(crop_prev, crop_curr,
+                                      cprev_bgr, ccurr_bgr)  # crop px/frame
 
         # crop px/frame → source px/frame → compute px/frame
         fine[..., 0] *= (roi_w / rw) / sx
@@ -734,9 +870,59 @@ class FlowField:
         self._blend_cache[key] = weights
         return weights
 
-    def _compute_raw_flow(
-        self, prev_small: np.ndarray, curr_small: np.ndarray
+    @staticmethod
+    def _downsample_colour(frame_bgr: np.ndarray, shape) -> np.ndarray:
+        """Colour frame resized to the compute-resolution grid."""
+        h, w = shape[:2]
+        if frame_bgr.shape[:2] == (h, w):
+            return frame_bgr
+        return cv2.resize(frame_bgr, (w, h), interpolation=cv2.INTER_AREA)
+
+    def _compute_raft(
+        self, prev_bgr: np.ndarray, curr_bgr: np.ndarray
     ) -> np.ndarray:
+        """
+        RAFT forward pass -> (H, W, 2) float32 in the input's own pixels.
+
+        RAFT requires both dimensions divisible by 8, so the pair is padded
+        (replicate, not zero — a black border is a hard edge that the
+        correlation volume reads as real structure) and the result cropped
+        back.  Padding rather than resizing keeps the output on the same pixel
+        grid as every other backend, so nothing downstream has to know which
+        backend produced the field.
+        """
+        torch = self._raft_torch
+        h, w = prev_bgr.shape[:2]
+        ph, pw = (-h) % 8, (-w) % 8
+        if ph or pw:
+            prev_bgr = cv2.copyMakeBorder(prev_bgr, 0, ph, 0, pw, cv2.BORDER_REPLICATE)
+            curr_bgr = cv2.copyMakeBorder(curr_bgr, 0, ph, 0, pw, cv2.BORDER_REPLICATE)
+
+        def _to_tensor(img):
+            rgb = img[:, :, ::-1].astype(np.float32) / 255.0
+            t = torch.from_numpy(rgb.transpose(2, 0, 1).copy())[None]
+            # torchvision's RAFT expects inputs in [-1, 1].
+            return (t * 2.0 - 1.0).to(self._raft_device)
+
+        with torch.no_grad():
+            preds = self._raft(_to_tensor(prev_bgr), _to_tensor(curr_bgr))
+        # The model returns one field per refinement iteration; the last is
+        # the converged one.  Taking preds[0] would use the coarsest.
+        flow = preds[-1][0].permute(1, 2, 0).cpu().numpy().astype(np.float32)
+        return flow[:h, :w]
+
+    def _compute_raw_flow(
+        self, prev_small: np.ndarray, curr_small: np.ndarray,
+        prev_bgr: Optional[np.ndarray] = None,
+        curr_bgr: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        if self.backend == "raft":
+            if prev_bgr is None:
+                # Greyscale fallback: RAFT is trained on RGB, so this is a
+                # degraded input, but it is better than refusing to run.
+                prev_bgr = cv2.cvtColor(prev_small, cv2.COLOR_GRAY2BGR)
+                curr_bgr = cv2.cvtColor(curr_small, cv2.COLOR_GRAY2BGR)
+            return self._compute_raft(prev_bgr, curr_bgr)
         if self.backend == "dis":
             return self._dis.calc(prev_small, curr_small, None)
         return cv2.calcOpticalFlowFarneback(
@@ -769,6 +955,147 @@ class FlowField:
         before = float(np.median(np.hypot(fx, fy)))
         after = float(np.median(np.hypot(fx - tx, fy - ty)))
         return before, after
+
+    # ------------------------------------------------------------------
+    # Per-pixel validity
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _noise_sigma(gray: np.ndarray) -> float:
+        """
+        Immerkaer's estimate of additive image noise, in grey levels.
+
+        Convolves with a kernel that annihilates locally-linear intensity —
+        so it responds to noise and not to real image structure — and scales
+        the mean absolute response by the known constant for Gaussian noise.
+
+        Estimated per frame rather than configured, because it is a property
+        of the camera, the light level and the compression, all of which
+        change during a run.  Every validity threshold below is expressed in
+        terms of it, so nothing here is a number chosen by looking at output.
+        """
+        h, w = gray.shape[:2]
+        if h < 3 or w < 3:
+            return 1.0
+        k = np.array([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], np.float32)
+        resp = cv2.filter2D(gray.astype(np.float32), -1, k)
+        # sqrt(pi/2) / (6 * (W-2) * (H-2)) * sum|resp|, i.e. a scaled mean.
+        sigma = float(np.abs(resp).mean()) * np.sqrt(np.pi / 2.0) / 6.0
+        return max(sigma, 1e-3)
+
+    def _flow_validity(
+        self,
+        prev_small: np.ndarray,
+        curr_small: np.ndarray,
+        flow: np.ndarray,
+        prev_bgr: Optional[np.ndarray] = None,
+        curr_bgr: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """
+        Boolean mask: True where the flow at that pixel was MEASURED.
+
+        Dense optical flow returns a vector for every pixel unconditionally.
+        In regions that carry no information to measure one — a clear sky, a
+        blank road surface — the estimate is filled in from the neighbourhood
+        by the algorithm's own smoothness term.  It is smooth, it is
+        confident, and it is invented.  Nothing downstream can tell it apart
+        from real motion, so it becomes divergence, turbulence and counterflow
+        exactly like a moving crowd does.
+
+        Two independent tests, both derived rather than tuned:
+
+        1. Structure (the aperture problem)
+           The brightness-constancy equation gives ONE constraint per pixel
+           for TWO unknowns.  The local structure tensor
+               J = boxfilter([Ix^2, IxIy; IxIy, Iy^2])
+           says how many of those unknowns the neighbourhood actually pins
+           down.  Its smaller eigenvalue is the weak direction:
+
+               lambda_min ~ 0, lambda_max ~ 0   flat  -> both components invented
+                                                        (sky, tarmac, water)
+               lambda_min ~ 0, lambda_max >> 0  edge  -> the component ALONG the
+                                                        edge is invented
+                                                        (lane markings, kerbs,
+                                                        railings, cables)
+               both large                       corner -> fully constrained
+
+           Standard first-order error analysis gives the flow uncertainty from
+           noise as sigma_v ~ sigma_noise / sqrt(lambda_min).  Requiring that
+           to stay under ``max_flow_error_px`` inverts to a threshold on
+           lambda_min with no free constant left over.
+
+           This is why white lane lines "move": a painted line is a strong
+           edge with almost no structure along it, so its flow slides freely
+           up and down the line under nothing more than sensor noise.
+
+        2. Forward-backward consistency
+           A correct correspondence is invertible: follow the flow forward to
+           where a pixel went, follow the backward flow from there, and you
+           should return to where you started.  Occlusions, repeated texture
+           and fabricated motion do not survive the round trip.  The test is
+           the standard one from Sundaram et al. (2010):
+
+               |w_f + w_b(x + w_f)|^2  <  0.01 (|w_f|^2 + |w_b|^2) + 0.5
+
+           It costs a second flow computation, which is why it is optional.
+
+        Returns a (h, w) bool array at compute resolution.
+        """
+        h, w = prev_small.shape[:2]
+        valid = np.ones((h, w), dtype=bool)
+
+        # --- 1. structure -------------------------------------------------
+        gray = curr_small.astype(np.float32)
+        ix = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        iy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        ksize = (self.structure_window, self.structure_window)
+        jxx = cv2.boxFilter(ix * ix, -1, ksize, normalize=True)
+        jyy = cv2.boxFilter(iy * iy, -1, ksize, normalize=True)
+        jxy = cv2.boxFilter(ix * iy, -1, ksize, normalize=True)
+
+        # Smaller eigenvalue of the 2x2 symmetric tensor, closed form.
+        tr = jxx + jyy
+        det = jxx * jyy - jxy * jxy
+        disc = np.sqrt(np.maximum(tr * tr - 4.0 * det, 0.0))
+        lam_min = 0.5 * (tr - disc)
+
+        # Sobel sums 8 weighted samples, so it amplifies pixel noise; the
+        # factor keeps sigma in the same units as the gradients above.
+        sigma = self._noise_sigma(curr_small) * _SOBEL_NOISE_GAIN
+        lam_needed = (sigma / max(self.max_flow_error_px, 1e-6)) ** 2
+        structure_ok = lam_min >= lam_needed
+        valid &= structure_ok
+
+        # --- 2. forward-backward ------------------------------------------
+        if self.fb_consistency:
+            back = self._compute_raw_flow(curr_small, prev_small,
+                                          curr_bgr, prev_bgr)
+            gx, gy = np.meshgrid(np.arange(w, dtype=np.float32),
+                                 np.arange(h, dtype=np.float32))
+            map_x = gx + flow[..., 0]
+            map_y = gy + flow[..., 1]
+            back_at = cv2.remap(back, map_x, map_y,
+                                interpolation=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_REPLICATE)
+            dx = flow[..., 0] + back_at[..., 0]
+            dy = flow[..., 1] + back_at[..., 1]
+            err2 = dx * dx + dy * dy
+            f2 = flow[..., 0] ** 2 + flow[..., 1] ** 2
+            b2 = back_at[..., 0] ** 2 + back_at[..., 1] ** 2
+            valid &= err2 < (0.01 * (f2 + b2) + 0.5)
+
+        if not self._validity_logged:
+            logger.info(
+                "Per-pixel validity: %.1f%% of the field is measured "
+                "(structure gate kept %.1f%%; noise sigma %.2f grey levels, "
+                "so lambda_min must reach %.1f for %.2f px accuracy).  The "
+                "rest is flow the algorithm interpolated into regions that "
+                "carry no motion information, and is zeroed.",
+                valid.mean() * 100.0, structure_ok.mean() * 100.0,
+                sigma / _SOBEL_NOISE_GAIN, lam_needed, self.max_flow_error_px,
+            )
+            self._validity_logged = True
+        return valid
 
     @staticmethod
     def _flow_reliability(

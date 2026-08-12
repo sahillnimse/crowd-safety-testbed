@@ -110,22 +110,34 @@ def run(args: argparse.Namespace) -> None:
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # Open the source and read its real frame rate BEFORE the analyser is
+    # built.  load() constructs the AlertEngine, which converts each zone's
+    # min_duration_sec into a frame count using fps — so an analyser built at
+    # the 30.0 default and corrected afterwards keeps an AlertEngine timing
+    # alerts against a frame rate the source does not have.  On this project's
+    # own footage that is 25 fps read as 30 (alerts need 20% longer than
+    # configured to fire) and 10 fps read as 30 (3x longer).
+    source, src_fps, total_frames, is_glob = _open_source(args.source)
+    fps = args.fps or (src_fps if src_fps else 30.0)
+
+    # Clamped once, here, rather than at each use: the sampling test below is
+    # `fidx % stride`, so a --stride 0 reached it as a ZeroDivisionError on the
+    # first frame while the analyser had already been built with max(1, ...).
+    stride = max(1, args.stride)
+
     analyser = DenseFlowAnalyser(
         config=cfg,
         camera_id=args.camera,
         output_dir=args.output_dir,
         visualise=not args.no_vis,
-        fps=args.fps or 30.0,
+        fps=fps,
+        frame_stride=stride,
     )
     analyser.load()
 
-    # Re-read fps from actual source if not overridden
-    source, src_fps, total_frames, is_glob = _open_source(args.source)
-    fps = args.fps or (src_fps if src_fps else 30.0)
-    analyser._fps = fps
     # One annotated frame is produced per processed frame, so with --stride N
     # the output must play at fps/N to stay at real-world speed.
-    analyser.output_fps = fps / max(1, args.stride)
+    analyser.output_fps = fps / stride
 
     logger.info(
         "Source: %s  FPS: %.2f  Total frames: %s  Camera: %s",
@@ -164,9 +176,13 @@ def run(args: argparse.Namespace) -> None:
 
     try:
         for frame, fidx, ts in _iter_frames():
-            # Stride skip
-            if fidx % args.stride != 0:
-                prev_frame = frame
+            # Stride skip.  prev_frame is deliberately NOT updated here: the
+            # flow pair must span the sampling interval, so it holds the
+            # previous PROCESSED frame.  Updating it on skipped frames pinned
+            # the baseline to one source frame however coarse the sampling,
+            # which is the smallest displacement the footage can offer and so
+            # the worst signal-to-noise available.
+            if fidx % stride != 0:
                 continue
 
             if args.max_frames and processed >= args.max_frames:

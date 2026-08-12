@@ -49,6 +49,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Central-difference step for the image->ground Jacobian, in pixels.  Large
+# enough that the difference is well clear of float64 cancellation, small
+# enough that the linearisation holds across it on a normal mount.
+_JACOBIAN_DELTA_PX = 0.5
+
 SPEED_UNITS_CALIBRATED   = "m/s"
 SPEED_UNITS_UNCALIBRATED = "px/frame (UNCALIBRATED)"
 
@@ -313,10 +318,32 @@ class CameraCalibration:
         """
         Convert an entire flow field (H, W, 2) from px/frame to m/s.
 
-        For efficiency, conversion is computed at grid_cell_px spacing (i.e.
-        at cell centres when grid_cell_px matches the metrics grid) rather than
-        per-pixel.  The result is then nearest-neighbour upsampled to the
-        original field shape.
+        The conversion factor — not the velocity — is what gets sampled at
+        ``grid_cell_px`` spacing.  The local Jacobian of the homography is
+        computed at each sample point, bilinearly upsampled, and applied to
+        the field **per pixel**, so every pixel keeps its own velocity.
+
+        Why it is done this way
+        -----------------------
+        The obvious implementation samples the *velocity* at cell centres and
+        nearest-neighbour upsamples it, and that is what this did.  It makes
+        every pixel inside a metrics cell numerically identical, which is
+        invisible in any per-cell mean and fatal to anything measuring spread
+        *within* a cell:
+
+            grid_cell_px=16   cell variance 0.000000   turbulence 0.000000
+            grid_cell_px=1    cell variance 0.542491   turbulence 0.272333
+
+        So ``velocity_variance`` was exactly zero and ``turbulence_index`` —
+        wired to a CRITICAL threshold of 0.50 — could not fire at all on a
+        calibrated camera, while working correctly on an uncalibrated one,
+        which is precisely backwards.  Crowd pressure, rho x Var(v), would
+        have been identically zero for the same reason.
+
+        The Jacobian is exact to first order in the displacement.  Pedestrian
+        flow is 1-2 px/frame, where that error is far below the flow field's
+        own noise, and unlike the previous approach it does not destroy the
+        quantity being measured.
 
         Returns an (H, W, 2) float32 array in m/s, or raises UncalibratedCamera.
         """
@@ -333,40 +360,43 @@ class CameraCalibration:
         ys = np.arange(step // 2, h, step)
 
         n_y, n_x = len(ys), len(xs)
-        result_small = np.zeros((n_y, n_x, 2), dtype=np.float32)
 
-        # Build arrays of image points and displaced points for batch transform
-        pts_orig = np.array(
+        # Local Jacobian of the image -> ground map at each sample point,
+        # by central difference over _JACOBIAN_DELTA_PX.
+        d = _JACOBIAN_DELTA_PX
+        base = np.array(
             [[[float(x), float(y)] for x in xs] for y in ys],
             dtype=np.float64,
         ).reshape(-1, 1, 2)
 
-        dx_arr = field_xy[
-            np.clip(ys[:, None], 0, h-1),
-            np.clip(xs[None, :], 0, w-1),
-            0,
-        ].ravel()
-        dy_arr = field_xy[
-            np.clip(ys[:, None], 0, h-1),
-            np.clip(xs[None, :], 0, w-1),
-            1,
-        ].ravel()
+        def _world(offset_x: float, offset_y: float) -> np.ndarray:
+            pts = base.copy()
+            pts[:, 0, 0] += offset_x
+            pts[:, 0, 1] += offset_y
+            return cv2.perspectiveTransform(pts, self.H)[:, 0, :]
 
-        pts_disp = pts_orig.copy()
-        pts_disp[:, 0, 0] += dx_arr
-        pts_disp[:, 0, 1] += dy_arr
+        wx_p, wx_m = _world(d, 0.0), _world(-d, 0.0)
+        wy_p, wy_m = _world(0.0, d), _world(0.0, -d)
 
-        world_orig = cv2.perspectiveTransform(pts_orig, self.H)  # (N,1,2)
-        world_disp = cv2.perspectiveTransform(pts_disp, self.H)
+        # J = [[dX/dx, dX/dy], [dY/dx, dY/dy]], metres per pixel.
+        jac = np.empty((n_y, n_x, 4), dtype=np.float32)
+        jac[..., 0] = ((wx_p[:, 0] - wx_m[:, 0]) / (2 * d)).reshape(n_y, n_x)
+        jac[..., 1] = ((wy_p[:, 0] - wy_m[:, 0]) / (2 * d)).reshape(n_y, n_x)
+        jac[..., 2] = ((wx_p[:, 1] - wx_m[:, 1]) / (2 * d)).reshape(n_y, n_x)
+        jac[..., 3] = ((wy_p[:, 1] - wy_m[:, 1]) / (2 * d)).reshape(n_y, n_x)
 
-        vx_ms = ((world_disp[:, 0, 0] - world_orig[:, 0, 0]) * fps).reshape(n_y, n_x)
-        vy_ms = ((world_disp[:, 0, 1] - world_orig[:, 0, 1]) * fps).reshape(n_y, n_x)
+        if (n_y, n_x) != (h, w):
+            # Bilinear, not nearest: the conversion factor varies smoothly
+            # with perspective, and a piecewise-constant one puts a visible
+            # step in the speed field at every cell boundary.
+            jac_full = cv2.resize(jac, (w, h), interpolation=cv2.INTER_LINEAR)
+        else:
+            jac_full = jac
 
-        result_small[..., 0] = vx_ms.astype(np.float32)
-        result_small[..., 1] = vy_ms.astype(np.float32)
+        dx = field_xy[..., 0].astype(np.float32)
+        dy = field_xy[..., 1].astype(np.float32)
 
-        if step == 1:
-            return result_small
-
-        # Upsample back to source resolution
-        return cv2.resize(result_small, (w, h), interpolation=cv2.INTER_NEAREST)
+        out = np.empty((h, w, 2), dtype=np.float32)
+        out[..., 0] = (jac_full[..., 0] * dx + jac_full[..., 1] * dy) * fps
+        out[..., 1] = (jac_full[..., 2] * dx + jac_full[..., 3] * dy) * fps
+        return out

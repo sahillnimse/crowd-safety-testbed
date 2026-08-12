@@ -66,18 +66,43 @@ def run_dir(video: str, model_key: str, create: bool = False) -> str:
 # Without them the Events column read 0 for every traffic run and the
 # detections modal (positives-only by default) came back empty, making a
 # working detector look like it had found nothing.
+#
+# The dense-flow entries are NOT written out here.  They are exactly
+# "<metric>_<severity>" over the AlertEngine's threshold table, and the copy
+# that used to live in this set had drifted: it listed "counterflow_warning",
+# "stop_go_warning" and "vehicle_in_ped_zone", none of which the engine emits,
+# while the real labels ("counterflow_score_warning",
+# "vehicle_in_ped_zone_warning", "mean_curl_warning" and both crowd_pressure
+# levels) were absent.  So genuine alerts were not counted in the Events
+# column and were filtered out of the positives-only detections modal.
+#
+# Imported lazily rather than at module scope: webapp.app imports this module
+# at startup and models.crowd_flow.zones pulls in cv2 and numpy, which is a
+# second of page-load time for a set of strings.
 POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
+                   # OpticalFlowCrushDetector (models/optical_flow_crush.py)
                    "turbulence", "convergence", "crush_risk",
                    "vehicle_moving", "vehicle_parked",
                    # ANPR: every captured vehicle is a result, whether or not
                    # its plate turned out to be legible.
                    "vehicle_plate", "vehicle_unread",
                    "umbrella",
-                   # Dense optical flow crowd-safety
-                   "flow_analysis",
-                   "mean_divergence_critical", "counterflow_warning",
-                   "turbulence_index_critical", "stop_go_warning",
-                   "mean_speed_warning", "vehicle_in_ped_zone"}
+                   # DenseFlowAnalyser's per-frame summary row, which is not an
+                   # alert and so is not in DENSE_FLOW_ALERT_LABELS.
+                   "flow_analysis"}
+
+
+def _add_dense_flow_labels() -> None:
+    """Fold the dense-flow alert labels in, on first use rather than at import."""
+    from models.crowd_flow.zones import DENSE_FLOW_ALERT_LABELS
+    POSITIVE_LABELS.update(DENSE_FLOW_ALERT_LABELS)
+
+
+def positive_labels() -> set:
+    """POSITIVE_LABELS, with the dense-flow alert labels resolved."""
+    if "mean_divergence_critical" not in POSITIVE_LABELS:
+        _add_dense_flow_labels()
+    return POSITIVE_LABELS
 
 
 @dataclass
@@ -311,12 +336,17 @@ class JobManager:
                 _cap = _cv2.VideoCapture(job.video_path)
                 _src_fps = _cap.get(_cv2.CAP_PROP_FPS)
                 _cap.release()
+                stride = max(1, int(job.sample_every_n_frames or 1))
                 if _src_fps and _src_fps > 0:
                     model._fps = float(_src_fps)
+                    # The runner pairs consecutive SAMPLED frames, so the flow
+                    # baseline is `stride` source frames and predict() is
+                    # called at src_fps/stride.  The model needs both numbers:
+                    # one to keep px/frame units, one to time alert durations.
+                    model._frame_stride = stride
                     # The runner calls predict() once per SAMPLED frame, so the
                     # annotated video holds one frame per stride.  Writing it at
                     # the source rate would replay it `stride` times too fast.
-                    stride = max(1, int(job.sample_every_n_frames or 1))
                     model.output_fps = float(_src_fps) / stride
 
             model.load()
@@ -368,7 +398,8 @@ class JobManager:
         stage.detections = len(detections)
         stage.label_counts = dict(labels)
         stage.scoring_modes = dict(scoring)
-        stage.positives = sum(n for lbl, n in labels.items() if lbl in POSITIVE_LABELS)
+        positive = positive_labels()
+        stage.positives = sum(n for lbl, n in labels.items() if lbl in positive)
 
     def _export(self, job: Job, stage: Stage, detections: list, model_key: str,
                 model=None):

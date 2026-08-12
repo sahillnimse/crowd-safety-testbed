@@ -197,7 +197,8 @@ def create_job(req: JobRequest):
 class ValidationRequest(BaseModel):
     source: str = Field(..., description="Filename in test_videos/, or a path")
     routes: str = "abc"
-    max_frames: int = 120
+    # Budget, spread as a stride across the WHOLE video. 0 = every frame.
+    max_frames: int = 240
 
 
 @app.get("/api/validation/flow")
@@ -267,7 +268,7 @@ def history_detections(video: str, model_key: str, limit: int = 500,
     """Detection rows for a past run, read straight off disk."""
     import json
 
-    from webapp.jobs import POSITIVE_LABELS
+    from webapp.jobs import positive_labels
 
     path = os.path.join(
         run_dir(os.path.basename(video), os.path.basename(model_key)), RUN_JSON)
@@ -277,7 +278,8 @@ def history_detections(video: str, model_key: str, limit: int = 500,
     with open(path, encoding="utf-8") as f:
         rows = json.load(f)
     if positives_only:
-        rows = [r for r in rows if r.get("label") in POSITIVE_LABELS]
+        positive = positive_labels()
+        rows = [r for r in rows if r.get("label") in positive]
     return {"total": len(rows), "rows": rows[:limit]}
 
 
@@ -313,9 +315,10 @@ def get_detections(job_id: str, model_key: str, limit: int = 500,
     with open(os.path.join(RUNS_DIR, stage.log_json), encoding="utf-8") as f:
         rows = json.load(f)
 
-    from webapp.jobs import POSITIVE_LABELS
+    from webapp.jobs import positive_labels
     if positives_only:
-        rows = [r for r in rows if r["label"] in POSITIVE_LABELS]
+        positive = positive_labels()
+        rows = [r for r in rows if r["label"] in positive]
 
     return {"total": len(rows), "rows": rows[:limit]}
 
@@ -361,11 +364,22 @@ def anpr_image(video: str, kind: str, name: str):
     return FileResponse(path, media_type="image/jpeg")
 
 
-@app.get("/api/files/validation/{name}")
+# `name:path` so the parameter matches "<video>/<file>".  A plain {name}
+# stops at the first slash, so reports stored per video 404'd — the report
+# named the right file and the route could not reach it.
+@app.get("/api/files/validation/{name:path}")
 def stream_validation_file(name: str):
-    """Serve a file produced by a validation run (e.g. the comparison video)."""
+    """
+    Serve a file produced by a validation run (e.g. the comparison video).
+
+    ``name`` is "<video>/<file>" now that reports are stored per source; a
+    bare filename is still accepted for reports written before that split.
+    Every component is reduced to a basename before use — these are URL
+    segments, and joining them raw would let "../.." walk out of outputs/.
+    """
     from webapp.validation import REPORT_DIR
-    path = os.path.join(REPORT_DIR, os.path.basename(name))
+    parts = [os.path.basename(p) for p in name.replace("\\", "/").split("/") if p]
+    path = os.path.join(REPORT_DIR, *parts[-2:]) if parts else REPORT_DIR
     if not os.path.exists(path):
         raise HTTPException(404, "Not found")
     media = "video/mp4" if path.lower().endswith(".mp4") else "application/json"

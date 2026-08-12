@@ -44,15 +44,27 @@ COLOR_MAP = {
     "vehicle_plate": (0, 215, 255),    # amber — ANPR, plate read
     "vehicle_unread": (120, 120, 120), # grey — ANPR, plate not legible
     "umbrella": (203, 65, 200),        # magenta
-    # Dense optical flow crowd-safety alerts (DenseFlowAnalyser)
+    # Dense optical flow crowd-safety alerts (DenseFlowAnalyser).
     # Colour is a rendering choice only; Detection.extra carries the numbers.
-    "mean_speed_warning":       (0, 165, 255),   # orange  — speed drop
-    "mean_speed_critical":      (0, 100, 255),   # red-orange
-    "mean_divergence_critical": (0, 0, 200),     # red  — compression/crush risk
-    "counterflow_warning":      (0, 215, 255),   # amber — entry/exit separation
-    "turbulence_index_critical":(0, 0, 160),     # dark red — Helbing turbulence
-    "stop_go_warning":          (140, 0, 220),   # purple — stop-and-go wave
-    "vehicle_in_ped_zone":      (0, 180, 0),     # green — vehicle alert
+    #
+    # These keys are "<metric>_<severity>" exactly as
+    # Alert.label_for_detection() builds them — see
+    # models.crowd_flow.zones.DENSE_FLOW_ALERT_LABELS, which is derived from
+    # the threshold table and is the list to check against when adding a
+    # metric.  Three keys here were names the engine never emits
+    # ("counterflow_warning", "stop_go_warning", "vehicle_in_ped_zone", plus a
+    # "mean_speed_critical" tier that does not exist), so those alerts drew in
+    # DEFAULT_COLOR and the crowd_pressure ones were missing entirely.
+    "mean_speed_warning":         (0, 165, 255),   # orange — speed drop
+    "mean_divergence_critical":   (0, 0, 200),     # red — compression/crush risk
+    "mean_curl_warning":          (0, 200, 255),   # yellow — rotational flow
+    "counterflow_score_warning":  (0, 215, 255),   # amber — entry/exit separation
+    "turbulence_index_critical":  (0, 0, 160),     # dark red — Helbing turbulence
+    "crowd_pressure_warning":     (140, 0, 220),   # purple — Helbing pressure
+    "crowd_pressure_critical":    (90, 0, 150),    # dark purple — stampede range
+    "vehicle_in_ped_zone_warning": (0, 180, 0),    # green — vehicle alert
+    # Per-frame summary row, not an alert.
+    "flow_analysis":              (200, 200, 200), # grey
 }
 DEFAULT_COLOR = (255, 255, 0)
 

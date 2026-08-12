@@ -112,6 +112,11 @@ class ZoneMetrics:
     turbulence_index: float   # velocity_variance / mean_speed²; Helbing et al.
     active_cells:    int      # cells with motion above min_magnitude
     umbrella_occluded_frac: float = 0.0  # fraction of zone under umbrella canopy
+    # Crowd pressure and the density it is built from.  None when no density
+    # estimate is available (detector disabled or not yet run) — distinct
+    # from 0.0, which would read as "measured, and the crowd is empty".
+    mean_density:    Optional[float] = None  # persons/m² or persons/1000px²
+    crowd_pressure:  Optional[float] = None  # ρ·Var(v); s⁻² when calibrated
 
 
 @dataclass
@@ -138,6 +143,13 @@ class MetricsFrame:
     timestamp_sec:  float
     is_rain_flagged:     bool
     is_lowlight_flagged: bool
+
+    # Density / pressure.  Optional because both require a person detector;
+    # every other array here comes from the flow field alone.
+    cell_density:   Optional[np.ndarray] = None
+    cell_pressure:  Optional[np.ndarray] = None
+    density_units:  Optional[str] = None
+    n_persons:      Optional[int] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -171,6 +183,8 @@ class CrowdMetricsEngine:
     ) -> None:
         self.grid_cell_px = grid_cell_px
         self.min_magnitude = min_magnitude
+        # zone name -> already warned that nothing clears its motion floor.
+        self._empty_zone_warned: dict[str, bool] = {}
         self.stop_go_lags  = stop_go_lag_frames or [5, 10, 15]
 
         # Per-zone speed history for stop-go detection
@@ -243,6 +257,7 @@ class CrowdMetricsEngine:
         ped_mask: Optional[np.ndarray] = None, # 1 = include, 0 = exclude
         umbrella_layer=None,                   # DetectorMaskLayer for occlusion fraction
         fps: float = 30.0,
+        density=None,                          # DensityEstimator, or None
     ) -> MetricsFrame:
         """
         Compute per-cell and per-zone metrics.
@@ -261,6 +276,11 @@ class CrowdMetricsEngine:
         umbrella_layer:
             DetectorMaskLayer.  Used to compute per-zone umbrella occlusion
             fraction for density-estimate annotation.
+        density:
+            DensityEstimator, or None.  Supplies the persons-per-cell half of
+            Helbing crowd pressure; without it every pressure field is None
+            rather than zero, because "no detector ran" and "nobody is here"
+            must not read the same downstream.
         fps:
             Frames per second of the source video.
         """
@@ -291,12 +311,26 @@ class CrowdMetricsEngine:
         (cell_speed, cell_div, cell_curl, cell_coh, cell_var,
          cell_mx, cell_my) = self._build_cell_arrays(field_ms, ped_mask, h, w)
 
+        # Density and crowd pressure.  cell_var is already in (m/s)^2 when
+        # the camera is calibrated, which is the unit the published pressure
+        # thresholds assume.
+        from models.crowd_flow.density import (
+            crowd_pressure, DENSITY_UNITS_CALIBRATED, DENSITY_UNITS_UNCALIBRATED,
+        )
+        cell_density = density.cell_density() if density is not None else None
+        cell_pressure = crowd_pressure(cell_density, cell_var)
+        density_units = None
+        if cell_density is not None:
+            density_units = (DENSITY_UNITS_CALIBRATED if calibration_effective
+                             else DENSITY_UNITS_UNCALIBRATED)
+
         # Aggregate per zone
         zone_results: dict[str, ZoneMetrics] = {}
         for zone in zones:
             zm = self._aggregate_zone(
                 zone, cell_speed, cell_div, cell_curl, cell_coh, cell_var,
                 cell_mx, cell_my, h, w, umbrella_layer,
+                cell_density, cell_pressure,
             )
             zone_results[zone.name] = zm
 
@@ -315,6 +349,10 @@ class CrowdMetricsEngine:
             timestamp_sec   = getattr(flow_result, "timestamp_sec", 0.0),
             is_rain_flagged      = flow_result.is_rain_flagged,
             is_lowlight_flagged  = flow_result.is_lowlight_flagged,
+            cell_density    = cell_density,
+            cell_pressure   = cell_pressure,
+            density_units   = density_units,
+            n_persons       = density.n_persons if density is not None else None,
         )
 
     # ------------------------------------------------------------------
@@ -464,6 +502,8 @@ class CrowdMetricsEngine:
         cell_speed, cell_div, cell_curl, cell_coh, cell_var,
         cell_mx, cell_my, h, w,
         umbrella_layer,
+        cell_density=None,
+        cell_pressure=None,
     ) -> ZoneMetrics:
         """Aggregate cell arrays over the cells whose centres fall in zone.polygon."""
         n_y = cell_speed.shape[0]
@@ -471,17 +511,71 @@ class CrowdMetricsEngine:
 
         in_zone_mask = self._zone_cell_mask(zone, n_y, n_x)
 
-        # Further filter to cells with meaningful motion
-        active = in_zone_mask & (cell_speed > self.min_magnitude)
+        # Per-zone motion floor.  The engine's min_magnitude is the fallback
+        # for zones that predate zone_type; a zone carrying its own floor
+        # wins, because a pedestrian concourse and a carriageway do not share
+        # a scale and one global number is wrong for at least one of them.
+        floor = getattr(zone, "motion_floor", self.min_magnitude)
+        active = in_zone_mask & (cell_speed > floor)
         n_active = int(active.sum())
 
+        # Density over the zone regardless of motion.  A stationary packed
+        # crowd has no active cells at all, and that is the case this metric
+        # exists for — computing density only on the moving path would report
+        # the most dangerous state as an empty zone.
+        def _zone_mean(arr):
+            if arr is None:
+                return None
+            vals = arr[in_zone_mask]
+            if not vals.size or np.all(np.isnan(vals)):
+                return None
+            return float(np.nanmean(vals))
+
+        mean_density = _zone_mean(cell_density)
+        mean_pressure = _zone_mean(cell_pressure)
+
+        # Per-zone physical ceiling.  DensityEstimator applies the pedestrian
+        # limit globally because it has no zones; a vehicle zone's real limit
+        # is ~40x lower (a car occupies ~7 m² even bumper to bumper), so a
+        # gross overcount there would clear the global check untouched.
+        max_density = getattr(zone, "max_density", None)
+        if (mean_density is not None and max_density is not None
+                and mean_density > max_density):
+            logger.warning(
+                "Zone '%s' (%s): density %.2f exceeds the %.2f/m² physically "
+                "achievable for this subject; discarding density and pressure "
+                "for this frame.  Either the zone_type is wrong or the "
+                "homography under-measures ground area.  (Per frame.)",
+                zone.name, getattr(zone, "zone_type", "?"),
+                mean_density, max_density,
+            )
+            mean_density = None
+            mean_pressure = None
+
         if n_active == 0:
+            # Zero active cells is ambiguous on its own: a gridlocked zone, an
+            # empty one, and a motion floor set too high all report the same
+            # zeros.  active_cells=0 in the output is the discriminator, and
+            # this says so once per zone so a mis-set floor is findable rather
+            # than looking like a permanently stationary crowd.
+            if not self._empty_zone_warned.get(zone.name):
+                logger.warning(
+                    "Zone '%s' (%s): no cell exceeded its %.2f px/frame motion "
+                    "floor, so every flow metric for it reads zero.  That is "
+                    "correct for a genuinely still zone, but if there is "
+                    "visible movement the floor is too high for this scene — "
+                    "lower it with `min_magnitude:` on the zone.  "
+                    "(Logged once per zone.)",
+                    zone.name, getattr(zone, "zone_type", "?"), floor,
+                )
+                self._empty_zone_warned[zone.name] = True
             zm = ZoneMetrics(
                 zone_name=zone.name,
                 mean_speed=0.0, mean_divergence=0.0, mean_curl=0.0,
                 mean_coherence=1.0, mean_variance=0.0,
                 stop_go_score=0.0, counterflow_score=0.0,
                 turbulence_index=0.0, active_cells=0,
+                mean_density=mean_density, crowd_pressure=mean_pressure,
             )
             self._update_speed_history(zone.name, 0.0)
             return zm
@@ -493,7 +587,8 @@ class CrowdMetricsEngine:
         mean_variance   = float(cell_var[active].mean())
 
         stop_go  = self._compute_stop_go(zone.name, mean_speed)
-        cf_score = self._compute_counterflow(cell_mx, cell_my, in_zone_mask)
+        cf_score = self._compute_counterflow(cell_mx, cell_my, in_zone_mask,
+                                             floor)
 
         # Turbulence index (Helbing et al.): σ²(v) / <v>²
         turb = (mean_variance / (mean_speed ** 2)) if mean_speed > 1e-3 else 0.0
@@ -524,6 +619,8 @@ class CrowdMetricsEngine:
             turbulence_index=turb,
             active_cells=n_active,
             umbrella_occluded_frac=umb_frac,
+            mean_density=mean_density,
+            crowd_pressure=mean_pressure,
         )
 
     # ------------------------------------------------------------------
@@ -578,6 +675,7 @@ class CrowdMetricsEngine:
         cell_mx: np.ndarray,
         cell_my: np.ndarray,
         in_zone_mask: np.ndarray,
+        floor: Optional[float] = None,
     ) -> float:
         """
         Fraction of zone cells whose mean direction deviates by > 90° from
@@ -619,7 +717,7 @@ class CrowdMetricsEngine:
         # Dot product with dominant: negative dot → > 90° deviation
         dots  = cell_mx[in_z] * dom_x + cell_my[in_z] * dom_y
         # Only count cells with meaningful motion
-        active = mags[in_z] > self.min_magnitude
+        active = mags[in_z] > (self.min_magnitude if floor is None else floor)
         if active.sum() == 0:
             return 0.0
 

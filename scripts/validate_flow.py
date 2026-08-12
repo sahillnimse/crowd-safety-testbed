@@ -431,6 +431,335 @@ def _test_metrics_selftest() -> tuple[bool, str]:
 
 
 # ------------------------------------------------------------------------------
+# Test 12: within-cell variance survives the m/s conversion
+# ------------------------------------------------------------------------------
+
+def _test_variance_survives_calibration() -> tuple[bool, str]:
+    """
+    A calibrated conversion must not flatten the field inside a metrics cell.
+
+    Regression test.  flow_field_to_ms used to sample the velocity once per
+    grid cell and nearest-neighbour upsample it, making every pixel in a cell
+    numerically identical.  Per-cell means were unaffected, so nothing looked
+    wrong — but velocity_variance was exactly zero, which silently took
+    turbulence_index (CRITICAL threshold) and crowd pressure to zero with it,
+    on calibrated cameras only.
+    """
+    import numpy as np
+    H, W, G, S = 480, 640, 16, 0.05
+    calib = CameraCalibration.from_points(
+        "t", [[0, 0], [W, 0], [W, H], [0, H]],
+        [[0, 0], [W * S, 0], [W * S, H * S], [0, H * S]],
+    )
+    rng = np.random.default_rng(0)
+    field = np.zeros((H, W, 2), np.float32)
+    field[..., 0] = rng.normal(0.0, 0.9, (H, W))
+    field[..., 1] = rng.normal(0.0, 0.9, (H, W))
+
+    ms = calib.flow_field_to_ms(field, fps=25.0, grid_cell_px=G)
+    speed = np.hypot(ms[..., 0], ms[..., 1])
+    within = speed.reshape(H // G, G, W // G, G).var(axis=(1, 3)).mean()
+
+    n_unique = len(np.unique(ms[0:G, 0:G, 0]))
+    if n_unique < G * G // 2:
+        return False, (f"only {n_unique} distinct values in a {G}x{G} cell "
+                       f"(expected ~{G*G}); the conversion is flattening cells")
+    if within < 1e-3:
+        return False, f"within-cell variance collapsed to {within:.2e}"
+    return True, (f"within-cell variance {within:.4f}, "
+                  f"{n_unique} distinct values per {G}x{G} cell")
+
+
+# ------------------------------------------------------------------------------
+# Test 13: crowd pressure arithmetic and its unit gate
+# ------------------------------------------------------------------------------
+
+def _test_crowd_pressure() -> tuple[bool, str]:
+    """
+    P = rho * Var(v), and the published thresholds are refused when the
+    camera is uncalibrated (where density is px-based, not persons/m^2).
+    """
+    import numpy as np
+    from models.crowd_flow.density import (
+        crowd_pressure, PRESSURE_TURBULENCE, PRESSURE_STAMPEDE,
+    )
+    from models.crowd_flow.zones import Zone, ZoneThresholds, AlertEngine
+
+    rho = np.full((1, 1), 5.0, np.float32)
+    var = np.full((1, 1), PRESSURE_STAMPEDE / 5.0, np.float32)
+    p = float(crowd_pressure(rho, var)[0, 0])
+    if abs(p - PRESSURE_STAMPEDE) > 1e-6:
+        return False, f"rho*Var(v) = {p:.5f}, expected {PRESSURE_STAMPEDE}"
+
+    if crowd_pressure(None, var) is not None:
+        return False, "pressure should be None when no density is available"
+
+    zone = Zone(name="z", polygon=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                thresholds=ZoneThresholds())
+    uncal = AlertEngine([zone], fps=25.0, is_calibrated=False, speed_units="px/frame")
+    gated = [k for k in uncal._state if "pressure" in k[1]]
+    cal = AlertEngine([zone], fps=25.0, is_calibrated=True, speed_units="m/s")
+    active = [k for k in cal._state if "pressure" in k[1]]
+    if len(active) != 2:
+        return False, f"expected warning+critical pressure states, got {len(active)}"
+
+    class _ZM:
+        crowd_pressure = PRESSURE_STAMPEDE * 2
+        mean_speed = mean_divergence = mean_curl = 0.0
+        counterflow_score = turbulence_index = 0.0
+    fired_uncal = [a.metric_name for a in
+                   uncal.update({"z": _ZM()}, {"z": False}, 0, 0.0)]
+    if "crowd_pressure" in fired_uncal:
+        return False, "pressure alert fired on an UNCALIBRATED camera"
+
+    return True, (f"P=rho*Var(v) exact; warning/critical states registered "
+                  f"({len(active)}); refused when uncalibrated "
+                  f"(thresholds {PRESSURE_TURBULENCE}/{PRESSURE_STAMPEDE} s^-2)")
+
+
+# ------------------------------------------------------------------------------
+# Test 14: head points are projected to ground contacts
+# ------------------------------------------------------------------------------
+
+def _test_head_to_foot() -> tuple[bool, str]:
+    """
+    A head point must be moved down to the ground before it is mapped.
+
+    A ground-plane homography maps image points to where they touch the
+    ground.  A head is a stature above that, so using it directly places the
+    person a stature further from the camera — several grid cells at the back
+    of a crowd, in the direction that inflates density where it is already
+    highest.  This checks the projected point is exactly one stature from the
+    head on the ground, at every depth, and that the pixel drop shrinks with
+    distance as perspective requires.
+    """
+    import numpy as np
+    from models.crowd_flow.density import DensityEstimator
+
+    calib = CameraCalibration.from_points(
+        "t", [[100, 470], [540, 470], [420, 250], [220, 250]],
+        [[0, 0], [10, 0], [10, 25], [0, 25]],
+    )
+    de = DensityEstimator(source="heads", enabled=True, person_height_m=1.65)
+
+    drops, dists = [], []
+    for hy in (270.0, 330.0, 400.0, 460.0):
+        foot = de._heads_to_feet(np.array([[320.0, hy]], np.float32), calib)
+        fy = float(foot[0, 1])
+        hw = calib.pixel_to_world(320.0, hy)
+        fw = calib.pixel_to_world(320.0, fy)
+        dists.append(float(np.hypot(fw[0] - hw[0], fw[1] - hw[1])))
+        drops.append(fy - hy)
+
+    if max(abs(d - 1.65) for d in dists) > 0.02:
+        return False, f"ground distances {['%.3f' % d for d in dists]}, expected 1.65 m"
+    if not all(a < b for a, b in zip(drops, drops[1:])):
+        return False, f"pixel drop must grow towards the camera, got {drops}"
+
+    unchanged = de._heads_to_feet(np.array([[320.0, 400.0]], np.float32), None)
+    if float(unchanged[0, 1]) != 400.0:
+        return False, "uncalibrated cameras must leave head points unshifted"
+
+    return True, (f"ground distance 1.65 m at every depth; pixel drop "
+                  f"{drops[0]:.1f} -> {drops[-1]:.1f} px towards the camera; "
+                  f"no shift when uncalibrated")
+
+
+# ------------------------------------------------------------------------------
+# Test 15: density target sums to the head count
+# ------------------------------------------------------------------------------
+
+def _test_density_target() -> tuple[bool, str]:
+    """
+    Each labelled head must contribute exactly 1.0 to the training target,
+    including heads whose Gaussian is clipped by the patch edge.
+
+    Normalising the kernel before clipping instead of after would leave every
+    edge person contributing a fraction of a head, making crop boundaries a
+    systematic undercount that no amount of training can correct.
+    """
+    import numpy as np
+    from models.head_count.dataset import density_target
+
+    pts = np.array([[128, 128], [2, 2], [253, 253], [0, 128]], np.float32)
+    t = density_target(pts, 256, 256)
+    total = float(t.sum())
+    if abs(total - len(pts)) > 1e-3:
+        return False, f"target sums to {total:.4f}, expected {len(pts)}"
+
+    empty = density_target(np.zeros((0, 2), np.float32), 256, 256)
+    if float(empty.sum()) != 0.0 or empty.shape != (1, 32, 32):
+        return False, f"hard negative gave sum={empty.sum()} shape={empty.shape}"
+
+    return True, (f"{len(pts)} heads (3 clipped by the edge) sum to "
+                  f"{total:.4f}; hard negative is all-zero {empty.shape}")
+
+
+# ------------------------------------------------------------------------------
+# Test 16: per-zone scale (pedestrian vs vehicle)
+# ------------------------------------------------------------------------------
+
+def _test_zone_types() -> tuple[bool, str]:
+    """
+    A pedestrian zone and a vehicle zone over the same field must not be
+    aggregated at the same motion floor.
+
+    Pedestrians move 1-2 px/frame and vehicles 10-50, so one global floor is
+    necessarily wrong for one of them: set for pedestrians it admits every
+    noisy background cell in the carriageway and drags its mean towards zero
+    (reading as congestion); set for vehicles it discards people who are
+    genuinely walking.
+    """
+    import numpy as np
+    from models.crowd_flow.zones import Zone
+
+    ped = Zone(name="p", polygon=[(0, 0), (100, 0), (100, 100), (0, 100)],
+               zone_type="pedestrian")
+    veh = Zone(name="v", polygon=[(0, 0), (100, 0), (100, 100), (0, 100)],
+               zone_type="vehicle")
+    if not (ped.motion_floor < veh.motion_floor):
+        return False, (f"vehicle floor {veh.motion_floor} must exceed "
+                       f"pedestrian floor {ped.motion_floor}")
+    if not (veh.max_density < ped.max_density):
+        return False, (f"vehicle density ceiling {veh.max_density} must be "
+                       f"below pedestrian {ped.max_density}")
+
+    override = Zone(name="o", polygon=ped.polygon, zone_type="vehicle",
+                    min_magnitude=0.25)
+    if override.motion_floor != 0.25:
+        return False, f"explicit min_magnitude ignored ({override.motion_floor})"
+
+    # A fractional zone is rebuilt by resolve_to_frame; the type must survive.
+    frac = Zone(name="f", polygon=[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)],
+                zone_type="vehicle", min_magnitude=2.5)
+    res = frac.resolve_to_frame(640, 480)
+    if res.zone_type != "vehicle" or res.motion_floor != 2.5:
+        return False, ("resolve_to_frame dropped zone_type/min_magnitude "
+                       f"({res.zone_type}, {res.motion_floor})")
+
+    try:
+        Zone(name="bad", polygon=ped.polygon, zone_type="bicycle")
+    except ValueError:
+        pass
+    else:
+        return False, "an unknown zone_type was accepted"
+
+    return True, (f"pedestrian floor {ped.motion_floor} < vehicle "
+                  f"{veh.motion_floor} px/frame; density ceiling "
+                  f"{ped.max_density} vs {veh.max_density} /m²; "
+                  f"overrides and resolve_to_frame preserved")
+
+
+# ------------------------------------------------------------------------------
+# Test 17: RAFT backend recovers a known translation
+# ------------------------------------------------------------------------------
+
+def _test_raft_backend() -> tuple[bool, str]:
+    """
+    The learned backend must recover an exact shift, like the classical one.
+
+    This is a correctness check on the integration — tensor layout, the
+    [-1, 1] normalisation, divisible-by-8 padding, and taking the LAST of
+    RAFT's per-iteration outputs rather than the first (the coarsest).  Any
+    of those wrong yields a field that is plausible but wrong by a scale
+    factor, which no downstream metric would flag.
+
+    SKIPPED without CUDA: RAFT on CPU takes minutes per pair, and a suite
+    people avoid running because it is slow validates nothing.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return True, "SKIPPED (no CUDA; RAFT on CPU is too slow to gate on)"
+    except ImportError:
+        return True, "SKIPPED (torch unavailable)"
+
+    # Random texture, NOT _make_textured_frame().  That helper builds a sum of
+    # sinusoids, which is spatially periodic and therefore ambiguous to a
+    # correlation-based matcher: RAFT lands 0.687 px out on it and 0.100 px
+    # out on aperiodic texture, while DIS is unaffected (0.003 vs 0.002)
+    # because its pyramid resolves the ambiguity at a coarser level.  Testing
+    # RAFT on the periodic frame measures the frame, not the backend.
+    dx, dy = 3.0, -2.0
+    rng = np.random.default_rng(0)
+    noise = rng.integers(0, 255, (240, 320), dtype=np.uint8)
+    frame = cv2.cvtColor(cv2.GaussianBlur(noise, (5, 5), 0), cv2.COLOR_GRAY2BGR)
+    shifted = _translate_frame(frame, dx, dy)
+    ff = FlowField(backend="raft", raft_variant="large", device="cuda",
+                   target_px=320, global_motion_compensation=False,
+                   far_field=False, temporal_smooth_alpha=1.0)
+    res = ff.compute(frame, shifted)
+
+    b = 24
+    fx = float(res.field_xy[b:-b, b:-b, 0].mean())
+    fy = float(res.field_xy[b:-b, b:-b, 1].mean())
+    err = float(np.hypot(fx - dx, fy - dy))
+    if err > 0.35:
+        return False, (f"RAFT recovered ({fx:.2f},{fy:.2f}) for a known "
+                       f"({dx},{dy}) shift; error {err:.2f} px")
+    return True, (f"RAFT recovered ({fx:.2f},{fy:.2f}) vs ({dx},{dy}); "
+                  f"error {err:.3f} px")
+
+
+# ------------------------------------------------------------------------------
+# Test 18: invented motion is rejected, measured motion is kept
+# ------------------------------------------------------------------------------
+
+def _test_validity_gating() -> tuple[bool, str]:
+    """
+    Flow over a textureless region must be rejected; flow on a textured
+    moving object must survive.
+
+    Dense flow returns a vector everywhere unconditionally.  Where there is
+    nothing to match — sky, blank tarmac, still water — the algorithm fills
+    the region in from its neighbours, and that fabricated motion becomes
+    divergence, turbulence and counterflow indistinguishable from a crowd.
+
+    A textured patch moving across a FLAT background is the clean case: the
+    patch carries real, measurable motion; the background carries none and
+    cannot carry any, because a constant region has no information about
+    displacement at all.
+    """
+    H, W = 240, 320
+    rng = np.random.default_rng(0)
+    patch = rng.integers(0, 255, (60, 60), dtype=np.uint8)
+
+    def frame_at(x0):
+        img = np.full((H, W), 120, np.uint8)      # flat, featureless
+        img[90:150, x0:x0 + 60] = patch
+        return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    f0, f1 = frame_at(100), frame_at(104)          # 4 px to the right
+
+    obj = np.zeros((H, W), bool)
+    obj[90:150, 100:164] = True                    # union of both positions
+
+    out = {}
+    for gate in (False, True):
+        ff = FlowField(backend="dis", target_px=320, global_motion_compensation=False,
+                       far_field=False, temporal_smooth_alpha=1.0,
+                       validity_gating=gate, fb_consistency=gate,
+                       max_flow_error_px=1.0)
+        res = ff.compute(f0, f1)
+        mag = np.hypot(res.field_xy[..., 0], res.field_xy[..., 1])
+        moving = mag > 0.5
+        out[gate] = (moving[obj].mean(), moving[~obj].mean())
+
+    (on_off, bg_off), (on_on, bg_on) = out[False], out[True]
+    if bg_off <= 0.01:
+        return True, ("SKIPPED: this build's flow did not bleed into the flat "
+                      "region, so there is nothing for the gate to remove")
+    if bg_on > bg_off * 0.5:
+        return False, (f"gating left {bg_on*100:.1f}% of the featureless "
+                       f"background moving (was {bg_off*100:.1f}%)")
+    if on_on < on_off * 0.5:
+        return False, (f"gating destroyed real motion: {on_on*100:.1f}% of the "
+                       f"moving object kept, was {on_off*100:.1f}%")
+    return True, (f"flat background moving {bg_off*100:.1f}% -> {bg_on*100:.1f}%; "
+                  f"object motion {on_off*100:.1f}% -> {on_on*100:.1f}% kept")
+
+
+# ------------------------------------------------------------------------------
 # Registry and runner
 # ------------------------------------------------------------------------------
 
@@ -446,10 +775,26 @@ _TESTS: list[tuple[int, str, Callable]] = [
     (9,  "Rain heuristic",                  _test_rain_heuristic),
     (10, "Brightness jump suppression",     _test_brightness_suppression),
     (11, "CrowdMetricsEngine self-test",    _test_metrics_selftest),
+    (12, "Variance survives calibration",   _test_variance_survives_calibration),
+    (13, "Crowd pressure + unit gating",    _test_crowd_pressure),
+    (14, "Head point -> ground contact",    _test_head_to_foot),
+    (15, "Density target sums to count",    _test_density_target),
+    (16, "Per-zone scale (ped vs vehicle)", _test_zone_types),
+    (17, "RAFT backend known translation",  _test_raft_backend),
+    (18, "Validity gating rejects invented", _test_validity_gating),
 ]
 
 
 def main() -> None:
+    # Several detail strings contain arrows and unit symbols.  Windows
+    # consoles default to cp1252, where printing those raises
+    # UnicodeEncodeError and takes the whole suite down mid-run — so
+    # `--verbose` crashed after test 8 while the plain run passed.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser(description="Synthetic validation for crowd-flow module.")
     ap.add_argument("--all",    action="store_true", help="Run all tests (default).")
     ap.add_argument("--test",   type=int, default=0,
