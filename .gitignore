@@ -64,6 +64,9 @@ checkpoints/
 *.ncnn*
 *.mlmodel
 
+# HuggingFace Hub cache (auto-downloaded on first run — do not commit)
+.cache/
+
 # Ingested media, outputs & experiment logs
 test_videos/
 outputs/
@@ -73,6 +76,27 @@ wandb/
 tensorboard/
 *.tfevents.*
 *.log
+
+# Run artefacts written by the pipeline / web UI
+# (CSVs and JSONs inside outputs/ are already excluded above via outputs/,
+#  but these patterns catch any that leak into the repo root or sub-dirs.)
+detections.json
+annotated.mp4
+*_annotated.mp4
+*_crowd_motion_monitor.mp4
+*_dense_flow_annotated.mp4
+*.parquet
+
+# Data directories (raw footage, datasets — large, not for git)
+data/
+datasets/
+
+# Zip / archive artifacts dropped in the repo root during development
+*.zip
+*.tar.gz
+*.tar.bz2
+*.7z
+*.rar
 
 # Environment / Secret variables & keys
 .env
@@ -94,6 +118,15 @@ replacements.txt
 cookies.txt
 cookies.txt.txt
 *.cookies
+
+# uv / pip caches
+.uv_cache/
+pip-wheel-metadata/
+pip-log.txt
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
 
 # IDE & Editor files
 .vscode/
