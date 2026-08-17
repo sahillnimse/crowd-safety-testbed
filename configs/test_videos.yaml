@@ -12,10 +12,10 @@ videos:
       - fall_mediapipe_pose
       - fall_movenet
       - fall_optical_flow
-      # Crowd-crush / dense flow (2)
+      # Crowd-crush / dense flow (3)
       - optical_flow_crush
       - dense_flow
-      - dense_flow
+      - crowd_motion_monitor
     ground_truth: []
 
   - url: "https://youtu.be/pG4HqTGkHPg?si=tBniURkEF0k_qFPx"

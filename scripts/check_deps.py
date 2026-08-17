@@ -45,6 +45,8 @@ MODELS_TO_CHECK = {
     "umbrella_rfdetr": "models.umbrella.umbrella_rfdetr",
     "umbrella_rtdetrv2": "models.umbrella.umbrella_rtdetrv2",
     "umbrella_trained": "models.umbrella.umbrella_trained",
+    # Crowd motion
+    "crowd_motion_monitor": "models.crowd_flow.crowd_motion_monitor",
 }
 
 # Each model's actual third-party import happens lazily inside load(), not
@@ -73,6 +75,7 @@ EXTRA_LIB_CHECKS = {
     "umbrella_ssd": ["torchvision"],
     "roboflow_combined": ["inference_sdk"],
     "roboflow_traffic": ["inference_sdk"],
+    "crowd_motion_monitor": ["cv2", "transformers"],
 }
 
 

@@ -305,6 +305,16 @@ MODELS: list[ModelSpec] = [
               "stop-and-go waves, and perspective m/s speed.",
               check=lambda: (True, "ready", "DIS optical flow + zone metrics + perspective correction."),
               tags=["flow", "cpu", "kumbh-mela"]),
+    ModelSpec("crowd_motion_monitor", "Crowd Motion Monitor", "crush",
+              "Per-person velocity + heading triangle overlay. Flags stationary "
+              "individuals and local crowd compression (crush risk) in red. "
+              "RT-DETRv2 person detector + IoU tracker + Farneback flow.",
+              check=lambda: (True, "ready",
+                             "RT-DETRv2 person detector + IoU tracker + Farneback "
+                             "dense flow.  No fine-tuned weights required; "
+                             "weights auto-downloaded from HuggingFace Hub on first run."),
+              comparable_threshold=False,
+              tags=["flow", "cpu", "tracker"]),
 ]
 
 BY_KEY = {m.key: m for m in MODELS}
@@ -356,6 +366,7 @@ def build_model(key: str, device: Optional[str],
         "rapid_ocr": lambda: _build_rapid_ocr(device, video_name, threshold=threshold),
         "optical_flow_crush": lambda: OpticalFlowCrushDetector(device=device),
         "dense_flow": lambda: _build_dense_flow(device),
+        "crowd_motion_monitor": lambda: _build_crowd_motion_monitor(device, video_name=video_name, threshold=threshold),
         "roboflow_combined": lambda: RoboflowCombinedDetector(device=device, **_kw()),
         "fall_mediapipe_pose": lambda: MediaPipeFallDetector(device=device, **_kw()),
         "fall_movenet": lambda: MoveNetFallDetector(device=device, **_kw()),
@@ -489,3 +500,16 @@ def _build_dense_flow(device):
     )
 
 
+def _build_crowd_motion_monitor(device, video_name: str = "run", threshold=None):
+    from models.crowd_flow import CrowdMotionMonitor
+    stem = os.path.splitext(os.path.basename(video_name or "run"))[0]
+    output_dir = os.path.join(PROJECT_ROOT, "outputs", "annotated")
+    os.makedirs(output_dir, exist_ok=True)
+    kw = {"device": device, "video_name": stem, "output_dir": output_dir}
+    # threshold maps to stationary_speed_px: the px/frame floor below which a
+    # person is considered stopped.  comparable_threshold=False in the ModelSpec
+    # means the run-wide confidence threshold is NOT applied, but an explicit
+    # per-model threshold from the UI is still honoured here.
+    if threshold is not None:
+        kw["stationary_speed_px"] = float(threshold)
+    return CrowdMotionMonitor(**kw)

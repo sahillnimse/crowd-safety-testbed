@@ -7,9 +7,11 @@ from models.crowd_flow.crowd_metrics    import CrowdMetricsEngine, MetricsFrame,
 from models.crowd_flow.zones            import Zone, ZoneThresholds, AlertEngine, Alert, AlertSeverity
 from models.crowd_flow.visualise        import FlowVisualiser
 from models.crowd_flow.dense_flow_analyser import DenseFlowAnalyser
+from models.crowd_flow.crowd_motion_monitor import CrowdMotionMonitor
 
 __all__ = [
     "DenseFlowAnalyser",
+    "CrowdMotionMonitor",
     "FlowField",
     "FlowResult",
     "CameraCalibration",
