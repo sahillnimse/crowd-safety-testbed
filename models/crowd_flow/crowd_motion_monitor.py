@@ -13,12 +13,15 @@ What it does
 4. Draws a filled equilateral triangle centred on each person, rotated to point
    in their smoothed direction of travel (full 2-D rotation from a heading
    angle, not an arrow primitive).
-5. Colours the triangle RED when EITHER of these is true:
-     a. That person's tracked speed has stayed below `stationary_speed_px` for
-        `stationary_frames` consecutive frames  (personally stopped).
-     b. The local optical-flow divergence at their position is below
-        `crush_divergence_threshold` (crowd compressing around them).
-   Otherwise the triangle is teal (moving) or grey (track not yet confirmed).
+5. Colours the triangle by crowd-flow type (5-state scheme):
+     TEAL-GREEN   — confirmed, moving rightward  (heading_deg in ±90°)
+     ELECTRIC BLUE— confirmed, moving leftward   (heading_deg outside ±90°)
+     RED          — personally stationary (speed below threshold for N frames);
+                    outranks direction and crush colours.
+     ORANGE       — collision / crush zone: crowd flow is converging at this
+                    cell (divergence < crush_divergence_threshold) but the
+                    person is still moving.  Red outranks orange.
+     DARK GREY    — track not yet confirmed (pending).
 
 Speed-history bookkeeping
 -------------------------
@@ -32,10 +35,11 @@ Integration contract
 --------------------
 - consumption_type = "flow_pair"  (runner calls predict((prev, curr), …))
 - Emits one Detection per confirmed tracked person per frame.
-  label      : "person_stopped" | "person_moving"
+  label      : "person_moving_right" | "person_moving_left" |
+               "person_stopped" | "person_crush_zone"
   confidence : normalised speed (moving) or 0.0 (stopped)
   bbox       : [x1, y1, x2, y2] person box in source pixels
-  extra      : {track_id, speed_px_frame, heading_deg,
+  extra      : {track_id, speed_px_frame, heading_deg, crowd_direction,
                 personally_stationary, local_divergence, local_crush_risk}
 - finalize() closes the streaming H.264 writer and sets
   self.annotated_video_path (picked up by webapp/jobs.py via getattr).
@@ -70,14 +74,23 @@ from models.crowd_flow.dense_flow_analyser import _AnnotatedVideoWriter
 logger = logging.getLogger(__name__)
 
 # ── Colour palette (BGR) ───────────────────────────────────────────────────
-_COLOUR_PENDING  = (120, 120, 120)   # grey   — track not yet confirmed
-_COLOUR_MOVING   = (160, 200,   0)   # teal-green — moving, no risk
-_COLOUR_STOPPED  = (  0,  40, 220)   # red    — personally stopped or crush risk
-_COLOUR_TEXT     = (255, 255, 255)   # white  — track-id label
+# Five-state crowd-flow colour scheme.
+_COLOUR_PENDING  = ( 80,  80,  80)   # dark grey     — track not yet confirmed
+_COLOUR_RIGHT    = (140, 200,   0)   # teal-green    — moving rightward
+_COLOUR_LEFT     = (220,  80,   0)   # electric blue — moving leftward
+_COLOUR_STOPPED  = (  0,  40, 220)   # red           — personally stationary
+_COLOUR_CRUSH    = (  0, 140, 255)   # orange        — collision / crush zone
+_COLOUR_TEXT     = (255, 255, 255)   # white         — track-id label
+
+# Direction boundary: |heading_deg| < this → rightward, else → leftward.
+# heading_deg = atan2(-vy, vx), so 0° = right on screen, ±180° = left.
+_HEADING_RIGHT_THRESH = 90.0
 
 # Triangle geometry: half-height and half-base of an equilateral triangle
 # expressed as a fraction of the shorter side of the person's bounding box.
-_TRI_SCALE = 0.35          # fraction of min(box_w, box_h)
+# 0.22 keeps markers readable in the foreground without overlapping neighbors
+# in the dense mid-field/background regions where boxes are much smaller.
+_TRI_SCALE = 0.22          # fraction of min(box_w, box_h)
 
 # Farneback parameters — same as OpticalFlowCrushDetector for consistency.
 _FB_PYR_SCALE  = 0.5
@@ -120,6 +133,19 @@ class CrowdMotionMonitor(BaseModelWrapper):
         Suppresses single-frame ghost detections.
     detect_every : int
         Run the person detector every N frames; carry boxes on the others.
+    detect_tile_grid : tuple[int, int] | None
+        Tiling grid passed to the shared RT-DETRv2 detector.
+        ``(2, 2)`` runs 5 overlapping crops (4 tiles + full frame) and
+        recovers far more of the small/distant people in the upper portion
+        of dense crowd footage — measured at 35→95 people on comparable
+        footage.  ``None`` runs a single full-frame pass (faster, lower
+        recall on small subjects).  Default: ``(2, 2)``.
+    detect_conf_threshold : float
+        Confidence threshold for the person detector.  Lowered to 0.28
+        (from the shared detector's default 0.35) because distant/small
+        people tend to score lower confidence even with tiling; the
+        threshold is only applied to this model's detect call and does
+        not affect any other consumer of the shared detector.
     """
 
     consumption_type = "flow_pair"
@@ -136,6 +162,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         crush_divergence_threshold: float = -0.5,
         confirm_frames: int = 3,
         detect_every: int = 5,
+        detect_tile_grid: Optional[tuple] = (2, 2),
+        detect_conf_threshold: float = 0.28,
     ) -> None:
         super().__init__(device=device)
 
@@ -147,6 +175,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self.crush_divergence_threshold = crush_divergence_threshold
         self.confirm_frames             = confirm_frames
         self.detect_every               = detect_every
+        self.detect_tile_grid           = detect_tile_grid
+        self.detect_conf_threshold      = detect_conf_threshold
 
         # jobs.py sets these after construction for any flow_pair model.
         self._fps: float = 25.0
@@ -205,9 +235,11 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         logger.info(
             "CrowdMotionMonitor loaded.  device=%s  stationary_speed_px=%.2f  "
-            "stationary_frames=%d  crush_div_thr=%.3f  confirm=%d  detect_every=%d",
+            "stationary_frames=%d  crush_div_thr=%.3f  confirm=%d  "
+            "detect_every=%d  tile_grid=%s  conf_thr=%.2f",
             self.device, self.stationary_speed_px, self.stationary_frames,
             self.crush_divergence_threshold, self.confirm_frames, self.detect_every,
+            self.detect_tile_grid, self.detect_conf_threshold,
         )
 
     # ──────────────────────────────────────────────────────────────────────
@@ -238,9 +270,17 @@ class CrowdMotionMonitor(BaseModelWrapper):
         div_grid = self._compute_divergence_grid(flow)  # shape (n_rows, n_cols)
 
         # 3. Person detection (runs every detect_every frames; boxes carried on others).
+        # tile_grid=(2,2) runs 5 overlapping crops so small/distant people in the
+        # upper crowd region are detected — the full-frame pass alone resizes a
+        # 1280×720 source to 640×640 which halves a 20 px person to ~10 px,
+        # below what the model resolves.  detect_conf_threshold is intentionally
+        # lower than the shared default (0.35) because distant people score lower.
         if frame_index % self.detect_every == 0:
             self._last_boxes = self._detector.detect(
-                curr_frame, classes=(COCO_PERSON,)
+                curr_frame,
+                classes=(COCO_PERSON,),
+                tile_grid=self.detect_tile_grid,
+                conf_threshold=self.detect_conf_threshold,
             )
 
         boxes = self._last_boxes
@@ -331,13 +371,27 @@ class CrowdMotionMonitor(BaseModelWrapper):
             track_age = self._tracker.age(tid)
             confirmed  = track_age >= self.confirm_frames
 
-            # 6g. Draw filled triangle.
+            # 6g. Crowd-flow direction classification.
+            # A person is "rightward" when the x-component of their smoothed
+            # heading is positive, i.e. |heading_deg| < 90°.
+            moving_right = abs(heading_deg) < _HEADING_RIGHT_THRESH
+            crowd_direction = "right" if moving_right else "left"
+
+            # 6h. Draw filled triangle.
+            # Priority (high → low): pending → stopped (red) → crush zone
+            # (orange) → moving right (teal-green) → moving left (blue).
+            # Stopped always outranks direction and crush colours so a halted
+            # person in a converging zone is unambiguously red.
             if not confirmed:
                 colour = _COLOUR_PENDING
-            elif personally_stationary or local_crush_risk:
-                colour = _COLOUR_STOPPED
+            elif personally_stationary:
+                colour = _COLOUR_STOPPED    # red   — this person has stopped
+            elif local_crush_risk:
+                colour = _COLOUR_CRUSH      # orange — crowd converging here
+            elif moving_right:
+                colour = _COLOUR_RIGHT      # teal-green — moving right
             else:
-                colour = _COLOUR_MOVING
+                colour = _COLOUR_LEFT       # electric blue — moving left
 
             self._draw_triangle(annotated, cx, cy, bw, bh, heading_deg, colour)
 
@@ -352,7 +406,14 @@ class CrowdMotionMonitor(BaseModelWrapper):
             if not confirmed:
                 continue
 
-            label = "person_stopped" if (personally_stationary or local_crush_risk) else "person_moving"
+            if personally_stationary:
+                label = "person_stopped"
+            elif local_crush_risk:
+                label = "person_crush_zone"
+            elif moving_right:
+                label = "person_moving_right"
+            else:
+                label = "person_moving_left"
             # Confidence: normalised speed capped at 1, or 0 for stopped.
             conf = 0.0 if personally_stationary else min(1.0, speed / max(self.stationary_speed_px * 5, 1e-6))
             detections.append(Detection(
@@ -363,12 +424,13 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 frame_index=frame_index,
                 bbox=[x1, y1, x2, y2],
                 extra={
-                    "track_id":             tid,
-                    "speed_px_frame":       round(speed, 4),
-                    "heading_deg":          round(heading_deg, 2),
+                    "track_id":              tid,
+                    "speed_px_frame":        round(speed, 4),
+                    "heading_deg":           round(heading_deg, 2),
+                    "crowd_direction":       crowd_direction,
                     "personally_stationary": personally_stationary,
-                    "local_divergence":     round(local_divergence, 5),
-                    "local_crush_risk":     local_crush_risk,
+                    "local_divergence":      round(local_divergence, 5),
+                    "local_crush_risk":      local_crush_risk,
                 },
             ))
 
@@ -438,7 +500,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
           right  = (-r/2, -r/2 * tan(60°))
         where r = _TRI_SCALE * min(bw, bh).
         """
-        r = max(6, int(_TRI_SCALE * min(bw, bh)))
+        r = max(4, int(_TRI_SCALE * min(bw, bh)))
         h_half = int(r * math.tan(math.radians(30)))
 
         # Local coords (pointing right)

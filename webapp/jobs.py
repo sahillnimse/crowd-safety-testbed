@@ -422,11 +422,13 @@ class JobManager:
 
             # DenseFlowAnalyser (and any future flow model) writes its own
             # annotated video with the heatmap overlay during finalize().
-            # Use it directly instead of re-rendering plain bboxes on top.
+            # Move it directly into the run directory instead of copying or
+            # re-rendering plain bboxes on top.
             own_video = getattr(model, "annotated_video_path", None)
             if own_video and os.path.exists(own_video):
-                import shutil
-                shutil.copy2(own_video, mp4_path)
+                if os.path.abspath(own_video) != os.path.abspath(mp4_path):
+                    import shutil
+                    shutil.move(own_video, mp4_path)
             else:
                 export_annotated_video(job.video_path, detections, mp4_path)
             stage.annotated = f"{video}/{model_key}/{RUN_VIDEO}"
