@@ -159,6 +159,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         video_name: str = "run",
         stationary_speed_px: float = 1.5,
         stationary_frames: int = 10,
+        resume_moving_frames: int = 3,
+        motion_noise_floor_ratio: float = 0.35,
         crush_divergence_threshold: float = -0.5,
         confirm_frames: int = 3,
         detect_every: int = 5,
@@ -172,6 +174,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         self.stationary_speed_px        = stationary_speed_px
         self.stationary_frames          = stationary_frames
+        self.resume_moving_frames       = resume_moving_frames
+        self.motion_noise_floor_ratio   = motion_noise_floor_ratio
         self.crush_divergence_threshold = crush_divergence_threshold
         self.confirm_frames             = confirm_frames
         self.detect_every               = detect_every
@@ -194,6 +198,10 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         # Per-track smoothed heading as a (cos, sin) unit vector.
         self._heading_vec: dict[int, tuple[float, float]] = {}
+
+        # Per-track stationary status and consecutive moving frame streak (hysteresis).
+        self._stationary_tracks: set[int] = set()
+        self._moving_streak: dict[int, int] = {}
 
         # Last set of detected boxes (carried on non-detect frames).
         self._last_boxes: list[list[float]] = []
@@ -237,6 +245,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         self._speed_history.clear()
         self._heading_vec.clear()
+        self._stationary_tracks.clear()
+        self._moving_streak.clear()
         self._last_boxes = []
         self._writer = None
         self._frames_written = 0
@@ -317,6 +327,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         for stale in [tid for tid in list(self._speed_history) if tid not in live_ids]:
             self._speed_history.pop(stale, None)
             self._heading_vec.pop(stale, None)
+            self._moving_streak.pop(stale, None)
+            self._stationary_tracks.discard(stale)
 
         # 6. Annotated frame (copy so we don't mutate the source).
         annotated = curr_frame.copy()
@@ -331,13 +343,21 @@ class CrowdMotionMonitor(BaseModelWrapper):
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            # 6a. Sample flow inside a shrunk box (20 % inset) to avoid
-            #     background pixels at the body boundary.
+            # 6a. Sample flow inside torso-hip region (vertical 40%–70%, horizontal 20% inset).
+            #     Biasing the sample region to the lower torso/hips eliminates contamination from
+            #     head turns, shoulder sway, and arm gestures that move independently of body translation.
             bw, bh = x2 - x1, y2 - y1
             ix = max(1, int(bw * 0.20))
-            iy = max(1, int(bh * 0.20))
-            sx1, sy1 = x1 + ix, y1 + iy
-            sx2, sy2 = x2 - ix, y2 - iy
+            sx1, sx2 = x1 + ix, x2 - ix
+
+            sy1 = y1 + int(bh * 0.40)
+            sy2 = y1 + int(bh * 0.70)
+
+            # Fallback for very small boxes (< 10 px tall)
+            if sy2 <= sy1:
+                iy = max(1, int(bh * 0.20))
+                sy1 = y1 + iy
+                sy2 = y2 - iy
 
             if sx2 > sx1 and sy2 > sy1:
                 patch = flow[sy1:sy2, sx1:sx2]
@@ -348,40 +368,62 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
             speed = math.hypot(vx, vy)
 
-            # 6b. Per-track speed deque (owned by this model instance).
+            # 6b. Per-track speed deque & stationary status with hysteresis.
             if tid not in self._speed_history:
                 self._speed_history[tid] = deque(maxlen=self.stationary_frames)
             self._speed_history[tid].append(speed)
 
-            # 6c. Smoothed heading via EMA on the unit vector (wrap-safe).
-            if speed > 1e-3:
-                ux, uy = vx / speed, vy / speed
-            else:
-                ux, uy = 0.0, 0.0
+            # Check if sustained low speed qualifies track as personally stationary
+            is_sub_threshold = sustained(
+                [s < self.stationary_speed_px for s in self._speed_history[tid]],
+                self.stationary_frames,
+            )
 
-            alpha = 0.35  # EMA smoothing factor
-            if tid not in self._heading_vec:
-                self._heading_vec[tid] = (ux, uy)
+            # Track consecutive moving frames to prevent instant flicker on single noisy frame
+            if speed >= self.stationary_speed_px:
+                self._moving_streak[tid] = self._moving_streak.get(tid, 0) + 1
             else:
-                ox, oy = self._heading_vec[tid]
-                nx = alpha * ux + (1 - alpha) * ox
-                ny = alpha * uy + (1 - alpha) * oy
-                norm = math.hypot(nx, ny)
-                if norm > 1e-6:
-                    nx, ny = nx / norm, ny / norm
-                self._heading_vec[tid] = (nx, ny)
+                self._moving_streak[tid] = 0
+
+            if is_sub_threshold:
+                self._stationary_tracks.add(tid)
+            elif tid in self._stationary_tracks:
+                # Only unfreeze / resume once speed rises back above threshold for consecutive frames
+                if self._moving_streak.get(tid, 0) >= self.resume_moving_frames:
+                    self._stationary_tracks.discard(tid)
+
+            personally_stationary = (tid in self._stationary_tracks)
+
+            # 6c. Smoothed heading via EMA on the unit vector.
+            # Meaningful noise floor: sub-pixel optical flow below this is treated as jitter
+            # and does NOT produce directional heading updates.
+            noise_floor = max(self.motion_noise_floor_ratio * self.stationary_speed_px, 0.3)
+
+            # Only update heading vector when the person is actively translating and
+            # flow magnitude exceeds the noise floor. When personally stationary or jittering,
+            # heading updates are completely frozen to prevent rotating with head/limb noise.
+            if not personally_stationary and speed >= noise_floor:
+                ux, uy = vx / speed, vy / speed
+                alpha = 0.35  # EMA smoothing factor
+                if tid not in self._heading_vec:
+                    self._heading_vec[tid] = (ux, uy)
+                else:
+                    ox, oy = self._heading_vec[tid]
+                    nx = alpha * ux + (1 - alpha) * ox
+                    ny = alpha * uy + (1 - alpha) * oy
+                    norm = math.hypot(nx, ny)
+                    if norm > 1e-6:
+                        nx, ny = nx / norm, ny / norm
+                    self._heading_vec[tid] = (nx, ny)
+            elif tid not in self._heading_vec:
+                # Default neutral heading if track initialises with zero motion
+                self._heading_vec[tid] = (1.0, 0.0)
 
             hx, hy = self._heading_vec[tid]
             # Screen y-axis is inverted: -vy gives the correct compass heading.
             heading_deg = math.degrees(math.atan2(-hy, hx))
 
-            # 6d. Stationary flag: last N speeds all below threshold.
-            personally_stationary = sustained(
-                [s < self.stationary_speed_px for s in self._speed_history[tid]],
-                self.stationary_frames,
-            )
-
-            # 6e. Local crush-risk: look up divergence grid at box centre.
+            # 6d. Local crush-risk: look up divergence grid at box centre.
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             gr, gc = cy // _DIV_CELL_PX, cx // _DIV_CELL_PX
@@ -391,17 +433,17 @@ class CrowdMotionMonitor(BaseModelWrapper):
             local_divergence = float(div_grid[gr, gc])
             local_crush_risk = local_divergence < self.crush_divergence_threshold
 
-            # 6f. Track-age confirmation gate.
+            # 6e. Track-age confirmation gate.
             track_age = self._tracker.age(tid)
             confirmed  = track_age >= self.confirm_frames
 
-            # 6g. Crowd-flow direction classification.
+            # 6f. Crowd-flow direction classification.
             # A person is "rightward" when the x-component of their smoothed
             # heading is positive, i.e. |heading_deg| < 90°.
             moving_right = abs(heading_deg) < _HEADING_RIGHT_THRESH
             crowd_direction = "right" if moving_right else "left"
 
-            # 6h. Draw filled triangle.
+            # 6g. Draw visual marker (rotated triangle for moving, neutral static circle for stationary).
             # Priority (high → low): pending → stopped (red) → crush zone
             # (orange) → moving right (teal-green) → moving left (blue).
             # Stopped always outranks direction and crush colours so a halted
@@ -417,7 +459,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
             else:
                 colour = _COLOUR_LEFT       # electric blue — moving left
 
-            self._draw_triangle(annotated, cx, cy, bw, bh, heading_deg, colour)
+            self._draw_marker(annotated, cx, cy, bw, bh, heading_deg, colour, is_stationary=personally_stationary)
 
             # Optionally label with track ID (small, above box).
             cv2.putText(
@@ -426,19 +468,23 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, _COLOUR_TEXT, 1, cv2.LINE_AA,
             )
 
-            # 6h. Emit Detection for confirmed tracks only.
-            # 6i. Emit Detection for confirmed tracks only and record summary statistics.
+            # 6h. Emit Detection for confirmed tracks only and record summary statistics.
             if not confirmed:
                 continue
 
             if personally_stationary:
                 label = "person_stopped"
+                direction_label = "stationary"
             elif local_crush_risk:
                 label = "person_crush_zone"
+                direction_label = crowd_direction
             elif moving_right:
                 label = "person_moving_right"
+                direction_label = "right"
             else:
                 label = "person_moving_left"
+                direction_label = "left"
+
             # Confidence: normalised speed capped at 1, or 0 for stopped.
             conf = 0.0 if personally_stationary else min(1.0, speed / max(self.stationary_speed_px * 5, 1e-6))
             det = Detection(
@@ -463,19 +509,21 @@ class CrowdMotionMonitor(BaseModelWrapper):
             # Summary stats accumulation
             self._total_detections_count += 1
             self._label_counter[label] += 1
-            self._track_directions[tid].append(crowd_direction)
+            if not personally_stationary:
+                self._track_directions[tid].append(crowd_direction)
             self._speed_records[label].append(speed)
 
-            if abs(heading_deg) < _HEADING_RIGHT_THRESH:
-                self._heading_right_count += 1
-            else:
-                self._heading_left_count += 1
+            if not personally_stationary:
+                if abs(heading_deg) < _HEADING_RIGHT_THRESH:
+                    self._heading_right_count += 1
+                else:
+                    self._heading_left_count += 1
 
-            bin_idx = int((heading_deg + 180.0) / 20.0) % 18
-            self._heading_hist_bins[bin_idx] += 1
+                bin_idx = int((heading_deg + 180.0) / 20.0) % 18
+                self._heading_hist_bins[bin_idx] += 1
 
-            if local_crush_risk and abs(abs(heading_deg) - _HEADING_RIGHT_THRESH) < 15.0:
-                self._boundary_crush_count += 1
+                if local_crush_risk and abs(abs(heading_deg) - _HEADING_RIGHT_THRESH) < 15.0:
+                    self._boundary_crush_count += 1
 
         # Track per-frame crush count
         frame_crush_count = sum(1 for d in detections if d.label == "person_crush_zone")
@@ -651,27 +699,30 @@ class CrowdMotionMonitor(BaseModelWrapper):
         return grid
 
     @staticmethod
-    def _draw_triangle(
+    def _draw_marker(
         frame: np.ndarray,
         cx: int, cy: int,
         bw: int, bh: int,
         heading_deg: float,
         colour: tuple[int, int, int],
+        is_stationary: bool = False,
     ) -> None:
         """
-        Draw a filled equilateral triangle centred at (cx, cy), rotated to
-        point in the direction given by heading_deg.
+        Draw a visual indicator centred at (cx, cy).
 
-        The triangle is built in local coordinates (pointing right along +x),
-        then rotated by a 2-D rotation matrix and translated to the centre.
-
-        Coordinates:
-          apex   = ( r,   0)   — points in the direction of travel
-          left   = (-r/2, +r/2 * tan(60°))
-          right  = (-r/2, -r/2 * tan(60°))
-        where r = _TRI_SCALE * min(bw, bh).
+        - Moving / Pending / Crush: Filled equilateral triangle rotated to point in heading_deg.
+        - Personally Stationary: Distinct neutral static marker (solid circle with inner highlight)
+          with NO rotation, ensuring stationary people do not swing with head/torso motion.
         """
         r = max(4, int(_TRI_SCALE * min(bw, bh)))
+
+        if is_stationary:
+            # Solid neutral non-directional static marker (filled circle with contrasting inner dot)
+            cv2.circle(frame, (cx, cy), r, colour, -1, cv2.LINE_AA)
+            cv2.circle(frame, (cx, cy), max(2, r // 2), (255, 255, 255), 1, cv2.LINE_AA)
+            return
+
+        # Equilateral triangle pointing in heading_deg
         h_half = int(r * math.tan(math.radians(30)))
 
         # Local coords (pointing right)
@@ -693,6 +744,18 @@ class CrowdMotionMonitor(BaseModelWrapper):
         pts_int = pts_abs.astype(np.int32).reshape(1, 3, 2)
 
         cv2.fillPoly(frame, pts_int, colour)
+
+    @classmethod
+    def _draw_triangle(
+        cls,
+        frame: np.ndarray,
+        cx: int, cy: int,
+        bw: int, bh: int,
+        heading_deg: float,
+        colour: tuple[int, int, int],
+    ) -> None:
+        """Backward-compatibility alias for _draw_marker."""
+        cls._draw_marker(frame, cx, cy, bw, bh, heading_deg, colour, is_stationary=False)
 
     def _write_frame(self, annotated: np.ndarray) -> None:
         """Stream one annotated frame to the encoder, opening it on first use."""
