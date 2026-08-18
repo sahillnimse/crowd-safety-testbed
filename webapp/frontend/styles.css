@@ -1480,3 +1480,162 @@ table { width: 100%; }
    cross_family_comparison.mp4 — if one changes, change both. */
 .swatch-tracker { color: #ffffff; font-weight: 700; }
 .swatch-flow    { color: #00dcff; font-weight: 700; }
+
+/* ---------------- Crowd Motion & Summary Stats UI ---------------- */
+.model-summary-box {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+}
+
+.report-btn {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  margin-left: auto;
+  transition: all var(--t-fast);
+}
+.report-btn:hover {
+  background: rgba(6, 182, 212, 0.25);
+  color: #fff;
+  border-color: var(--accent-cyan);
+}
+
+/* Card multi-segment mini progress bar */
+.card-dist-bar-wrap {
+  margin-top: 8px;
+}
+.card-dist-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #090d16;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.card-dist-seg {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.seg-left { background: #06b6d4; }
+.seg-right { background: #10b981; }
+.seg-crush { background: #f97316; }
+.seg-stopped { background: #ef4444; }
+
+.card-dist-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 11px;
+  font-family: var(--font-code);
+}
+.c-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 600;
+}
+.c-lbl.left { color: #38bdf8; }
+.c-lbl.right { color: #34d399; }
+.c-lbl.crush { color: #fb923c; font-weight: 700; }
+.c-lbl.stop { color: #f87171; }
+
+/* Motion Summary Banner in Timeline view */
+.motion-summary-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: var(--sp-4);
+  align-items: center;
+}
+.motion-banner-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.motion-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.motion-lbl {
+  color: var(--muted);
+  font-weight: 500;
+}
+.motion-val {
+  color: #fff;
+  font-weight: 700;
+  font-family: var(--font-code);
+}
+.motion-val.alert-text {
+  color: #fb923c;
+}
+
+/* Badges for timeline and table */
+.badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-code);
+}
+.badge-left { background: rgba(6, 182, 212, 0.18); color: #38bdf8; border: 1px solid rgba(6, 182, 212, 0.35); }
+.badge-right { background: rgba(16, 185, 129, 0.18); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+.badge-crush { background: rgba(249, 115, 22, 0.18); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.35); }
+.badge-stopped { background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); }
+.badge-ok { background: rgba(16, 185, 129, 0.1); color: #10b981; }
+
+/* Overview Tab Analytics Cards */
+.overview-analytics-box {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-top: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+.overview-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.overview-kpi-item {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.overview-kpi-lbl {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.overview-kpi-val {
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  margin: 4px 0 2px;
+  font-family: var(--font-code);
+}
+.overview-kpi-sub {
+  font-size: 11px;
+  color: var(--subtle);
+}
+

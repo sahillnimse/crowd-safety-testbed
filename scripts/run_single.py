@@ -93,14 +93,37 @@ def main():
 
     # outputs/runs/<video>/<model>/ — the layout the web UI reads, so a CLI
     # run shows up in the UI's history instead of being invisible to it.
+    import json
+    from pipeline.html_report import export_html_report
+    from webapp.history import compute_detections_summary
+
     out_dir = run_dir(base_name, args.model, create=True)
     out_video = os.path.join(out_dir, RUN_VIDEO)
     out_log = os.path.join(out_dir, RUN_JSON)
     out_csv = os.path.join(out_dir, RUN_CSV)
+    out_summary = os.path.join(out_dir, "summary.json")
+    out_report = os.path.join(out_dir, "report.html")
 
-    export_annotated_video(video_path, detections, out_video)
+    own_video = getattr(model, "annotated_video_path", None)
+    if own_video and os.path.exists(own_video):
+        if os.path.abspath(own_video) != os.path.abspath(out_video):
+            import shutil
+            shutil.move(own_video, out_video)
+    else:
+        export_annotated_video(video_path, detections, out_video)
+
     export_detection_log(detections, out_log)
     export_detection_csv(detections, out_csv)
+
+    summary_data = getattr(model, "summary", None)
+    if not summary_data:
+        summary_data = compute_detections_summary(detections)
+
+    with open(out_summary, "w", encoding="utf-8") as f:
+        json.dump(summary_data, f, indent=2)
+    export_html_report(out_report, base_name, args.model, summary_data, detections)
+    print(f"Summary JSON written to {out_summary}")
+    print(f"HTML Report written to {out_report}")
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections import deque
+from collections import Counter, defaultdict, deque
 from typing import Optional
 
 import cv2
@@ -208,6 +208,18 @@ class CrowdMotionMonitor(BaseModelWrapper):
         # Exposed for the web-UI live preview (same pattern as DenseFlowAnalyser).
         self.latest_annotated_frame: Optional[np.ndarray] = None
 
+        # Run-level summary stats (populated in finalize()).
+        self.summary: dict = {}
+        self._total_detections_count: int = 0
+        self._label_counter: Counter = Counter()
+        self._track_directions: dict[int, list[str]] = defaultdict(list)
+        self._frame_crush_counts: list[tuple[int, float, int]] = []
+        self._speed_records: dict[str, list[float]] = defaultdict(list)
+        self._heading_hist_bins: list[int] = [0] * 18
+        self._heading_right_count: int = 0
+        self._heading_left_count: int = 0
+        self._boundary_crush_count: int = 0
+
     # ──────────────────────────────────────────────────────────────────────
     # Lifecycle
     # ──────────────────────────────────────────────────────────────────────
@@ -229,6 +241,18 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._writer = None
         self._frames_written = 0
         self.annotated_video_path = None
+
+        # Reset summary accumulators
+        self.summary = {}
+        self._total_detections_count = 0
+        self._label_counter.clear()
+        self._track_directions.clear()
+        self._frame_crush_counts.clear()
+        self._speed_records.clear()
+        self._heading_hist_bins = [0] * 18
+        self._heading_right_count = 0
+        self._heading_left_count = 0
+        self._boundary_crush_count = 0
 
         os.makedirs(self._output_dir, exist_ok=True)
         self._model = "ready"
@@ -403,6 +427,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
             )
 
             # 6h. Emit Detection for confirmed tracks only.
+            # 6i. Emit Detection for confirmed tracks only and record summary statistics.
             if not confirmed:
                 continue
 
@@ -416,7 +441,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 label = "person_moving_left"
             # Confidence: normalised speed capped at 1, or 0 for stopped.
             conf = 0.0 if personally_stationary else min(1.0, speed / max(self.stationary_speed_px * 5, 1e-6))
-            detections.append(Detection(
+            det = Detection(
                 model_name=self.name,
                 label=label,
                 confidence=round(conf, 4),
@@ -432,7 +457,29 @@ class CrowdMotionMonitor(BaseModelWrapper):
                     "local_divergence":      round(local_divergence, 5),
                     "local_crush_risk":      local_crush_risk,
                 },
-            ))
+            )
+            detections.append(det)
+
+            # Summary stats accumulation
+            self._total_detections_count += 1
+            self._label_counter[label] += 1
+            self._track_directions[tid].append(crowd_direction)
+            self._speed_records[label].append(speed)
+
+            if abs(heading_deg) < _HEADING_RIGHT_THRESH:
+                self._heading_right_count += 1
+            else:
+                self._heading_left_count += 1
+
+            bin_idx = int((heading_deg + 180.0) / 20.0) % 18
+            self._heading_hist_bins[bin_idx] += 1
+
+            if local_crush_risk and abs(abs(heading_deg) - _HEADING_RIGHT_THRESH) < 15.0:
+                self._boundary_crush_count += 1
+
+        # Track per-frame crush count
+        frame_crush_count = sum(1 for d in detections if d.label == "person_crush_zone")
+        self._frame_crush_counts.append((frame_index, timestamp_sec, frame_crush_count))
 
         # 7. Stream annotated frame.
         self.latest_annotated_frame = annotated
@@ -445,8 +492,132 @@ class CrowdMotionMonitor(BaseModelWrapper):
     # ──────────────────────────────────────────────────────────────────────
 
     def finalize(self) -> None:
-        """Close the streaming encoder and publish annotated_video_path."""
+        """Compute run-level summary stats, close video, and publish annotated_video_path."""
+        self._compute_summary()
         self._close_video()
+
+    def _compute_summary(self) -> dict:
+        """Calculate comprehensive run-level summary metrics."""
+        total = self._total_detections_count
+        label_counts = dict(self._label_counter)
+        n_stopped = label_counts.get("person_stopped", 0)
+        n_crush = label_counts.get("person_crush_zone", 0)
+        n_moving_right = label_counts.get("person_moving_right", 0)
+        n_moving_left = label_counts.get("person_moving_left", 0)
+        n_moving = n_moving_right + n_moving_left + n_crush
+
+        pct_moving = round((n_moving / total * 100), 1) if total > 0 else 0.0
+        pct_stationary = round((n_stopped / total * 100), 1) if total > 0 else 0.0
+        pct_crush_risk = round((n_crush / total * 100), 1) if total > 0 else 0.0
+        pct_moving_right = round((n_moving_right / total * 100), 1) if total > 0 else 0.0
+        pct_moving_left = round((n_moving_left / total * 100), 1) if total > 0 else 0.0
+
+        h_total = self._heading_right_count + self._heading_left_count
+        pct_heading_right = round((self._heading_right_count / h_total * 100), 1) if h_total > 0 else 0.0
+        pct_heading_left = round((self._heading_left_count / h_total * 100), 1) if h_total > 0 else 0.0
+
+        # Crush events: distinct periods where 3+ people are simultaneously crush-flagged
+        crush_events = 0
+        in_event = False
+        peak_crush_count = 0
+        peak_crush_timestamp_sec = 0.0
+
+        for f_idx, t_sec, c_cnt in self._frame_crush_counts:
+            if c_cnt > peak_crush_count:
+                peak_crush_count = c_cnt
+                peak_crush_timestamp_sec = t_sec
+            if c_cnt >= 3:
+                if not in_event:
+                    crush_events += 1
+                    in_event = True
+            else:
+                in_event = False
+
+        # Per-track stability
+        flip_data = []
+        for tid, dirs in self._track_directions.items():
+            flips = sum(1 for i in range(1, len(dirs)) if dirs[i] != dirs[i - 1])
+            r_cnt = dirs.count("right")
+            l_cnt = dirs.count("left")
+            flip_data.append((tid, flips, r_cnt, l_cnt))
+
+        total_tracks = len(flip_data)
+        stable_tracks = sum(1 for _, f, _, _ in flip_data if f == 0)
+        unstable_tracks = [x for x in flip_data if x[1] > 5]
+        avg_flips = (sum(f for _, f, _, _ in flip_data) / total_tracks) if total_tracks else 0.0
+        pct_stable_tracks = round((stable_tracks / total_tracks * 100), 1) if total_tracks else 0.0
+
+        worst_tracks = sorted(flip_data, key=lambda x: -x[1])[:10]
+        suspicious_list = []
+        for tid, f, r, l in worst_tracks:
+            if f > 5:
+                dom = "right" if r >= l else "left"
+                pct_dom = round(max(r, l) / (r + l) * 100) if (r + l) else 0
+                suspicious_list.append({
+                    "track_id": tid,
+                    "flips": f,
+                    "right_count": r,
+                    "left_count": l,
+                    "dominant_direction": dom,
+                    "dominant_pct": pct_dom,
+                })
+
+        speed_stats = {}
+        all_speeds = []
+        for lbl, spds in self._speed_records.items():
+            if spds:
+                speed_stats[lbl] = {
+                    "avg_px_frame": round(float(np.mean(spds)), 2),
+                    "max_px_frame": round(float(np.max(spds)), 2),
+                    "count": len(spds),
+                }
+                all_speeds.extend(spds)
+        overall_avg_speed = round(float(np.mean(all_speeds)), 2) if all_speeds else 0.0
+
+        heading_bins = []
+        bin_size = 360.0 / len(self._heading_hist_bins)
+        for i, cnt in enumerate(self._heading_hist_bins):
+            lo = -180.0 + i * bin_size
+            hi = lo + bin_size
+            direction = "left" if (lo < -_HEADING_RIGHT_THRESH or hi > _HEADING_RIGHT_THRESH) else "right"
+            heading_bins.append({
+                "range": [round(lo, 1), round(hi, 1)],
+                "count": cnt,
+                "direction": direction,
+            })
+
+        self.summary = {
+            "total_detections": total,
+            "total_tracks": total_tracks,
+            "pct_moving": pct_moving,
+            "pct_stationary": pct_stationary,
+            "pct_crush_risk": pct_crush_risk,
+            "pct_moving_right": pct_moving_right,
+            "pct_moving_left": pct_moving_left,
+            "pct_heading_right": pct_heading_right,
+            "pct_heading_left": pct_heading_left,
+            "crush_event_count": crush_events,
+            "peak_crush_timestamp_sec": round(peak_crush_timestamp_sec, 2),
+            "peak_crush_people_count": peak_crush_count,
+            "boundary_crush_pct": round((self._boundary_crush_count / n_crush * 100), 1) if n_crush > 0 else 0.0,
+            "label_counts": label_counts,
+            "avg_speed_px_frame": overall_avg_speed,
+            "speed_by_label": speed_stats,
+            "stable_tracks_count": stable_tracks,
+            "stable_tracks_pct": pct_stable_tracks,
+            "unstable_tracks_count": len(unstable_tracks),
+            "avg_flips_per_track": round(avg_flips, 2),
+            "suspicious_tracks": suspicious_list,
+            "heading_histogram": heading_bins,
+        }
+
+        logger.info(
+            "CrowdMotionMonitor summary: total=%d, moving=%.1f%% (R:%.1f%%, L:%.1f%%), "
+            "crush=%.1f%% (%d events, peak @ %.2fs), stationary=%.1f%%, tracks=%d (%.1f%% stable)",
+            total, pct_moving, pct_moving_right, pct_moving_left, pct_crush_risk,
+            crush_events, peak_crush_timestamp_sec, pct_stationary, total_tracks, pct_stable_tracks,
+        )
+        return self.summary
 
     # ──────────────────────────────────────────────────────────────────────
     # Private helpers

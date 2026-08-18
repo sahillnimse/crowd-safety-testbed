@@ -340,20 +340,54 @@ function historyOutputCard(group) {
   if (group.stages.some(s => s.model_key.includes('fall'))) primaryCat = 'fall';
   else if (group.stages.some(s => s.model_key.includes('anpr'))) primaryCat = 'anpr';
   else if (group.stages.some(s => s.model_key.includes('violence') || s.model_key.includes('altercation'))) primaryCat = 'violence';
-  else if (group.stages.some(s => s.model_key.includes('crush') || s.model_key.includes('traffic'))) primaryCat = 'traffic';
+  else if (group.stages.some(s => s.model_key.includes('crush') || s.model_key.includes('motion') || s.model_key.includes('flow') || s.model_key.includes('traffic'))) primaryCat = 'traffic';
 
-  const catLabel = primaryCat === 'anpr' ? 'ANPR Read' : (primaryCat.charAt(0).toUpperCase() + primaryCat.slice(1));
+  const catLabel = primaryCat === 'anpr' ? 'ANPR Read' : (primaryCat === 'traffic' ? 'Crowd / Motion' : (primaryCat.charAt(0).toUpperCase() + primaryCat.slice(1)));
 
-  // Build model summaries
+  // Build model summaries with inline visual breakdown
   const modelPills = group.stages.map((s) => {
+    const sum = s.summary || {};
     const tag = s.scoring_modes && s.scoring_modes.geometric_fallback
       ? '<span class="pill fallback">Geometric Fallback</span>'
       : (s.scoring_modes && s.scoring_modes.kinetics_zeroshot
         ? '<span class="pill ready">Kinetics Zero-Shot</span>' : '');
-    return `<div class="u-row">
-      <span class="u-strong">${esc(s.model_label)}</span>
-      <span class="${s.positives > 0 ? 'pos' : 'zero'} u-strong">(${s.positives} alerts)</span>
-      ${tag}
+
+    let motionBar = '';
+    if (sum && (sum.pct_moving_left != null || sum.pct_moving_right != null || sum.pct_crush_risk != null)) {
+      const pLeft = sum.pct_moving_left || 0;
+      const pRight = sum.pct_moving_right || 0;
+      const pCrush = sum.pct_crush_risk || 0;
+      const pStop = sum.pct_stationary || 0;
+      motionBar = `
+        <div class="card-dist-bar-wrap">
+          <div class="card-dist-bar">
+            <div class="card-dist-seg seg-left" style="width: ${pLeft}%;" title="Left: ${pLeft}%"></div>
+            <div class="card-dist-seg seg-right" style="width: ${pRight}%;" title="Right: ${pRight}%"></div>
+            <div class="card-dist-seg seg-crush" style="width: ${pCrush}%;" title="Crush: ${pCrush}%"></div>
+            <div class="card-dist-seg seg-stopped" style="width: ${pStop}%;" title="Stopped: ${pStop}%"></div>
+          </div>
+          <div class="card-dist-labels">
+            <span class="c-lbl left">← ${pLeft.toFixed(0)}% L</span>
+            <span class="c-lbl right">→ ${pRight.toFixed(0)}% R</span>
+            <span class="c-lbl crush">⚠️ ${pCrush.toFixed(0)}% Crush</span>
+            <span class="c-lbl stop">⏹ ${pStop.toFixed(0)}% Stop</span>
+          </div>
+        </div>
+      `;
+    }
+
+    const reportBtn = s.report_html
+      ? `<a href="/api/files/run/${esc(s.report_html)}" target="_blank" class="report-btn" onclick="event.stopPropagation();">📄 HTML Report</a>`
+      : '';
+
+    return `<div class="model-summary-box">
+      <div class="u-row">
+        <span class="u-strong">${esc(s.model_label)}</span>
+        <span class="${s.positives > 0 ? 'pos' : 'zero'} u-strong">(${s.positives} alerts)</span>
+        ${tag}
+        ${reportBtn}
+      </div>
+      ${motionBar}
     </div>`;
   }).join('');
 
@@ -378,7 +412,7 @@ function historyOutputCard(group) {
     </div>
 
     <div>
-      <div class="u-label">Models & Classifications</div>
+      <div class="u-label">Models & Analytics Breakdown</div>
       ${modelPills}
     </div>
 
@@ -629,13 +663,18 @@ async function openJobDetailModal(jobId, modelKey) {
   $('#modal').classList.remove('hidden');
 
   try {
+    const job = await api(`/api/jobs/${jobId}`);
+    const stage = job && job.stages ? job.stages.find(s => s.model_key === modelKey) : null;
     const detections = await api(`/api/jobs/${jobId}/detections/${modelKey}?limit=500`);
     state.currentDetail = {
-      videoName: jobId,
+      videoName: (job && job.video_name) ? job.video_name : jobId,
       group: null,
-      primaryStage: { model_key: modelKey, model_label: modelKey },
+      primaryStage: stage || { model_key: modelKey, model_label: modelKey },
+      allStages: (job && job.stages) ? job.stages : [],
+      activeTimelineModelKey: modelKey,
       detections,
-      annotatedVideo: null,
+      allAnnotatedVideos: stage && stage.annotated ? [{ label: stage.model_key, key: stage.model_key, file: stage.annotated }] : [],
+      activeAnnotatedVideo: stage ? stage.annotated : null,
     };
     renderModalTab('overview');
   } catch (err) {
@@ -660,9 +699,71 @@ function renderModalTab(tabName) {
     const g = detail.group;
     const s = detail.primaryStage || {};
     const d = detail.detections || {};
+    const sum = s.summary || {};
     const totalPositives = g ? g.total_positives : (d.rows ? d.rows.filter(r => r.confidence > 0.5).length : 0);
     const maxConf = d.rows && d.rows.length ? Math.max(...d.rows.map(r => r.confidence || 0)) : 0;
-    const mainLabel = d.rows && d.rows.length ? (d.rows[0].label || 'detection') : 'N/A';
+
+    let analyticsHtml = '';
+    if (sum && (sum.pct_moving != null || sum.pct_crush_risk != null || sum.pct_moving_left != null)) {
+      const pLeft = sum.pct_moving_left || 0;
+      const pRight = sum.pct_moving_right || 0;
+      const pCrush = sum.pct_crush_risk || 0;
+      const pStop = sum.pct_stationary || 0;
+      const pMoving = sum.pct_moving || (100 - pStop);
+      const totalTracks = sum.total_tracks != null ? sum.total_tracks : '—';
+      const stablePct = sum.stable_tracks_pct != null ? sum.stable_tracks_pct : '—';
+      const crushEvents = sum.crush_event_count || 0;
+      const peakCrushT = sum.peak_crush_timestamp_sec || 0;
+      const peakCrushPeople = sum.peak_crush_people_count || 0;
+
+      analyticsHtml = `
+        <div class="overview-analytics-box">
+          <div class="section-title" style="margin-bottom: 14px;">
+            <span>📈 Run Analytics & Crowd Dynamics</span>
+            ${s.report_html ? `<a href="/api/files/run/${esc(s.report_html)}" target="_blank" class="btn-card-detail" style="font-size: 12px; padding: 5px 12px;">📄 View Standalone HTML Report</a>` : ''}
+          </div>
+
+          <div class="overview-kpis">
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Direction Split</div>
+              <div class="overview-kpi-val" style="color: #38bdf8;">← ${pLeft.toFixed(1)}% <span style="font-size: 13px; color: var(--muted); font-weight: normal;">vs ${pRight.toFixed(1)}% →</span></div>
+              <div class="overview-kpi-sub">Left: ${sum.label_counts ? (sum.label_counts.person_moving_left || 0).toLocaleString() : 0} · Right: ${sum.label_counts ? (sum.label_counts.person_moving_right || 0).toLocaleString() : 0}</div>
+            </div>
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Crush Risk Level</div>
+              <div class="overview-kpi-val" style="color: #fb923c;">${pCrush.toFixed(1)}%</div>
+              <div class="overview-kpi-sub">${crushEvents} peak events (max ${peakCrushPeople} people @ ${peakCrushT.toFixed(1)}s)</div>
+            </div>
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Movement Rate</div>
+              <div class="overview-kpi-val" style="color: #34d399;">${pMoving.toFixed(1)}%</div>
+              <div class="overview-kpi-sub">Stationary / Stopped: ${pStop.toFixed(1)}% (${sum.label_counts ? (sum.label_counts.person_stopped || 0).toLocaleString() : 0})</div>
+            </div>
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Track Integrity</div>
+              <div class="overview-kpi-val" style="color: #a78bfa;">${totalTracks}</div>
+              <div class="overview-kpi-sub">${stablePct}% stable tracks (0 direction flips)</div>
+            </div>
+          </div>
+
+          <div class="u-label">Crowd Velocity & Flow Share</div>
+          <div class="card-dist-bar-wrap" style="margin-top: 6px;">
+            <div class="card-dist-bar" style="height: 16px; border-radius: 6px;">
+              <div class="card-dist-seg seg-left" style="width: ${pLeft}%;" title="Leftward: ${pLeft}%"></div>
+              <div class="card-dist-seg seg-right" style="width: ${pRight}%;" title="Rightward: ${pRight}%"></div>
+              <div class="card-dist-seg seg-crush" style="width: ${pCrush}%;" title="Crush Risk: ${pCrush}%"></div>
+              <div class="card-dist-seg seg-stopped" style="width: ${pStop}%;" title="Stopped: ${pStop}%"></div>
+            </div>
+          </div>
+          <div class="legend-grid" style="margin-top: 10px;">
+            <div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Moving Left</strong>: ${pLeft.toFixed(1)}%</div>
+            <div class="legend-item"><div class="legend-dot seg-right"></div> <strong>Moving Right</strong>: ${pRight.toFixed(1)}%</div>
+            <div class="legend-item"><div class="legend-dot seg-crush"></div> <strong>Crush Zone</strong>: ${pCrush.toFixed(1)}%</div>
+            <div class="legend-item"><div class="legend-dot seg-stopped"></div> <strong>Stationary</strong>: ${pStop.toFixed(1)}%</div>
+          </div>
+        </div>
+      `;
+    }
 
     const labelsList = s.label_counts
       ? Object.entries(s.label_counts).map(([k, v]) => `<span class="plate-badge u-mr-1">${esc(k)}: ${v}</span>`).join(' ')
@@ -684,6 +785,8 @@ function renderModalTab(tabName) {
         </div>
       </div>
 
+      ${analyticsHtml}
+
       <div class="detail-section-title">Classifications & Metadata</div>
       <table class="detail-info-table">
         <tbody>
@@ -692,7 +795,15 @@ function renderModalTab(tabName) {
           <tr><td class="key">Category</td><td class="val">${esc(s.model_key ? s.model_key.split('_')[0] : 'general')}</td></tr>
           <tr><td class="key">Detected Labels</td><td class="val">${labelsList}</td></tr>
           ${s.modified_at ? `<tr><td class="key">Run Date</td><td class="val">${new Date(s.modified_at * 1000).toLocaleString()}</td></tr>` : ''}
-          ${s.log_json ? `<tr><td class="key">Log Artifact</td><td class="val"><a href="/api/files/run/${esc(s.log_json)}" target="_blank" class="link-btn">Download ${esc(s.log_json)}</a></td></tr>` : ''}
+          <tr>
+            <td class="key">Artifacts</td>
+            <td class="val" style="display: flex; flex-wrap: wrap; gap: 8px;">
+              ${s.report_html ? `<a href="/api/files/run/${esc(s.report_html)}" target="_blank" class="link-btn">📄 Standalone Report (HTML)</a>` : ''}
+              ${s.log_json ? `<a href="/api/files/run/${esc(s.log_json)}" target="_blank" class="link-btn">📄 Detections (JSON)</a>` : ''}
+              ${s.log_csv ? `<a href="/api/files/run/${esc(s.log_csv)}" target="_blank" class="link-btn">📊 Detections (CSV)</a>` : ''}
+              ${s.log_summary ? `<a href="/api/files/run/${esc(s.log_summary)}" target="_blank" class="link-btn">📈 Summary Stats (JSON)</a>` : ''}
+            </td>
+          </tr>
         </tbody>
       </table>
     `;
@@ -701,7 +812,8 @@ function renderModalTab(tabName) {
 
     // Single model or job context — show detections directly
     if (!allStages || allStages.length <= 1) {
-      renderDetections(detail.detections);
+      const modelLabel = detail.primaryStage ? (detail.primaryStage.model_label || detail.primaryStage.model_key) : '';
+      renderDetectionsTable(detail.detections, modelLabel, host);
       return;
     }
 
@@ -746,37 +858,7 @@ function renderModalTab(tabName) {
 
       try {
         const d = await api(`/api/history/${encodeURIComponent(detail.videoName)}/${encodeURIComponent(modelKey)}/detections?limit=500`);
-        // Temporarily swap detections so renderDetections renders into the right container
-        const prevBody = $('#modal-body');
-        // Render into the sub-host
-        if (!d.rows.length) {
-          detectHost.innerHTML = '<div class="empty">No positive detections for this model.</div>';
-          return;
-        }
-        const hasPlates = d.rows.some(r => r.extra && (r.extra.plate || r.extra.plate_display || r.extra.plate_status));
-        const rows = d.rows.map(r => {
-          const extra = r.extra || {};
-          const plateStr = extra.plate_display || extra.plate || '';
-          const plateStatus = extra.plate_status || '';
-          let plateCell = '—';
-          if (plateStr) plateCell = `<span class="plate-badge">${esc(plateStr)}</span>`;
-          else if (plateStatus) plateCell = `<span class="subtle">${esc(statusText(plateStatus, extra.plate_width_px))}</span>`;
-          const details = extra.scoring ? esc(extra.scoring)
-            : (extra.vehicle_class ? `${esc(extra.vehicle_class)}${extra.colour ? ` (${esc(extra.colour)})` : ''}` : '—');
-          return `<tr>
-            <td>${r.timestamp_sec.toFixed(2)}s</td>
-            <td><strong>${esc(r.label)}</strong></td>
-            <td>${(r.confidence * 100).toFixed(1)}%</td>
-            <td>${extra.track_id != null ? extra.track_id : '—'}</td>
-            ${hasPlates ? `<td>${plateCell}</td>` : ''}
-            <td>${details}</td>
-          </tr>`;
-        }).join('');
-        detectHost.innerHTML = `
-          <div class="hint u-mb-3">Showing top ${d.rows.length} of ${d.total} positive detection rows for <strong>${esc(modelLabel)}</strong>.</div>
-          <table><thead><tr><th>Timestamp</th><th>Class Label</th><th>Conf</th>
-            <th>Track ID</th>${hasPlates ? '<th>Plate Read</th>' : ''}<th>Details</th></tr></thead>
-            <tbody>${rows}</tbody></table>`;
+        renderDetectionsTable(d, modelLabel, detectHost);
       } catch (err) {
         if ($('#timeline-detections-host')) {
           $('#timeline-detections-host').innerHTML = `<div class="err">${esc(err.message)}</div>`;
@@ -877,12 +959,111 @@ function renderModalTab(tabName) {
   }
 }
 
-function renderDetections(d) {
+function renderDetectionsTable(d, modelLabel, containerEl) {
+  if (!containerEl) return;
   if (!d || !d.rows || !d.rows.length) {
-    $('#modal-body').innerHTML = '<div class="empty">No positive detections recorded in this run.</div>';
+    containerEl.innerHTML = '<div class="empty">No positive detections recorded for this model.</div>';
     return;
   }
+
+  const isMotionMonitor = d.rows.some(r =>
+    r.model_name === 'crowd_motion_monitor' ||
+    (r.extra && (r.extra.crowd_direction != null || r.extra.heading_deg != null || r.extra.local_crush_risk != null))
+  );
+
   const hasPlates = d.rows.some((r) => r.extra && (r.extra.plate || r.extra.plate_display || r.extra.plate_status));
+
+  if (isMotionMonitor) {
+    const total = d.rows.length;
+    const movingLeftCount = d.rows.filter(r => r.label === 'person_moving_left' || (r.extra && r.extra.crowd_direction === 'left')).length;
+    const movingRightCount = d.rows.filter(r => r.label === 'person_moving_right' || (r.extra && r.extra.crowd_direction === 'right')).length;
+    const crushCount = d.rows.filter(r => r.label === 'person_crush_zone' || (r.extra && r.extra.local_crush_risk)).length;
+    const stoppedCount = d.rows.filter(r => r.label === 'person_stopped' || (r.extra && r.extra.personally_stationary)).length;
+
+    const pLeft = total ? (movingLeftCount / total * 100).toFixed(1) : '0.0';
+    const pRight = total ? (movingRightCount / total * 100).toFixed(1) : '0.0';
+    const pCrush = total ? (crushCount / total * 100).toFixed(1) : '0.0';
+    const pStopped = total ? (stoppedCount / total * 100).toFixed(1) : '0.0';
+
+    const rows = d.rows.map(r => {
+      const extra = r.extra || {};
+      const cdir = extra.crowd_direction || (r.label === 'person_moving_right' ? 'right' : 'left');
+      const hdeg = extra.heading_deg != null ? extra.heading_deg.toFixed(1) : null;
+      const spd = extra.speed_px_frame != null ? extra.speed_px_frame.toFixed(2) : null;
+      const isCrush = extra.local_crush_risk || r.label === 'person_crush_zone';
+      const isStopped = extra.personally_stationary || r.label === 'person_stopped';
+
+      let statusBadge = '';
+      if (isStopped) {
+        statusBadge = '<span class="badge badge-stopped">⏹ Stopped</span>';
+      } else if (isCrush) {
+        statusBadge = '<span class="badge badge-crush">⚠️ Crush Zone</span>';
+      } else if (cdir === 'right') {
+        statusBadge = '<span class="badge badge-right">→ Rightward</span>';
+      } else {
+        statusBadge = '<span class="badge badge-left">← Leftward</span>';
+      }
+
+      const dirCell = `<span class="badge ${cdir === 'right' ? 'badge-right' : 'badge-left'}">${cdir === 'right' ? '→ Right' : '← Left'}${hdeg ? ` (${hdeg}°)` : ''}</span>`;
+      const spdCell = spd ? `${spd} px/fr` : '—';
+      const crushCell = isCrush
+        ? `<span class="badge badge-crush">⚠️ Risk${extra.local_divergence != null ? ` (${extra.local_divergence.toFixed(2)})` : ''}</span>`
+        : '<span class="badge badge-ok">✓ Safe</span>';
+
+      return `<tr>
+        <td class="u-mono-sm">${r.timestamp_sec.toFixed(2)}s</td>
+        <td><strong>#${extra.track_id != null ? extra.track_id : '—'}</strong></td>
+        <td>${statusBadge}</td>
+        <td>${dirCell}</td>
+        <td class="u-num">${spdCell}</td>
+        <td>${crushCell}</td>
+        <td class="u-num">${(r.confidence * 100).toFixed(0)}%</td>
+      </tr>`;
+    }).join('');
+
+    containerEl.innerHTML = `
+      <div class="motion-summary-banner">
+        <div class="motion-banner-item">
+          <div class="motion-dot seg-left"></div>
+          <span class="motion-lbl">Moving Left:</span>
+          <span class="motion-val">${pLeft}% (${movingLeftCount.toLocaleString()})</span>
+        </div>
+        <div class="motion-banner-item">
+          <div class="motion-dot seg-right"></div>
+          <span class="motion-lbl">Moving Right:</span>
+          <span class="motion-val">${pRight}% (${movingRightCount.toLocaleString()})</span>
+        </div>
+        <div class="motion-banner-item">
+          <div class="motion-dot seg-crush"></div>
+          <span class="motion-lbl">Crush Risk:</span>
+          <span class="motion-val alert-text">${pCrush}% (${crushCount.toLocaleString()})</span>
+        </div>
+        <div class="motion-banner-item">
+          <div class="motion-dot seg-stopped"></div>
+          <span class="motion-lbl">Stationary:</span>
+          <span class="motion-val">${pStopped}% (${stoppedCount.toLocaleString()})</span>
+        </div>
+      </div>
+      <div class="hint u-mb-3">Showing top ${d.rows.length} of ${d.total} detections for <strong>${esc(modelLabel || 'Crowd Motion Monitor')}</strong> with enriched kinematic telemetry.</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Track ID</th>
+            <th>Flow Status</th>
+            <th>Direction (Heading)</th>
+            <th class="u-num">Velocity</th>
+            <th>Compression</th>
+            <th class="u-num">Conf</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+    return;
+  }
+
+  // Standard or ANPR table
   const rows = d.rows.map((r) => {
     const extra = r.extra || {};
     const plateStr = extra.plate_display || extra.plate || '';
@@ -908,11 +1089,17 @@ function renderDetections(d) {
     </tr>`;
   }).join('');
 
-  $('#modal-body').innerHTML = `
-    <div class="hint u-mb-3">Total positive detections: ${d.total}; showing top ${d.rows.length} rows.</div>
-    <table><thead><tr><th>Timestamp</th><th>Class Label</th><th>Conf</th>
-      <th>Track ID</th>${hasPlates ? '<th>Plate Read</th>' : ''}<th>Details</th></tr></thead>
-      <tbody>${rows}</tbody></table>`;
+  containerEl.innerHTML = `
+    <div class="hint u-mb-3">Total positive detections: ${d.total}; showing top ${d.rows.length} rows for <strong>${esc(modelLabel || '')}</strong>.</div>
+    <table>
+      <thead><tr><th>Timestamp</th><th>Class Label</th><th>Conf</th>
+        <th>Track ID</th>${hasPlates ? '<th>Plate Read</th>' : ''}<th>Details</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderDetections(d) {
+  renderDetectionsTable(d, '', $('#modal-body'));
 }
 
 function closeModal() {

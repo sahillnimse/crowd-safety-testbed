@@ -401,6 +401,7 @@ def stream_run_file(video: str, model_key: str, name: str):
     if not os.path.isfile(path):
         raise HTTPException(404, "Not found")
     media = ("video/mp4" if path.lower().endswith(".mp4")
+             else "text/html" if path.lower().endswith(".html")
              else "text/csv" if path.lower().endswith(".csv")
              else "application/json")
     return FileResponse(path, media_type=media)

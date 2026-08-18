@@ -49,6 +49,8 @@ ANNOTATED_DIR = os.path.join(OUTPUT_DIR, "annotated")
 RUN_JSON = "detections.json"
 RUN_CSV = "detections.csv"
 RUN_VIDEO = "annotated.mp4"
+RUN_SUMMARY = "summary.json"
+RUN_REPORT = "report.html"
 
 
 def run_dir(video: str, model_key: str, create: bool = False) -> str:
@@ -116,11 +118,14 @@ class Stage:
     positives: int = 0
     label_counts: dict = field(default_factory=dict)
     scoring_modes: dict = field(default_factory=dict)
+    summary: dict = field(default_factory=dict)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     error: Optional[str] = None
     log_json: Optional[str] = None
     log_csv: Optional[str] = None
+    log_summary: Optional[str] = None
+    report_html: Optional[str] = None
     annotated: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -137,10 +142,13 @@ class Stage:
             "positives": self.positives,
             "label_counts": self.label_counts,
             "scoring_modes": self.scoring_modes,
+            "summary": self.summary,
             "elapsed_sec": elapsed,
             "error": self.error,
             "log_json": self.log_json,
             "log_csv": self.log_csv,
+            "log_summary": self.log_summary,
+            "report_html": self.report_html,
             "annotated": self.annotated,
         }
 
@@ -380,7 +388,7 @@ class JobManager:
             stage.finished_at = time.time()
             return
 
-        self._summarize(stage, detections)
+        self._summarize(stage, detections, model)
         self._export(job, stage, detections, model_key, model)
 
         stage.status = "done"
@@ -389,7 +397,8 @@ class JobManager:
 
 
     @staticmethod
-    def _summarize(stage: Stage, detections: list):
+    def _summarize(stage: Stage, detections: list, model=None):
+        import json
         labels = Counter(d.label for d in detections)
         scoring = Counter(
             d.extra.get("scoring") for d in detections
@@ -401,10 +410,19 @@ class JobManager:
         positive = positive_labels()
         stage.positives = sum(n for lbl, n in labels.items() if lbl in positive)
 
+        # Get summary from model instance if available, else compute from detections
+        if model is not None and getattr(model, "summary", None):
+            stage.summary = dict(model.summary)
+        else:
+            from webapp.history import compute_detections_summary
+            stage.summary = compute_detections_summary(detections)
+
     def _export(self, job: Job, stage: Stage, detections: list, model_key: str,
                 model=None):
+        import json
         from pipeline.annotate import (export_annotated_video, export_detection_csv,
                                        export_detection_log)
+        from pipeline.html_report import export_html_report
 
         video = os.path.splitext(os.path.basename(job.video_path))[0]
         out_dir = run_dir(video, model_key, create=True)
@@ -415,6 +433,23 @@ class JobManager:
         # without the frontend needing to know the layout.
         stage.log_json = f"{video}/{model_key}/{RUN_JSON}"
         stage.log_csv = f"{video}/{model_key}/{RUN_CSV}"
+
+        # Export summary.json
+        summary_path = os.path.join(out_dir, RUN_SUMMARY)
+        try:
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(stage.summary, f, indent=2)
+            stage.log_summary = f"{video}/{model_key}/{RUN_SUMMARY}"
+        except Exception as e:
+            print(f"[WARN] Failed to write summary.json: {e}")
+
+        # Export standalone report.html
+        report_path = os.path.join(out_dir, RUN_REPORT)
+        try:
+            export_html_report(report_path, video, model_key, stage.summary, detections)
+            stage.report_html = f"{video}/{model_key}/{RUN_REPORT}"
+        except Exception as e:
+            print(f"[WARN] Failed to write report.html: {e}")
 
         if job.export_video:
             job.message = f"Writing annotated video for {model_key}..."

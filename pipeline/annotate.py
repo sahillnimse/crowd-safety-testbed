@@ -334,19 +334,29 @@ def export_detection_log(detections: list[Detection], output_path: str):
 
 
 def export_detection_csv(detections: list[Detection], output_path: str):
-    """Writes detections to a CSV file — one row per detection."""
-    fieldnames = ["model_name", "label", "confidence", "timestamp_sec",
-                  "frame_index", "plate", "plate_display", "track_id",
-                  "vehicle_class", "bbox", "keypoints", "extra"]
+    """Writes detections to a CSV file — one row per detection with flattened kinematic fields."""
+    fieldnames = [
+        "model_name", "label", "confidence", "timestamp_sec",
+        "frame_index", "track_id", "crowd_direction", "heading_deg",
+        "speed_px_frame", "personally_stationary", "local_crush_risk",
+        "local_divergence", "plate", "plate_display", "vehicle_class",
+        "bbox", "keypoints", "extra"
+    ]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for d in detections:
             row = d.__dict__.copy()
             extra = row.get("extra") or {}
+            row["track_id"] = extra.get("track_id", "")
+            row["crowd_direction"] = extra.get("crowd_direction", "")
+            row["heading_deg"] = extra.get("heading_deg", "")
+            row["speed_px_frame"] = extra.get("speed_px_frame", "")
+            row["personally_stationary"] = extra.get("personally_stationary", "")
+            row["local_crush_risk"] = extra.get("local_crush_risk", "")
+            row["local_divergence"] = extra.get("local_divergence", "")
             row["plate"] = extra.get("plate", "")
             row["plate_display"] = extra.get("plate_display", "")
-            row["track_id"] = extra.get("track_id", "")
             row["vehicle_class"] = extra.get("vehicle_class", "")
             row["bbox"] = json.dumps(row["bbox"]) if row["bbox"] else ""
             row["keypoints"] = json.dumps(row["keypoints"]) if row["keypoints"] else ""
