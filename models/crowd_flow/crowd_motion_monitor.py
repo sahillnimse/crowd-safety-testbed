@@ -161,7 +161,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         stationary_frames: int = 10,
         resume_moving_frames: int = 3,
         motion_noise_floor_ratio: float = 0.35,
-        crush_divergence_threshold: float = -0.5,
+        crush_divergence_threshold: float = -1.0,
+        crush_max_speed_px: float = 6.0,
         counterflow_angle_threshold_deg: float = 120.0,
         counterflow_score_threshold: float = 0.30,
         overlay_mode: str = "markers",
@@ -181,6 +182,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self.resume_moving_frames            = resume_moving_frames
         self.motion_noise_floor_ratio        = motion_noise_floor_ratio
         self.crush_divergence_threshold      = crush_divergence_threshold
+        self.crush_max_speed_px              = crush_max_speed_px
         self.counterflow_angle_threshold_deg = counterflow_angle_threshold_deg
         self.counterflow_score_threshold     = counterflow_score_threshold
         self.overlay_mode                    = overlay_mode
@@ -478,7 +480,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
             gc = min(cx // _DIV_CELL_PX, n_cols - 1)
 
             local_div = float(div_grid[gr, gc])
-            local_crush_risk = local_div < self.crush_divergence_threshold
+            max_crush_spd = max(self.crush_max_speed_px, 2.5 * self.stationary_speed_px)
+            local_crush_risk = (local_div < self.crush_divergence_threshold) and (tr["speed"] <= max_crush_spd) and (not p_stat)
             local_var = float(var_grid[gr, gc])
 
             # Find neighboring moving tracks
