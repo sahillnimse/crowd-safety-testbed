@@ -339,7 +339,8 @@ def export_detection_csv(detections: list[Detection], output_path: str):
         "model_name", "label", "confidence", "timestamp_sec",
         "frame_index", "track_id", "crowd_direction", "heading_deg",
         "speed_px_frame", "personally_stationary", "local_crush_risk",
-        "local_divergence", "plate", "plate_display", "vehicle_class",
+        "local_divergence", "local_velocity_variance", "local_directional_entropy",
+        "is_counterflow", "counterflow_angle_deg", "plate", "plate_display", "vehicle_class",
         "bbox", "keypoints", "extra"
     ]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -355,6 +356,10 @@ def export_detection_csv(detections: list[Detection], output_path: str):
             row["personally_stationary"] = extra.get("personally_stationary", "")
             row["local_crush_risk"] = extra.get("local_crush_risk", "")
             row["local_divergence"] = extra.get("local_divergence", "")
+            row["local_velocity_variance"] = extra.get("local_velocity_variance", "")
+            row["local_directional_entropy"] = extra.get("local_directional_entropy", "")
+            row["is_counterflow"] = extra.get("is_counterflow", "")
+            row["counterflow_angle_deg"] = extra.get("counterflow_angle_deg", "")
             row["plate"] = extra.get("plate", "")
             row["plate_display"] = extra.get("plate_display", "")
             row["vehicle_class"] = extra.get("vehicle_class", "")

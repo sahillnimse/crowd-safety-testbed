@@ -715,6 +715,11 @@ function renderModalTab(tabName) {
       const crushEvents = sum.crush_event_count || 0;
       const peakCrushT = sum.peak_crush_timestamp_sec || 0;
       const peakCrushPeople = sum.peak_crush_people_count || 0;
+      const pCounterflow = sum.pct_counterflow_people || 0;
+      const cfEvents = sum.counterflow_events_count || 0;
+      const peakCfT = sum.peak_counterflow_timestamp_sec || 0;
+      const avgEntropy = sum.avg_directional_entropy != null ? sum.avg_directional_entropy : '—';
+      const avgVar = sum.avg_velocity_variance != null ? sum.avg_velocity_variance : '—';
 
       analyticsHtml = `
         <div class="overview-analytics-box">
@@ -740,9 +745,19 @@ function renderModalTab(tabName) {
               <div class="overview-kpi-sub">Stationary / Stopped: ${pStop.toFixed(1)}% (${sum.label_counts ? (sum.label_counts.person_stopped || 0).toLocaleString() : 0})</div>
             </div>
             <div class="overview-kpi-item">
-              <div class="overview-kpi-lbl">Track Integrity</div>
-              <div class="overview-kpi-val" style="color: #a78bfa;">${totalTracks}</div>
-              <div class="overview-kpi-sub">${stablePct}% stable tracks (0 direction flips)</div>
+              <div class="overview-kpi-lbl">Counter-Flow Friction</div>
+              <div class="overview-kpi-val" style="color: #f59e0b;">${pCounterflow.toFixed(1)}%</div>
+              <div class="overview-kpi-sub">${cfEvents} friction events (peak @ ${peakCfT.toFixed(1)}s)</div>
+            </div>
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Directional Entropy</div>
+              <div class="overview-kpi-val" style="color: #a78bfa;">${avgEntropy} <span style="font-size: 13px; color: var(--muted); font-weight: normal;">bits</span></div>
+              <div class="overview-kpi-sub">Local vector disorder (0: aligned, 3: chaotic)</div>
+            </div>
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Velocity Variance</div>
+              <div class="overview-kpi-val" style="color: #06b6d4;">${avgVar}</div>
+              <div class="overview-kpi-sub">Track Integrity: ${totalTracks} tracks (${stablePct}% stable)</div>
             </div>
           </div>
 
@@ -979,11 +994,13 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
     const movingRightCount = d.rows.filter(r => r.label === 'person_moving_right' || (r.extra && r.extra.crowd_direction === 'right')).length;
     const crushCount = d.rows.filter(r => r.label === 'person_crush_zone' || (r.extra && r.extra.local_crush_risk)).length;
     const stoppedCount = d.rows.filter(r => r.label === 'person_stopped' || (r.extra && r.extra.personally_stationary)).length;
+    const cfCount = d.rows.filter(r => r.extra && r.extra.is_counterflow).length;
 
     const pLeft = total ? (movingLeftCount / total * 100).toFixed(1) : '0.0';
     const pRight = total ? (movingRightCount / total * 100).toFixed(1) : '0.0';
     const pCrush = total ? (crushCount / total * 100).toFixed(1) : '0.0';
     const pStopped = total ? (stoppedCount / total * 100).toFixed(1) : '0.0';
+    const pCf = total ? (cfCount / total * 100).toFixed(1) : '0.0';
 
     const rows = d.rows.map(r => {
       const extra = r.extra || {};
@@ -992,6 +1009,9 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
       const spd = extra.speed_px_frame != null ? extra.speed_px_frame.toFixed(2) : null;
       const isCrush = extra.local_crush_risk || r.label === 'person_crush_zone';
       const isStopped = extra.personally_stationary || r.label === 'person_stopped';
+      const isCf = extra.is_counterflow;
+      const cfAngle = extra.counterflow_angle_deg != null ? extra.counterflow_angle_deg : 0;
+      const entropyVal = extra.local_directional_entropy != null ? extra.local_directional_entropy : null;
 
       let statusBadge = '';
       if (isStopped) {
@@ -1010,6 +1030,12 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
         ? `<span class="badge badge-crush">⚠️ Risk${extra.local_divergence != null ? ` (${extra.local_divergence.toFixed(2)})` : ''}</span>`
         : '<span class="badge badge-ok">✓ Safe</span>';
 
+      const dynamicsCell = isCf
+        ? `<span class="badge" style="background: rgba(245, 158, 11, 0.2); color: #f59e0b;">⚡ Opposing (${cfAngle}°)</span>`
+        : (entropyVal != null && entropyVal > 1.5
+            ? `<span class="badge" style="background: rgba(139, 92, 246, 0.2); color: #c4b5fd;">🌀 Ent: ${entropyVal}</span>`
+            : '<span class="badge badge-ok">✓ Aligned</span>');
+
       return `<tr>
         <td class="u-mono-sm">${r.timestamp_sec.toFixed(2)}s</td>
         <td><strong>#${extra.track_id != null ? extra.track_id : '—'}</strong></td>
@@ -1017,6 +1043,7 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
         <td>${dirCell}</td>
         <td class="u-num">${spdCell}</td>
         <td>${crushCell}</td>
+        <td>${dynamicsCell}</td>
         <td class="u-num">${(r.confidence * 100).toFixed(0)}%</td>
       </tr>`;
     }).join('');
@@ -1043,6 +1070,11 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
           <span class="motion-lbl">Stationary:</span>
           <span class="motion-val">${pStopped}% (${stoppedCount.toLocaleString()})</span>
         </div>
+        <div class="motion-banner-item">
+          <div class="motion-dot" style="background: #f59e0b;"></div>
+          <span class="motion-lbl">Counter-Flow:</span>
+          <span class="motion-val" style="color: #f59e0b;">${pCf}% (${cfCount.toLocaleString()})</span>
+        </div>
       </div>
       <div class="hint u-mb-3">Showing top ${d.rows.length} of ${d.total} detections for <strong>${esc(modelLabel || 'Crowd Motion Monitor')}</strong> with enriched kinematic telemetry.</div>
       <table>
@@ -1054,6 +1086,7 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
             <th>Direction (Heading)</th>
             <th class="u-num">Velocity</th>
             <th>Compression</th>
+            <th>Dynamics</th>
             <th class="u-num">Conf</th>
           </tr>
         </thead>

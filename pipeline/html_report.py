@@ -42,6 +42,15 @@ def generate_report_html(
     avg_flips = summary.get("avg_flips_per_track", "—")
     boundary_crush_pct = summary.get("boundary_crush_pct", "—")
 
+    # New crowd dynamics metrics
+    pct_cf = summary.get("pct_counterflow_people", 0.0)
+    cf_events = summary.get("counterflow_events_count", 0)
+    peak_cf_t = summary.get("peak_counterflow_timestamp_sec", 0.0)
+    peak_cf_count = summary.get("peak_counterflow_people_count", 0)
+    avg_var = summary.get("avg_velocity_variance", "—")
+    peak_var = summary.get("peak_velocity_variance", "—")
+    avg_entropy = summary.get("avg_directional_entropy", "—")
+
     label_counts = summary.get("label_counts", {})
     speed_by_label = summary.get("speed_by_label", {})
     suspicious = summary.get("suspicious_tracks", [])
@@ -409,6 +418,21 @@ def generate_report_html(
       <div class="kpi-label">Personally Stationary</div>
       <div class="kpi-val">{pct_stationary:.1f}%</div>
       <div class="kpi-sub">{pct_moving:.1f}% actively moving</div>
+    </div>
+    <div class="kpi-card" style="border-top: 3px solid #f59e0b;">
+      <div class="kpi-label">Counter-flow Opposition</div>
+      <div class="kpi-val">{pct_cf:.1f}%</div>
+      <div class="kpi-sub">{cf_events} friction events (peak: {peak_cf_t:.1f}s)</div>
+    </div>
+    <div class="kpi-card" style="border-top: 3px solid #8b5cf6;">
+      <div class="kpi-label">Directional Entropy</div>
+      <div class="kpi-val">{_esc(avg_entropy)} <span style="font-size: 13px; color: var(--text-dim);">bits</span></div>
+      <div class="kpi-sub">Flow disorder (0: aligned, 3: chaotic)</div>
+    </div>
+    <div class="kpi-card" style="border-top: 3px solid #06b6d4;">
+      <div class="kpi-label">Velocity Variance</div>
+      <div class="kpi-val">{_esc(avg_var)}</div>
+      <div class="kpi-sub">Peak circular variance: {_esc(peak_var)}</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Unique Tracks & Stability</div>

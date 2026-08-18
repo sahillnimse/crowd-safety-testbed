@@ -162,6 +162,10 @@ class CrowdMotionMonitor(BaseModelWrapper):
         resume_moving_frames: int = 3,
         motion_noise_floor_ratio: float = 0.35,
         crush_divergence_threshold: float = -0.5,
+        counterflow_angle_threshold_deg: float = 120.0,
+        counterflow_score_threshold: float = 0.30,
+        overlay_mode: str = "markers",
+        heatmap_metric: str = "divergence",
         confirm_frames: int = 3,
         detect_every: int = 5,
         detect_tile_grid: Optional[tuple] = (2, 2),
@@ -172,15 +176,19 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._output_dir   = output_dir
         self._video_name   = video_name
 
-        self.stationary_speed_px        = stationary_speed_px
-        self.stationary_frames          = stationary_frames
-        self.resume_moving_frames       = resume_moving_frames
-        self.motion_noise_floor_ratio   = motion_noise_floor_ratio
-        self.crush_divergence_threshold = crush_divergence_threshold
-        self.confirm_frames             = confirm_frames
-        self.detect_every               = detect_every
-        self.detect_tile_grid           = detect_tile_grid
-        self.detect_conf_threshold      = detect_conf_threshold
+        self.stationary_speed_px             = stationary_speed_px
+        self.stationary_frames               = stationary_frames
+        self.resume_moving_frames            = resume_moving_frames
+        self.motion_noise_floor_ratio        = motion_noise_floor_ratio
+        self.crush_divergence_threshold      = crush_divergence_threshold
+        self.counterflow_angle_threshold_deg = counterflow_angle_threshold_deg
+        self.counterflow_score_threshold     = counterflow_score_threshold
+        self.overlay_mode                    = overlay_mode
+        self.heatmap_metric                  = heatmap_metric
+        self.confirm_frames                  = confirm_frames
+        self.detect_every                    = detect_every
+        self.detect_tile_grid                = detect_tile_grid
+        self.detect_conf_threshold           = detect_conf_threshold
 
         # jobs.py sets these after construction for any flow_pair model.
         self._fps: float = 25.0
@@ -228,6 +236,12 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._heading_left_count: int = 0
         self._boundary_crush_count: int = 0
 
+        # New metrics accumulators: variance, entropy, counterflow
+        self._variance_records: list[float] = []
+        self._entropy_records: list[float] = []
+        self._counterflow_people_count: int = 0
+        self._frame_counterflow_counts: list[tuple[int, float, int, float]] = []
+
     # ──────────────────────────────────────────────────────────────────────
     # Lifecycle
     # ──────────────────────────────────────────────────────────────────────
@@ -264,16 +278,21 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._heading_left_count = 0
         self._boundary_crush_count = 0
 
+        self._variance_records.clear()
+        self._entropy_records.clear()
+        self._counterflow_people_count = 0
+        self._frame_counterflow_counts.clear()
+
         os.makedirs(self._output_dir, exist_ok=True)
         self._model = "ready"
 
         logger.info(
             "CrowdMotionMonitor loaded.  device=%s  stationary_speed_px=%.2f  "
-            "stationary_frames=%d  crush_div_thr=%.3f  confirm=%d  "
-            "detect_every=%d  tile_grid=%s  conf_thr=%.2f",
+            "stationary_frames=%d  crush_div_thr=%.3f  counterflow_ang_thr=%.1f  "
+            "overlay_mode=%s  heatmap_metric=%s  confirm=%d  detect_every=%d",
             self.device, self.stationary_speed_px, self.stationary_frames,
-            self.crush_divergence_threshold, self.confirm_frames, self.detect_every,
-            self.detect_tile_grid, self.detect_conf_threshold,
+            self.crush_divergence_threshold, self.counterflow_angle_threshold_deg,
+            self.overlay_mode, self.heatmap_metric, self.confirm_frames, self.detect_every,
         )
 
     # ──────────────────────────────────────────────────────────────────────
@@ -317,6 +336,19 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 conf_threshold=self.detect_conf_threshold,
             )
 
+        # 2. Compute spatial grids (divergence and velocity variance) using shared cell iterator.
+        div_grid = self._compute_divergence_grid(flow)  # shape (n_rows, n_cols)
+        var_grid = self._compute_variance_grid(flow)    # shape (n_rows, n_cols)
+
+        # 3. Person detection (runs every detect_every frames; boxes carried on others).
+        if frame_index % self.detect_every == 0:
+            self._last_boxes = self._detector.detect(
+                curr_frame,
+                classes=(COCO_PERSON,),
+                tile_grid=self.detect_tile_grid,
+                conf_threshold=self.detect_conf_threshold,
+            )
+
         boxes = self._last_boxes
 
         # 4. IoU tracking → one track ID per box, in order.
@@ -330,11 +362,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
             self._moving_streak.pop(stale, None)
             self._stationary_tracks.discard(stale)
 
-        # 6. Annotated frame (copy so we don't mutate the source).
-        annotated = curr_frame.copy()
+        # 6. Pass 1: Extract kinematic telemetry for all tracked people.
         h_frame, w_frame = curr_frame.shape[:2]
-
-        detections: list[Detection] = []
+        track_records = []
 
         for box, tid in zip(boxes, track_ids):
             x1, y1, x2, y2 = [int(v) for v in box]
@@ -343,9 +373,6 @@ class CrowdMotionMonitor(BaseModelWrapper):
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            # 6a. Sample flow inside torso-hip region (vertical 40%–70%, horizontal 20% inset).
-            #     Biasing the sample region to the lower torso/hips eliminates contamination from
-            #     head turns, shoulder sway, and arm gestures that move independently of body translation.
             bw, bh = x2 - x1, y2 - y1
             ix = max(1, int(bw * 0.20))
             sx1, sx2 = x1 + ix, x2 - ix
@@ -353,7 +380,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
             sy1 = y1 + int(bh * 0.40)
             sy2 = y1 + int(bh * 0.70)
 
-            # Fallback for very small boxes (< 10 px tall)
+            # Fallback for small boxes
             if sy2 <= sy1:
                 iy = max(1, int(bh * 0.20))
                 sy1 = y1 + iy
@@ -368,18 +395,15 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
             speed = math.hypot(vx, vy)
 
-            # 6b. Per-track speed deque & stationary status with hysteresis.
             if tid not in self._speed_history:
                 self._speed_history[tid] = deque(maxlen=self.stationary_frames)
             self._speed_history[tid].append(speed)
 
-            # Check if sustained low speed qualifies track as personally stationary
             is_sub_threshold = sustained(
                 [s < self.stationary_speed_px for s in self._speed_history[tid]],
                 self.stationary_frames,
             )
 
-            # Track consecutive moving frames to prevent instant flicker on single noisy frame
             if speed >= self.stationary_speed_px:
                 self._moving_streak[tid] = self._moving_streak.get(tid, 0) + 1
             else:
@@ -388,20 +412,13 @@ class CrowdMotionMonitor(BaseModelWrapper):
             if is_sub_threshold:
                 self._stationary_tracks.add(tid)
             elif tid in self._stationary_tracks:
-                # Only unfreeze / resume once speed rises back above threshold for consecutive frames
                 if self._moving_streak.get(tid, 0) >= self.resume_moving_frames:
                     self._stationary_tracks.discard(tid)
 
             personally_stationary = (tid in self._stationary_tracks)
 
-            # 6c. Smoothed heading via EMA on the unit vector.
-            # Meaningful noise floor: sub-pixel optical flow below this is treated as jitter
-            # and does NOT produce directional heading updates.
             noise_floor = max(self.motion_noise_floor_ratio * self.stationary_speed_px, 0.3)
 
-            # Only update heading vector when the person is actively translating and
-            # flow magnitude exceeds the noise floor. When personally stationary or jittering,
-            # heading updates are completely frozen to prevent rotating with head/limb noise.
             if not personally_stationary and speed >= noise_floor:
                 ux, uy = vx / speed, vy / speed
                 alpha = 0.35  # EMA smoothing factor
@@ -416,92 +433,146 @@ class CrowdMotionMonitor(BaseModelWrapper):
                         nx, ny = nx / norm, ny / norm
                     self._heading_vec[tid] = (nx, ny)
             elif tid not in self._heading_vec:
-                # Default neutral heading if track initialises with zero motion
                 self._heading_vec[tid] = (1.0, 0.0)
 
             hx, hy = self._heading_vec[tid]
-            # Screen y-axis is inverted: -vy gives the correct compass heading.
             heading_deg = math.degrees(math.atan2(-hy, hx))
 
-            # 6d. Local crush-risk: look up divergence grid at box centre.
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
-            gr, gc = cy // _DIV_CELL_PX, cx // _DIV_CELL_PX
-            nr, nc = div_grid.shape
-            gr = min(gr, nr - 1)
-            gc = min(gc, nc - 1)
-            local_divergence = float(div_grid[gr, gc])
-            local_crush_risk = local_divergence < self.crush_divergence_threshold
-
-            # 6e. Track-age confirmation gate.
             track_age = self._tracker.age(tid)
-            confirmed  = track_age >= self.confirm_frames
+            confirmed = track_age >= self.confirm_frames
 
-            # 6f. Crowd-flow direction classification.
-            # A person is "rightward" when the x-component of their smoothed
-            # heading is positive, i.e. |heading_deg| < 90°.
-            moving_right = abs(heading_deg) < _HEADING_RIGHT_THRESH
-            crowd_direction = "right" if moving_right else "left"
+            track_records.append({
+                "tid": tid,
+                "box": [x1, y1, x2, y2],
+                "cx": cx,
+                "cy": cy,
+                "bw": bw,
+                "bh": bh,
+                "speed": speed,
+                "heading_vec": (hx, hy),
+                "heading_deg": heading_deg,
+                "personally_stationary": personally_stationary,
+                "confirmed": confirmed,
+            })
 
-            # 6g. Draw visual marker (rotated triangle for moving, neutral static circle for stationary).
-            # Priority (high → low): pending → stopped (red) → crush zone
-            # (orange) → moving right (teal-green) → moving left (blue).
-            # Stopped always outranks direction and crush colours so a halted
-            # person in a converging zone is unambiguously red.
-            if not confirmed:
-                colour = _COLOUR_PENDING
-            elif personally_stationary:
-                colour = _COLOUR_STOPPED    # red   — this person has stopped
-            elif local_crush_risk:
-                colour = _COLOUR_CRUSH      # orange — crowd converging here
-            elif moving_right:
-                colour = _COLOUR_RIGHT      # teal-green — moving right
+        # 7. Pass 2: Calculate local directional entropy and counterflow opposition scores.
+        detections: list[Detection] = []
+        radius_px = 3 * _DIV_CELL_PX  # ~96 px local neighborhood
+
+        # Prepare grid-level entropy and counterflow maps for optional heatmap rendering
+        n_rows, n_cols = div_grid.shape
+        entropy_grid = np.zeros((n_rows, n_cols), dtype=np.float32)
+        counterflow_grid = np.zeros((n_rows, n_cols), dtype=np.float32)
+
+        for tr in track_records:
+            cx, cy = tr["cx"], tr["cy"]
+            tid = tr["tid"]
+            hx, hy = tr["heading_vec"]
+            hdeg = tr["heading_deg"]
+            p_stat = tr["personally_stationary"]
+
+            # Grid cell indices
+            gr = min(cy // _DIV_CELL_PX, n_rows - 1)
+            gc = min(cx // _DIV_CELL_PX, n_cols - 1)
+
+            local_div = float(div_grid[gr, gc])
+            local_crush_risk = local_div < self.crush_divergence_threshold
+            local_var = float(var_grid[gr, gc])
+
+            # Find neighboring moving tracks
+            neighbors = [
+                other for other in track_records
+                if other["confirmed"] and (not other["personally_stationary"])
+                and math.hypot(other["cx"] - cx, other["cy"] - cy) <= radius_px
+            ]
+
+            # 7a. Directional entropy: Shannon entropy over 8-bin heading histogram
+            if len(neighbors) >= 2:
+                bins = [0] * 8
+                for nb in neighbors:
+                    b_idx = int((nb["heading_deg"] + 180.0) / 45.0) % 8
+                    bins[b_idx] += 1
+                n_total = len(neighbors)
+                ent = 0.0
+                for cnt in bins:
+                    if cnt > 0:
+                        p = cnt / n_total
+                        ent -= p * math.log2(p)
+                local_entropy = round(ent, 3)
             else:
-                colour = _COLOUR_LEFT       # electric blue — moving left
+                local_entropy = 0.0
 
-            self._draw_marker(annotated, cx, cy, bw, bh, heading_deg, colour, is_stationary=personally_stationary)
+            entropy_grid[gr, gc] = max(entropy_grid[gr, gc], local_entropy)
 
-            # Optionally label with track ID (small, above box).
-            cv2.putText(
-                annotated, str(tid),
-                (x1, max(y1 - 4, 12)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, _COLOUR_TEXT, 1, cv2.LINE_AA,
-            )
+            # 7b. Counterflow opposition score
+            other_moving = [nb for nb in neighbors if nb["tid"] != tid]
+            if (not p_stat) and len(other_moving) >= 1:
+                mean_ux = sum(nb["heading_vec"][0] for nb in other_moving) / len(other_moving)
+                mean_uy = sum(nb["heading_vec"][1] for nb in other_moving) / len(other_moving)
+                mean_norm = math.hypot(mean_ux, mean_uy)
 
-            # 6h. Emit Detection for confirmed tracks only and record summary statistics.
-            if not confirmed:
+                if mean_norm > 0.15:
+                    dom_ux, dom_uy = mean_ux / mean_norm, mean_uy / mean_norm
+                    dp = max(-1.0, min(1.0, hx * dom_ux + hy * dom_uy))
+                    ang_diff = math.degrees(math.acos(dp))
+                    cf_angle_deg = round(ang_diff, 1)
+                    is_cf = bool(cf_angle_deg >= self.counterflow_angle_threshold_deg)
+                else:
+                    cf_angle_deg = 0.0
+                    is_cf = False
+            else:
+                cf_angle_deg = 0.0
+                is_cf = False
+
+            if is_cf:
+                counterflow_grid[gr, gc] = 1.0
+
+            tr["local_divergence"] = local_div
+            tr["local_crush_risk"] = local_crush_risk
+            tr["local_velocity_variance"] = local_var
+            tr["local_directional_entropy"] = local_entropy
+            tr["is_counterflow"] = is_cf
+            tr["counterflow_angle_deg"] = cf_angle_deg
+
+            # Direction classification
+            moving_right = abs(hdeg) < _HEADING_RIGHT_THRESH
+            crowd_direction = "right" if moving_right else "left"
+            tr["crowd_direction"] = crowd_direction
+
+            if not tr["confirmed"]:
                 continue
 
-            if personally_stationary:
+            if p_stat:
                 label = "person_stopped"
-                direction_label = "stationary"
             elif local_crush_risk:
                 label = "person_crush_zone"
-                direction_label = crowd_direction
             elif moving_right:
                 label = "person_moving_right"
-                direction_label = "right"
             else:
                 label = "person_moving_left"
-                direction_label = "left"
 
-            # Confidence: normalised speed capped at 1, or 0 for stopped.
-            conf = 0.0 if personally_stationary else min(1.0, speed / max(self.stationary_speed_px * 5, 1e-6))
+            conf = 0.0 if p_stat else min(1.0, tr["speed"] / max(self.stationary_speed_px * 5, 1e-6))
             det = Detection(
                 model_name=self.name,
                 label=label,
                 confidence=round(conf, 4),
                 timestamp_sec=timestamp_sec,
                 frame_index=frame_index,
-                bbox=[x1, y1, x2, y2],
+                bbox=tr["box"],
                 extra={
-                    "track_id":              tid,
-                    "speed_px_frame":        round(speed, 4),
-                    "heading_deg":           round(heading_deg, 2),
-                    "crowd_direction":       crowd_direction,
-                    "personally_stationary": personally_stationary,
-                    "local_divergence":      round(local_divergence, 5),
-                    "local_crush_risk":      local_crush_risk,
+                    "track_id":                  tid,
+                    "speed_px_frame":            round(tr["speed"], 4),
+                    "heading_deg":               round(hdeg, 2),
+                    "crowd_direction":           crowd_direction,
+                    "personally_stationary":     p_stat,
+                    "local_divergence":          round(local_div, 5),
+                    "local_crush_risk":          local_crush_risk,
+                    "local_velocity_variance":   round(local_var, 4),
+                    "local_directional_entropy": local_entropy,
+                    "is_counterflow":            is_cf,
+                    "counterflow_angle_deg":     cf_angle_deg,
                 },
             )
             detections.append(det)
@@ -509,27 +580,80 @@ class CrowdMotionMonitor(BaseModelWrapper):
             # Summary stats accumulation
             self._total_detections_count += 1
             self._label_counter[label] += 1
-            if not personally_stationary:
+            if not p_stat:
                 self._track_directions[tid].append(crowd_direction)
-            self._speed_records[label].append(speed)
+            self._speed_records[label].append(tr["speed"])
+            self._variance_records.append(local_var)
+            self._entropy_records.append(local_entropy)
+            if is_cf:
+                self._counterflow_people_count += 1
 
-            if not personally_stationary:
-                if abs(heading_deg) < _HEADING_RIGHT_THRESH:
+            if not p_stat:
+                if abs(hdeg) < _HEADING_RIGHT_THRESH:
                     self._heading_right_count += 1
                 else:
                     self._heading_left_count += 1
 
-                bin_idx = int((heading_deg + 180.0) / 20.0) % 18
+                bin_idx = int((hdeg + 180.0) / 20.0) % 18
                 self._heading_hist_bins[bin_idx] += 1
 
-                if local_crush_risk and abs(abs(heading_deg) - _HEADING_RIGHT_THRESH) < 15.0:
+                if local_crush_risk and abs(abs(hdeg) - _HEADING_RIGHT_THRESH) < 15.0:
                     self._boundary_crush_count += 1
 
-        # Track per-frame crush count
+        # Track per-frame crush & counterflow counts
         frame_crush_count = sum(1 for d in detections if d.label == "person_crush_zone")
         self._frame_crush_counts.append((frame_index, timestamp_sec, frame_crush_count))
 
-        # 7. Stream annotated frame.
+        frame_cf_count = sum(1 for d in detections if d.extra.get("is_counterflow"))
+        frame_cf_rate = frame_cf_count / max(1, len(detections))
+        self._frame_counterflow_counts.append((frame_index, timestamp_sec, frame_cf_count, frame_cf_rate))
+
+        # 8. Video overlay rendering
+        if self.overlay_mode in ("heatmap", "combined"):
+            if self.heatmap_metric == "variance":
+                target_grid = var_grid
+            elif self.heatmap_metric == "entropy":
+                target_grid = entropy_grid
+            elif self.heatmap_metric == "counterflow":
+                target_grid = counterflow_grid
+            else:
+                target_grid = div_grid
+            annotated = self._render_heatmap_overlay(curr_frame, target_grid, self.heatmap_metric)
+        else:
+            annotated = curr_frame.copy()
+
+        # Draw markers on top if in markers or combined mode
+        if self.overlay_mode in ("markers", "combined"):
+            for tr in track_records:
+                cx, cy = tr["cx"], tr["cy"]
+                bw, bh = tr["bw"], tr["bh"]
+                hdeg = tr["heading_deg"]
+                p_stat = tr["personally_stationary"]
+                confirmed = tr["confirmed"]
+                local_crush_risk = tr["local_crush_risk"]
+                moving_right = tr["crowd_direction"] == "right"
+                tid = tr["tid"]
+                x1, y1 = tr["box"][0], tr["box"][1]
+
+                if not confirmed:
+                    colour = _COLOUR_PENDING
+                elif p_stat:
+                    colour = _COLOUR_STOPPED
+                elif local_crush_risk:
+                    colour = _COLOUR_CRUSH
+                elif moving_right:
+                    colour = _COLOUR_RIGHT
+                else:
+                    colour = _COLOUR_LEFT
+
+                self._draw_marker(annotated, cx, cy, bw, bh, hdeg, colour, is_stationary=p_stat)
+                cv2.putText(
+                    annotated, str(tid),
+                    (x1, max(y1 - 4, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, _COLOUR_TEXT, 1, cv2.LINE_AA,
+                )
+
+        # 9. Stream annotated frame.
         self.latest_annotated_frame = annotated
         self._write_frame(annotated)
 
@@ -566,7 +690,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         # Crush events: distinct periods where 3+ people are simultaneously crush-flagged
         crush_events = 0
-        in_event = False
+        in_crush_event = False
         peak_crush_count = 0
         peak_crush_timestamp_sec = 0.0
 
@@ -575,11 +699,33 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 peak_crush_count = c_cnt
                 peak_crush_timestamp_sec = t_sec
             if c_cnt >= 3:
-                if not in_event:
+                if not in_crush_event:
                     crush_events += 1
-                    in_event = True
+                    in_crush_event = True
             else:
-                in_event = False
+                in_crush_event = False
+
+        # Counterflow events: distinct periods where 2+ people or score > threshold are counterflow
+        counterflow_events = 0
+        in_cf_event = False
+        peak_cf_count = 0
+        peak_cf_timestamp_sec = 0.0
+
+        for f_idx, t_sec, cf_cnt, cf_rate in self._frame_counterflow_counts:
+            if cf_cnt > peak_cf_count:
+                peak_cf_count = cf_cnt
+                peak_cf_timestamp_sec = t_sec
+            if cf_cnt >= 2 or cf_rate >= self.counterflow_score_threshold:
+                if not in_cf_event:
+                    counterflow_events += 1
+                    in_cf_event = True
+            else:
+                in_cf_event = False
+
+        pct_cf_people = round((self._counterflow_people_count / total * 100), 1) if total > 0 else 0.0
+        avg_var = round(float(np.mean(self._variance_records)), 3) if self._variance_records else 0.0
+        peak_var = round(float(np.max(self._variance_records)), 3) if self._variance_records else 0.0
+        avg_entropy = round(float(np.mean(self._entropy_records)), 3) if self._entropy_records else 0.0
 
         # Per-track stability
         flip_data = []
@@ -648,6 +794,13 @@ class CrowdMotionMonitor(BaseModelWrapper):
             "peak_crush_timestamp_sec": round(peak_crush_timestamp_sec, 2),
             "peak_crush_people_count": peak_crush_count,
             "boundary_crush_pct": round((self._boundary_crush_count / n_crush * 100), 1) if n_crush > 0 else 0.0,
+            "counterflow_events_count": counterflow_events,
+            "pct_counterflow_people": pct_cf_people,
+            "peak_counterflow_timestamp_sec": round(peak_cf_timestamp_sec, 2),
+            "peak_counterflow_people_count": peak_cf_count,
+            "avg_velocity_variance": avg_var,
+            "peak_velocity_variance": peak_var,
+            "avg_directional_entropy": avg_entropy,
             "label_counts": label_counts,
             "avg_speed_px_frame": overall_avg_speed,
             "speed_by_label": speed_stats,
@@ -661,9 +814,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         logger.info(
             "CrowdMotionMonitor summary: total=%d, moving=%.1f%% (R:%.1f%%, L:%.1f%%), "
-            "crush=%.1f%% (%d events, peak @ %.2fs), stationary=%.1f%%, tracks=%d (%.1f%% stable)",
+            "crush=%.1f%% (%d events), counterflow=%.1f%% (%d events), entropy=%.3f, var=%.3f",
             total, pct_moving, pct_moving_right, pct_moving_left, pct_crush_risk,
-            crush_events, peak_crush_timestamp_sec, pct_stationary, total_tracks, pct_stable_tracks,
+            crush_events, pct_cf_people, counterflow_events, avg_entropy, avg_var,
         )
         return self.summary
 
@@ -671,32 +824,115 @@ class CrowdMotionMonitor(BaseModelWrapper):
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────
 
-    def _compute_divergence_grid(self, flow: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _iterate_grid_cells(h: int, w: int, cell_fn) -> np.ndarray:
         """
-        Per-cell p10 divergence of the optical flow field.
-
-        div = ∂fx/∂x + ∂fy/∂y  (discrete: np.gradient)
-
-        Taking the 10th percentile inside each grid cell captures localised
-        compression without the mean-cancellation that plagues crowd centres
-        (inward vectors on one side cancel outward vectors on the other).
+        Shared per-cell grid iterator.
+        Constructs grid of shape (n_rows, n_cols) based on _DIV_CELL_PX.
+        Invokes cell_fn(row_slice, col_slice, r, c) to populate each cell.
         """
-        fx = flow[..., 0]
-        fy = flow[..., 1]
-        div = np.gradient(fx, axis=1) + np.gradient(fy, axis=0)
-
-        h, w = div.shape
         g = _DIV_CELL_PX
         n_rows = max(1, h // g)
         n_cols = max(1, w // g)
         grid = np.zeros((n_rows, n_cols), dtype=np.float32)
 
         for r in range(n_rows):
+            r_slice = slice(r * g, r * g + g)
             for c in range(n_cols):
-                cell = div[r * g: r * g + g, c * g: c * g + g]
-                grid[r, c] = float(np.percentile(cell, 10))
+                c_slice = slice(c * g, c * g + g)
+                grid[r, c] = cell_fn(r_slice, c_slice, r, c)
 
         return grid
+
+    def _compute_divergence_grid(self, flow: np.ndarray) -> np.ndarray:
+        """
+        Per-cell p10 divergence of the optical flow field.
+        div = ∂fx/∂x + ∂fy/∂y (discrete np.gradient).
+        """
+        fx = flow[..., 0]
+        fy = flow[..., 1]
+        div = np.gradient(fx, axis=1) + np.gradient(fy, axis=0)
+        h, w = div.shape
+
+        def _div_cell(r_s, c_s, r, c):
+            cell = div[r_s, c_s]
+            return float(np.percentile(cell, 10)) if cell.size > 0 else 0.0
+
+        return self._iterate_grid_cells(h, w, _div_cell)
+
+    def _compute_variance_grid(self, flow: np.ndarray) -> np.ndarray:
+        """
+        Per-cell circular/directional variance of optical flow vectors.
+        Returns value in [0.0, 1.0], where 0 is perfectly aligned flow
+        and 1.0 is maximum directional variance/disorder.
+        """
+        fx = flow[..., 0]
+        fy = flow[..., 1]
+        h, w = fx.shape
+
+        def _var_cell(r_s, c_s, r, c):
+            cell_fx = fx[r_s, c_s]
+            cell_fy = fy[r_s, c_s]
+            mags = np.hypot(cell_fx, cell_fy)
+            moving = mags > 0.3
+            if np.count_nonzero(moving) < 4:
+                return 0.0
+            ux = cell_fx[moving] / mags[moving]
+            uy = cell_fy[moving] / mags[moving]
+            mean_ux = np.mean(ux)
+            mean_uy = np.mean(uy)
+            R = float(np.hypot(mean_ux, mean_uy))
+            return float(np.clip(1.0 - R, 0.0, 1.0))
+
+        return self._iterate_grid_cells(h, w, _var_cell)
+
+    def _render_heatmap_overlay(
+        self,
+        frame: np.ndarray,
+        grid: np.ndarray,
+        metric: str,
+        alpha_val: float = 0.55,
+    ) -> np.ndarray:
+        """
+        Render semi-transparent per-cell heatmap overlay onto frame.
+        """
+        h, w = frame.shape[:2]
+        if metric == "divergence":
+            scale = max(abs(self.crush_divergence_threshold * 2), 1e-3)
+            t_cell = np.clip(grid / scale, -1.0, 1.0)
+            w_neg = np.clip(-t_cell, 0.0, 1.0)[..., None]
+            w_pos = np.clip(t_cell, 0.0, 1.0)[..., None]
+            c_zero = np.array([240, 240, 240], dtype=np.float32)
+            c_neg  = np.array([0, 0, 220], dtype=np.float32)     # BGR Red
+            c_pos  = np.array([220, 50, 0], dtype=np.float32)    # BGR Blue
+            heat_cell = c_zero + (c_neg - c_zero) * w_neg + (c_pos - c_zero) * w_pos
+            alpha_cell = (np.abs(t_cell) * alpha_val).astype(np.float32)
+        elif metric == "variance":
+            norm = np.clip(grid, 0.0, 1.0)
+            heat_8u = (norm * 255).astype(np.uint8)
+            heat_cell = cv2.applyColorMap(heat_8u, cv2.COLORMAP_JET)
+            alpha_cell = (norm * alpha_val).astype(np.float32)
+        elif metric == "entropy":
+            norm = np.clip(grid / 3.0, 0.0, 1.0)
+            heat_8u = (norm * 255).astype(np.uint8)
+            heat_cell = cv2.applyColorMap(heat_8u, cv2.COLORMAP_MAGMA)
+            alpha_cell = (norm * alpha_val).astype(np.float32)
+        elif metric == "counterflow":
+            norm = np.clip(grid, 0.0, 1.0)
+            heat_8u = (norm * 255).astype(np.uint8)
+            heat_cell = cv2.applyColorMap(heat_8u, cv2.COLORMAP_HOT)
+            alpha_cell = (norm * alpha_val).astype(np.float32)
+        else:
+            return frame.copy()
+
+        heat = cv2.resize(heat_cell, (w, h), interpolation=cv2.INTER_NEAREST).astype(np.uint8)
+        alpha = cv2.resize(alpha_cell, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        # Alpha blend using OpenCV primitives
+        alpha3 = cv2.merge([alpha, alpha, alpha])
+        diff = cv2.subtract(heat, frame, dtype=cv2.CV_32F)
+        cv2.multiply(diff, alpha3, dst=diff)
+        return cv2.add(frame, diff, dtype=cv2.CV_8U)
 
     @staticmethod
     def _draw_marker(
@@ -717,29 +953,24 @@ class CrowdMotionMonitor(BaseModelWrapper):
         r = max(4, int(_TRI_SCALE * min(bw, bh)))
 
         if is_stationary:
-            # Solid neutral non-directional static marker (filled circle with contrasting inner dot)
             cv2.circle(frame, (cx, cy), r, colour, -1, cv2.LINE_AA)
             cv2.circle(frame, (cx, cy), max(2, r // 2), (255, 255, 255), 1, cv2.LINE_AA)
             return
 
-        # Equilateral triangle pointing in heading_deg
         h_half = int(r * math.tan(math.radians(30)))
 
-        # Local coords (pointing right)
         pts_local = np.array([
             [ r,       0],
             [-r // 2,  h_half],
             [-r // 2, -h_half],
         ], dtype=np.float64)
 
-        # Rotation matrix for heading_deg.
-        # heading_deg = atan2(-vy, vx) so +x (right) = 0°.
         rad = math.radians(heading_deg)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
         R = np.array([[cos_a, -sin_a],
                       [sin_a,  cos_a]])
 
-        pts_rot = (R @ pts_local.T).T  # shape (3, 2)
+        pts_rot = (R @ pts_local.T).T
         pts_abs = pts_rot + np.array([cx, cy])
         pts_int = pts_abs.astype(np.int32).reshape(1, 3, 2)
 

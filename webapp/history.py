@@ -59,12 +59,16 @@ def compute_detections_summary(rows: list) -> dict:
     label_counts = Counter()
     track_dirs = defaultdict(list)
     frame_crush = defaultdict(int)
+    frame_cf = defaultdict(int)
     frame_timestamps = {}
     speed_records = defaultdict(list)
+    var_records = []
+    entropy_records = []
     heading_bins = [0] * 18
     heading_r = 0
     heading_l = 0
     boundary_crush = 0
+    counterflow_count = 0
 
     for r in rows:
         lbl = getattr(r, "label", None) or (r.get("label") if isinstance(r, dict) else "")
@@ -80,11 +84,23 @@ def compute_detections_summary(rows: list) -> dict:
         spd = extra.get("speed_px_frame")
         hdeg = extra.get("heading_deg")
         is_crush = (lbl == "person_crush_zone" or extra.get("local_crush_risk"))
+        is_cf = extra.get("is_counterflow", False)
+        l_var = extra.get("local_velocity_variance")
+        l_ent = extra.get("local_directional_entropy")
 
         if tid is not None and cdir is not None:
             track_dirs[tid].append(cdir)
         if spd is not None:
             speed_records[lbl].append(spd)
+        if l_var is not None:
+            var_records.append(l_var)
+        if l_ent is not None:
+            entropy_records.append(l_ent)
+        if is_cf:
+            counterflow_count += 1
+            if f_idx is not None:
+                frame_cf[f_idx] += 1
+
         if hdeg is not None:
             if abs(hdeg) < 90.0:
                 heading_r += 1
@@ -97,8 +113,8 @@ def compute_detections_summary(rows: list) -> dict:
 
         if is_crush and f_idx is not None:
             frame_crush[f_idx] += 1
-            if t_sec is not None:
-                frame_timestamps[f_idx] = t_sec
+        if f_idx is not None and t_sec is not None:
+            frame_timestamps[f_idx] = t_sec
 
     n_stopped = label_counts.get("person_stopped", 0)
     n_crush = label_counts.get("person_crush_zone", 0)
@@ -133,6 +149,29 @@ def compute_detections_summary(rows: list) -> dict:
                 in_event = True
         else:
             in_event = False
+
+    # Counterflow events
+    cf_events = 0
+    in_cf_event = False
+    peak_cf_count = 0
+    peak_cf_t = 0.0
+
+    for f_idx in sorted(frame_cf.keys()):
+        cnt = frame_cf[f_idx]
+        if cnt > peak_cf_count:
+            peak_cf_count = cnt
+            peak_cf_t = frame_timestamps.get(f_idx, 0.0)
+        if cnt >= 2:
+            if not in_cf_event:
+                cf_events += 1
+                in_cf_event = True
+        else:
+            in_cf_event = False
+
+    pct_cf = round((counterflow_count / total * 100), 1) if total else 0.0
+    avg_var = round(sum(var_records) / len(var_records), 3) if var_records else 0.0
+    peak_var = round(max(var_records), 3) if var_records else 0.0
+    avg_entropy = round(sum(entropy_records) / len(entropy_records), 3) if entropy_records else 0.0
 
     flip_data = []
     for tid, dirs in track_dirs.items():
@@ -199,6 +238,13 @@ def compute_detections_summary(rows: list) -> dict:
         "peak_crush_timestamp_sec": round(peak_crush_t, 2),
         "peak_crush_people_count": peak_crush_count,
         "boundary_crush_pct": round((boundary_crush / n_crush * 100), 1) if n_crush > 0 else 0.0,
+        "counterflow_events_count": cf_events,
+        "pct_counterflow_people": pct_cf,
+        "peak_counterflow_timestamp_sec": round(peak_cf_t, 2),
+        "peak_counterflow_people_count": peak_cf_count,
+        "avg_velocity_variance": avg_var,
+        "peak_velocity_variance": peak_var,
+        "avg_directional_entropy": avg_entropy,
         "label_counts": dict(label_counts),
         "avg_speed_px_frame": overall_avg_spd,
         "speed_by_label": speed_stats,
