@@ -35,8 +35,9 @@ Integration contract
 --------------------
 - consumption_type = "flow_pair"  (runner calls predict((prev, curr), …))
 - Emits one Detection per confirmed tracked person per frame.
-  label      : "person_moving_right" | "person_moving_left" |
-               "person_stopped" | "person_crush_zone"
+  label      : "person_moving" | "person_moving_stream_a" |
+               "person_moving_stream_b" | "person_stopped" |
+               "person_crush_zone"
   confidence : normalised speed (moving) or 0.0 (stopped)
   bbox       : [x1, y1, x2, y2] person box in source pixels
   extra      : {track_id, speed_px_frame, heading_deg, crowd_direction,
@@ -82,9 +83,10 @@ _COLOUR_STOPPED  = (  0,  40, 220)   # red           — personally stationary
 _COLOUR_CRUSH    = (  0, 140, 255)   # orange        — collision / crush zone
 _COLOUR_TEXT     = (255, 255, 255)   # white         — track-id label
 
-# Direction boundary: |heading_deg| < this → rightward, else → leftward.
-# heading_deg = atan2(-vy, vx), so 0° = right on screen, ±180° = left.
-_HEADING_RIGHT_THRESH = 90.0
+# Stream modes are inferred from image-space heading vectors (+y is downward).
+_STREAM_MIN_TRACKS = 4
+_STREAM_MIN_CLUSTER_SHARE = 0.15
+_STREAM_MIN_SEPARATION_DEG = 60.0
 
 # Triangle geometry: half-height and half-base of an equilateral triangle
 # expressed as a fraction of the shorter side of the person's bounding box.
@@ -234,9 +236,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._frame_crush_counts: list[tuple[int, float, int]] = []
         self._speed_records: dict[str, list[float]] = defaultdict(list)
         self._heading_hist_bins: list[int] = [0] * 18
-        self._heading_right_count: int = 0
-        self._heading_left_count: int = 0
-        self._boundary_crush_count: int = 0
+        self._stream_counts: Counter = Counter()
 
         # New metrics accumulators: variance, entropy, counterflow
         self._variance_records: list[float] = []
@@ -276,9 +276,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._frame_crush_counts.clear()
         self._speed_records.clear()
         self._heading_hist_bins = [0] * 18
-        self._heading_right_count = 0
-        self._heading_left_count = 0
-        self._boundary_crush_count = 0
+        self._stream_counts.clear()
 
         self._variance_records.clear()
         self._entropy_records.clear()
@@ -438,7 +436,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 self._heading_vec[tid] = (1.0, 0.0)
 
             hx, hy = self._heading_vec[tid]
-            heading_deg = math.degrees(math.atan2(-hy, hx))
+            # Flow and image coordinates both use +y downward.  _draw_marker()
+            # rotates in those same image coordinates, so do not invert y here.
+            heading_deg = math.degrees(math.atan2(hy, hx))
 
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
@@ -457,7 +457,15 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 "heading_deg": heading_deg,
                 "personally_stationary": personally_stationary,
                 "confirmed": confirmed,
+                "is_moving": (not personally_stationary) and speed >= noise_floor,
             })
+
+        # Infer one or two direction streams from the current confirmed moving
+        # tracks.  The helper uses deterministic initialization and orders the
+        # resulting centres, so an equivalent frame produces the same labels.
+        stream_centres = self._infer_direction_streams(track_records)
+        for tr in track_records:
+            tr["crowd_direction"] = self._nearest_stream(tr["heading_vec"], stream_centres)
 
         # 7. Pass 2: Calculate local directional entropy and counterflow opposition scores.
         detections: list[Detection] = []
@@ -539,10 +547,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
             tr["is_counterflow"] = is_cf
             tr["counterflow_angle_deg"] = cf_angle_deg
 
-            # Direction classification
-            moving_right = abs(hdeg) < _HEADING_RIGHT_THRESH
-            crowd_direction = "right" if moving_right else "left"
-            tr["crowd_direction"] = crowd_direction
+            crowd_direction = tr["crowd_direction"]
 
             if not tr["confirmed"]:
                 continue
@@ -551,10 +556,12 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 label = "person_stopped"
             elif local_crush_risk:
                 label = "person_crush_zone"
-            elif moving_right:
-                label = "person_moving_right"
+            elif crowd_direction == "stream_a":
+                label = "person_moving_stream_a"
+            elif crowd_direction == "stream_b":
+                label = "person_moving_stream_b"
             else:
-                label = "person_moving_left"
+                label = "person_moving"
 
             conf = 0.0 if p_stat else min(1.0, tr["speed"] / max(self.stationary_speed_px * 5, 1e-6))
             det = Detection(
@@ -583,7 +590,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
             # Summary stats accumulation
             self._total_detections_count += 1
             self._label_counter[label] += 1
-            if not p_stat:
+            if tr["is_moving"]:
                 self._track_directions[tid].append(crowd_direction)
             self._speed_records[label].append(tr["speed"])
             self._variance_records.append(local_var)
@@ -591,17 +598,10 @@ class CrowdMotionMonitor(BaseModelWrapper):
             if is_cf:
                 self._counterflow_people_count += 1
 
-            if not p_stat:
-                if abs(hdeg) < _HEADING_RIGHT_THRESH:
-                    self._heading_right_count += 1
-                else:
-                    self._heading_left_count += 1
-
+            if tr["is_moving"]:
+                self._stream_counts[crowd_direction] += 1
                 bin_idx = int((hdeg + 180.0) / 20.0) % 18
                 self._heading_hist_bins[bin_idx] += 1
-
-                if local_crush_risk and abs(abs(hdeg) - _HEADING_RIGHT_THRESH) < 15.0:
-                    self._boundary_crush_count += 1
 
         # Track per-frame crush & counterflow counts
         frame_crush_count = sum(1 for d in detections if d.label == "person_crush_zone")
@@ -634,7 +634,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 p_stat = tr["personally_stationary"]
                 confirmed = tr["confirmed"]
                 local_crush_risk = tr["local_crush_risk"]
-                moving_right = tr["crowd_direction"] == "right"
+                crowd_direction = tr["crowd_direction"]
                 tid = tr["tid"]
                 x1, y1 = tr["box"][0], tr["box"][1]
 
@@ -644,7 +644,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
                     colour = _COLOUR_STOPPED
                 elif local_crush_risk:
                     colour = _COLOUR_CRUSH
-                elif moving_right:
+                elif crowd_direction != "stream_b":
                     colour = _COLOUR_RIGHT
                 else:
                     colour = _COLOUR_LEFT
@@ -677,19 +677,17 @@ class CrowdMotionMonitor(BaseModelWrapper):
         label_counts = dict(self._label_counter)
         n_stopped = label_counts.get("person_stopped", 0)
         n_crush = label_counts.get("person_crush_zone", 0)
-        n_moving_right = label_counts.get("person_moving_right", 0)
-        n_moving_left = label_counts.get("person_moving_left", 0)
-        n_moving = n_moving_right + n_moving_left + n_crush
+        n_moving_single = label_counts.get("person_moving", 0)
+        n_moving_stream_a = label_counts.get("person_moving_stream_a", 0)
+        n_moving_stream_b = label_counts.get("person_moving_stream_b", 0)
+        n_moving = n_moving_single + n_moving_stream_a + n_moving_stream_b + n_crush
 
         pct_moving = round((n_moving / total * 100), 1) if total > 0 else 0.0
         pct_stationary = round((n_stopped / total * 100), 1) if total > 0 else 0.0
         pct_crush_risk = round((n_crush / total * 100), 1) if total > 0 else 0.0
-        pct_moving_right = round((n_moving_right / total * 100), 1) if total > 0 else 0.0
-        pct_moving_left = round((n_moving_left / total * 100), 1) if total > 0 else 0.0
-
-        h_total = self._heading_right_count + self._heading_left_count
-        pct_heading_right = round((self._heading_right_count / h_total * 100), 1) if h_total > 0 else 0.0
-        pct_heading_left = round((self._heading_left_count / h_total * 100), 1) if h_total > 0 else 0.0
+        pct_moving_single = round((n_moving_single / total * 100), 1) if total > 0 else 0.0
+        pct_moving_stream_a = round((n_moving_stream_a / total * 100), 1) if total > 0 else 0.0
+        pct_moving_stream_b = round((n_moving_stream_b / total * 100), 1) if total > 0 else 0.0
 
         # Crush events: distinct periods where 3+ people are simultaneously crush-flagged
         crush_events = 0
@@ -734,27 +732,30 @@ class CrowdMotionMonitor(BaseModelWrapper):
         flip_data = []
         for tid, dirs in self._track_directions.items():
             flips = sum(1 for i in range(1, len(dirs)) if dirs[i] != dirs[i - 1])
-            r_cnt = dirs.count("right")
-            l_cnt = dirs.count("left")
-            flip_data.append((tid, flips, r_cnt, l_cnt))
+            a_cnt = dirs.count("stream_a")
+            b_cnt = dirs.count("stream_b")
+            single_cnt = dirs.count("moving")
+            flip_data.append((tid, flips, a_cnt, b_cnt, single_cnt))
 
         total_tracks = len(flip_data)
-        stable_tracks = sum(1 for _, f, _, _ in flip_data if f == 0)
+        stable_tracks = sum(1 for _, f, _, _, _ in flip_data if f == 0)
         unstable_tracks = [x for x in flip_data if x[1] > 5]
-        avg_flips = (sum(f for _, f, _, _ in flip_data) / total_tracks) if total_tracks else 0.0
+        avg_flips = (sum(f for _, f, _, _, _ in flip_data) / total_tracks) if total_tracks else 0.0
         pct_stable_tracks = round((stable_tracks / total_tracks * 100), 1) if total_tracks else 0.0
 
         worst_tracks = sorted(flip_data, key=lambda x: -x[1])[:10]
         suspicious_list = []
-        for tid, f, r, l in worst_tracks:
+        for tid, f, a, b, single in worst_tracks:
             if f > 5:
-                dom = "right" if r >= l else "left"
-                pct_dom = round(max(r, l) / (r + l) * 100) if (r + l) else 0
+                counts = {"moving": single, "stream_a": a, "stream_b": b}
+                dom = max(counts, key=counts.get)
+                pct_dom = round(counts[dom] / sum(counts.values()) * 100) if sum(counts.values()) else 0
                 suspicious_list.append({
                     "track_id": tid,
                     "flips": f,
-                    "right_count": r,
-                    "left_count": l,
+                    "stream_a_count": a,
+                    "stream_b_count": b,
+                    "moving_count": single,
                     "dominant_direction": dom,
                     "dominant_pct": pct_dom,
                 })
@@ -776,11 +777,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
         for i, cnt in enumerate(self._heading_hist_bins):
             lo = -180.0 + i * bin_size
             hi = lo + bin_size
-            direction = "left" if (lo < -_HEADING_RIGHT_THRESH or hi > _HEADING_RIGHT_THRESH) else "right"
             heading_bins.append({
                 "range": [round(lo, 1), round(hi, 1)],
                 "count": cnt,
-                "direction": direction,
             })
 
         self.summary = {
@@ -789,14 +788,13 @@ class CrowdMotionMonitor(BaseModelWrapper):
             "pct_moving": pct_moving,
             "pct_stationary": pct_stationary,
             "pct_crush_risk": pct_crush_risk,
-            "pct_moving_right": pct_moving_right,
-            "pct_moving_left": pct_moving_left,
-            "pct_heading_right": pct_heading_right,
-            "pct_heading_left": pct_heading_left,
+            "pct_moving_single_stream": pct_moving_single,
+            "pct_moving_stream_a": pct_moving_stream_a,
+            "pct_moving_stream_b": pct_moving_stream_b,
+            "stream_counts": dict(self._stream_counts),
             "crush_event_count": crush_events,
             "peak_crush_timestamp_sec": round(peak_crush_timestamp_sec, 2),
             "peak_crush_people_count": peak_crush_count,
-            "boundary_crush_pct": round((self._boundary_crush_count / n_crush * 100), 1) if n_crush > 0 else 0.0,
             "counterflow_events_count": counterflow_events,
             "pct_counterflow_people": pct_cf_people,
             "peak_counterflow_timestamp_sec": round(peak_cf_timestamp_sec, 2),
@@ -816,9 +814,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
         }
 
         logger.info(
-            "CrowdMotionMonitor summary: total=%d, moving=%.1f%% (R:%.1f%%, L:%.1f%%), "
+            "CrowdMotionMonitor summary: total=%d, moving=%.1f%% (single:%.1f%%, A:%.1f%%, B:%.1f%%), "
             "crush=%.1f%% (%d events), counterflow=%.1f%% (%d events), entropy=%.3f, var=%.3f",
-            total, pct_moving, pct_moving_right, pct_moving_left, pct_crush_risk,
+            total, pct_moving, pct_moving_single, pct_moving_stream_a, pct_moving_stream_b, pct_crush_risk,
             crush_events, pct_cf_people, counterflow_events, avg_entropy, avg_var,
         )
         return self.summary
@@ -826,6 +824,60 @@ class CrowdMotionMonitor(BaseModelWrapper):
     # ──────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _infer_direction_streams(track_records: list[dict]) -> list[tuple[float, float]]:
+        """Return two deterministic heading modes, or no modes for one-way flow."""
+        vectors = [tr["heading_vec"] for tr in track_records
+                   if tr["confirmed"] and tr["is_moving"]]
+        if len(vectors) < _STREAM_MIN_TRACKS:
+            return []
+
+        points = np.asarray(vectors, dtype=np.float64)
+        # Select the most separated pair as deterministic k-means seeds.
+        dots = np.clip(points @ points.T, -1.0, 1.0)
+        distances = 1.0 - dots
+        seed_a, seed_b = np.unravel_index(np.argmax(distances), distances.shape)
+        if seed_a == seed_b:
+            return []
+        centres = np.array([points[seed_a], points[seed_b]], dtype=np.float64)
+
+        assignments = np.zeros(len(points), dtype=np.int8)
+        for _ in range(8):
+            next_assignments = np.argmax(points @ centres.T, axis=1)
+            if np.array_equal(assignments, next_assignments):
+                break
+            assignments = next_assignments
+            updated = []
+            for cluster in (0, 1):
+                members = points[assignments == cluster]
+                if len(members) == 0:
+                    return []
+                centre = members.mean(axis=0)
+                norm = np.linalg.norm(centre)
+                if norm <= 1e-6:
+                    return []
+                updated.append(centre / norm)
+            centres = np.asarray(updated)
+
+        counts = np.bincount(assignments, minlength=2)
+        separation = math.degrees(math.acos(float(np.clip(centres[0] @ centres[1], -1.0, 1.0))))
+        if (min(counts) / len(points) < _STREAM_MIN_CLUSTER_SHARE
+                or separation < _STREAM_MIN_SEPARATION_DEG):
+            return []
+
+        # Fixed angular ordering gives stream labels stable meanings per frame.
+        ordered = sorted((tuple(c) for c in centres), key=lambda c: math.atan2(c[1], c[0]))
+        return ordered
+
+    @staticmethod
+    def _nearest_stream(
+        heading: tuple[float, float], centres: list[tuple[float, float]],
+    ) -> str:
+        if len(centres) != 2:
+            return "moving"
+        dots = [heading[0] * centre[0] + heading[1] * centre[1] for centre in centres]
+        return "stream_a" if dots[0] >= dots[1] else "stream_b"
 
     @staticmethod
     def _iterate_grid_cells(h: int, w: int, cell_fn) -> np.ndarray:
