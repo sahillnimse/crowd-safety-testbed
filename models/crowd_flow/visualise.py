@@ -543,12 +543,85 @@ class FlowVisualiser:
         if flags.get("gmc_applied"):
             parts.append(f"[GMC:{flags.get('gmc_method','?')}]")
 
-        text = "  ".join(parts)
+                text = "  ".join(parts)
         cv2.rectangle(out, (0, 0), (frame.shape[1], 18), (30, 30, 30), -1)
         cv2.putText(
             out, text, (4, 13),
             cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 230, 200), 1, cv2.LINE_AA,
         )
+        return out
+
+    # BGR, matched to the Overview KPI card's hex accents in app.js so an
+    # operator sees the same color for the same metric on the dashboard and
+    # on the video.
+    _HUD_COLORS = {
+        "Divergence":    (60, 146, 251),   # #fb923c
+        "Counter-Flow":  (11, 158, 245),   # #f59e0b
+        "Turbulence":    (238, 211, 34),   # #22d3ee
+        "Entropy":       (250, 127, 167),  # #a78bfa
+        "Oscillation":   (182, 114, 244),  # #f472b6
+    }
+
+    def metrics_hud(
+        self,
+        frame: np.ndarray,
+        mf: "MetricsFrame",
+        specific_flow_latest: Optional[dict] = None,
+    ) -> np.ndarray:
+        """
+        Compact live-numbers panel, top-right corner: the 5 headline crowd
+        metrics plus the current specific-flow rate if configured.  Worst
+        zone wins for the 4 zone-scored metrics, matching the "safety-first,
+        show the number that would trigger action" convention used
+        elsewhere (peak values in the KPI card, not averages).
+        """
+        out = frame.copy()
+        zones = list(mf.zones.values())
+
+        def _max(attr: str) -> float:
+            return max((getattr(z, attr) for z in zones), default=0.0)
+
+        min_coherence = min((z.mean_coherence for z in zones), default=1.0)
+        rows = [
+            ("Divergence",   _max("mean_divergence")),
+            ("Counter-Flow", _max("counterflow_score")),
+            ("Turbulence",   _max("turbulence_index")),
+            ("Entropy",      1.0 - min_coherence),
+            ("Oscillation",  _max("oscillation_symmetry_score")),
+        ]
+
+        panel_w = 168
+        row_h = 15
+        top_pad = 22
+        panel_h = top_pad + row_h * len(rows) + 6
+        if specific_flow_latest:
+            panel_h += row_h
+
+        x0 = frame.shape[1] - panel_w - 8
+        y0 = 8
+        overlay = out.copy()
+        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (18, 12, 10), -1)
+        out = cv2.addWeighted(overlay, 0.72, out, 0.28, 0)
+
+        cv2.putText(out, "LIVE METRICS", (x0 + 8, y0 + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (170, 175, 185), 1, cv2.LINE_AA)
+
+        y = y0 + top_pad
+        for label, value in rows:
+            color = self._HUD_COLORS[label]
+            cv2.circle(out, (x0 + 12, y - 4), 3, color, -1, cv2.LINE_AA)
+            cv2.putText(out, label, (x0 + 20, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, (210, 213, 220), 1, cv2.LINE_AA)
+            cv2.putText(out, f"{value:.2f}", (x0 + panel_w - 42, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
+            y += row_h
+
+        if specific_flow_latest:
+            rate = max((d.get("rate", 0.0) for d in specific_flow_latest.values()), default=0.0)
+            units = next((d.get("units") for d in specific_flow_latest.values()), "")
+            cv2.putText(out, f"-> {rate:.2f} {units}", (x0 + 8, y + 3),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, (238, 211, 34), 1, cv2.LINE_AA)
+
         return out
 
     # ------------------------------------------------------------------

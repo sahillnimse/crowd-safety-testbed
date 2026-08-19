@@ -504,6 +504,9 @@ class DenseFlowAnalyser(BaseModelWrapper):
                 frame_index=frame_index,
                 timestamp_sec=timestamp_sec,
             )
+            annotated = self._vis.metrics_hud(
+                annotated, mf, specific_flow_latest=self._specific_flow_latest,
+            )
             self.latest_annotated_frame = annotated
             self._source_hw = (curr_frame.shape[0], curr_frame.shape[1])
             self._write_frame(annotated)
