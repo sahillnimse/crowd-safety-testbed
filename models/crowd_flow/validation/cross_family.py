@@ -431,7 +431,7 @@ class CrossFamilyValidator:
                     if annotate_path:
                         annotated = self._draw_comparison(frame, frame_pairs)
                         if writer is None:
-                            from models.crowd_flow.dense_flow_analyser import (
+                            from models.crowd_flow.video_writer import (
                                 _AnnotatedVideoWriter)
                             h, w = annotated.shape[:2]
                             # Played back at frames_written / source_seconds,

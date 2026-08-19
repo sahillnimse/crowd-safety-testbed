@@ -47,9 +47,9 @@ Integration contract
   construction (flow_pair protocol).
 
 This file must NOT import from people_overlay.py, dense_flow_analyser.py's
-model logic, zones.py, or crowd_metrics.py.  The only crowd_flow import is
-_AnnotatedVideoWriter from dense_flow_analyser (shared encoder utility, not
-model logic).
+model logic, zones.py, or crowd_metrics.py. Its only shared crowd_flow
+dependency is _AnnotatedVideoWriter from video_writer.py (an encoder utility,
+not model logic).
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ from models._tracker import IoUTracker, sustained
 
 # Re-use the project's streaming H.264 writer (encoder utility, not model
 # logic — same rationale as importing get_detector from _detectors.py).
-from models.crowd_flow.dense_flow_analyser import _AnnotatedVideoWriter
+from models.crowd_flow.video_writer import _AnnotatedVideoWriter
 
 logger = logging.getLogger(__name__)
 

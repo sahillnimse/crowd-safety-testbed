@@ -77,93 +77,11 @@ from models.crowd_flow.detector_masks import DetectorMaskLayer
 from models.crowd_flow.crowd_metrics import CrowdMetricsEngine, MetricsFrame
 from models.crowd_flow.zones         import Zone, AlertEngine, AlertSeverity
 from models.crowd_flow.visualise     import FlowVisualiser
+from models.crowd_flow.video_writer  import _AnnotatedVideoWriter
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-
-class _AnnotatedVideoWriter:
-    """
-    Streaming H.264 writer for annotated frames.
-
-    Frames are piped to ffmpeg as they are produced.  Falls back to MJPG in an
-    AVI container when ffmpeg is not on PATH — playable in VLC, but not in a
-    browser, so the fallback is logged rather than silent.
-    """
-
-    def __init__(self, out_path: str, fps: float, w: int, h: int) -> None:
-        from pipeline.ffmpeg import find_ffmpeg
-        import subprocess
-
-        self._path = out_path
-        self._proc = None
-        self._writer = None
-        self._failed = False
-
-        fps = max(float(fps), 1.0)
-        ffmpeg = find_ffmpeg()
-        if ffmpeg:
-            cmd = [
-                ffmpeg, "-y", "-loglevel", "error",
-                "-f", "rawvideo", "-vcodec", "rawvideo",
-                "-s", f"{w}x{h}", "-pix_fmt", "bgr24",
-                "-r", f"{fps:.4f}",
-                "-i", "-", "-an",
-                "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-                "-preset", "veryfast", "-crf", "23",
-                "-movflags", "+faststart",
-                out_path,
-            ]
-            self._proc = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            )
-        else:
-            logger.warning(
-                "ffmpeg not found; falling back to MJPG/AVI for the annotated "
-                "dense-flow video.  The file will play in VLC but not in a "
-                "browser."
-            )
-            self._path = out_path.replace(".mp4", ".avi")
-            self._writer = cv2.VideoWriter(
-                self._path, cv2.VideoWriter_fourcc(*"MJPG"), fps, (w, h),
-            )
-
-    def write(self, frame: np.ndarray) -> bool:
-        if self._failed:
-            return False
-        if self._proc is not None:
-            try:
-                self._proc.stdin.write(frame.tobytes())
-                return True
-            except (BrokenPipeError, OSError) as exc:
-                logger.error("Annotated video encoder stopped accepting data: %s", exc)
-                self._failed = True
-                return False
-        if self._writer is not None:
-            self._writer.write(frame)
-            return True
-        return False
-
-    def close(self) -> Optional[str]:
-        """Finish the file.  Returns its path, or None if encoding failed."""
-        if self._proc is not None:
-            try:
-                self._proc.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
-            _, err = self._proc.communicate()
-            if self._proc.returncode != 0:
-                logger.error(
-                    "ffmpeg failed (exit %d): %s",
-                    self._proc.returncode, err.decode("utf-8", "replace").strip(),
-                )
-                return None
-        if self._writer is not None:
-            self._writer.release()
-        return None if self._failed else self._path
 
 
 class DenseFlowAnalyser(BaseModelWrapper):
