@@ -29,10 +29,12 @@ def generate_report_html(
     pct_moving = summary.get("pct_moving", 0.0)
     pct_stationary = summary.get("pct_stationary", 0.0)
     pct_crush = summary.get("pct_crush_risk", 0.0)
-    pct_right = summary.get("pct_moving_right", 0.0)
-    pct_left = summary.get("pct_moving_left", 0.0)
-    pct_h_right = summary.get("pct_heading_right", pct_right)
-    pct_h_left = summary.get("pct_heading_left", pct_left)
+    pct_single = summary.get("pct_moving_single_stream", 0.0)
+    pct_stream_a = summary.get("pct_moving_stream_a", 0.0)
+    pct_stream_b = summary.get("pct_moving_stream_b", 0.0)
+    has_streams = bool(pct_stream_a or pct_stream_b)
+    primary_stream_pct = pct_stream_a if has_streams else pct_single
+    secondary_stream_pct = pct_stream_b if has_streams else 0.0
     crush_events = summary.get("crush_event_count", 0)
     peak_crush_t = summary.get("peak_crush_timestamp_sec", 0.0)
     peak_crush_count = summary.get("peak_crush_people_count", 0)
@@ -405,9 +407,9 @@ def generate_report_html(
   <!-- KPI CARDS -->
   <div class="kpi-grid">
     <div class="kpi-card left">
-      <div class="kpi-label">Dominant Direction</div>
-      <div class="kpi-val">{pct_left:.1f}% <span style="font-size: 16px; color: var(--left-color);">← Left</span></div>
-      <div class="kpi-sub">vs {pct_right:.1f}% moving rightward</div>
+      <div class="kpi-label">Direction Streams</div>
+      <div class="kpi-val">{primary_stream_pct:.1f}% <span style="font-size: 16px; color: var(--left-color);">{'Stream A' if has_streams else 'Moving'}</span></div>
+      <div class="kpi-sub">{'vs ' + format(secondary_stream_pct, '.1f') + '% Stream B' if has_streams else 'single detected movement stream'}</div>
     </div>
     <div class="kpi-card crush">
       <div class="kpi-label">Crush Risk Detections</div>
@@ -449,15 +451,15 @@ def generate_report_html(
     </div>
     <div class="dist-bar-wrap">
       <div class="dist-bar">
-        <div class="dist-seg seg-left" style="width: {pct_left}%;" title="Leftward: {pct_left:.1f}%"></div>
-        <div class="dist-seg seg-right" style="width: {pct_right}%;" title="Rightward: {pct_right:.1f}%"></div>
+        <div class="dist-seg seg-left" style="width: {primary_stream_pct}%;" title="{'Stream A' if has_streams else 'Moving'}: {primary_stream_pct:.1f}%"></div>
+        {f'<div class="dist-seg seg-right" style="width: {secondary_stream_pct}%;" title="Stream B: {secondary_stream_pct:.1f}%"></div>' if has_streams else ''}
         <div class="dist-seg seg-crush" style="width: {pct_crush}%;" title="Crush Risk: {pct_crush:.1f}%"></div>
         <div class="dist-seg seg-stopped" style="width: {pct_stationary}%;" title="Stationary: {pct_stationary:.1f}%"></div>
       </div>
     </div>
     <div class="legend-grid">
-      <div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Moving Left</strong>: {pct_left:.1f}% ({label_counts.get('person_moving_left', 0):,})</div>
-      <div class="legend-item"><div class="legend-dot seg-right"></div> <strong>Moving Right</strong>: {pct_right:.1f}% ({label_counts.get('person_moving_right', 0):,})</div>
+      <div class="legend-item"><div class="legend-dot seg-left"></div> <strong>{'Stream A' if has_streams else 'Moving'}</strong>: {primary_stream_pct:.1f}% ({label_counts.get('person_moving_stream_a' if has_streams else 'person_moving', 0):,})</div>
+      {f'<div class="legend-item"><div class="legend-dot seg-right"></div> <strong>Stream B</strong>: {secondary_stream_pct:.1f}% ({label_counts.get("person_moving_stream_b", 0):,})</div>' if has_streams else ''}
       <div class="legend-item"><div class="legend-dot seg-crush"></div> <strong>Collision / Crush Zone</strong>: {pct_crush:.1f}% ({label_counts.get('person_crush_zone', 0):,})</div>
       <div class="legend-item"><div class="legend-dot seg-stopped"></div> <strong>Stationary / Stopped</strong>: {pct_stationary:.1f}% ({label_counts.get('person_stopped', 0):,})</div>
     </div>

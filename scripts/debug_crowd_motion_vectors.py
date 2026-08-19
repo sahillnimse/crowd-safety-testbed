@@ -63,7 +63,9 @@ def main() -> None:
     parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO)
     parser.add_argument("--detections", type=Path, default=DEFAULT_DETECTIONS)
     parser.add_argument("--track-id", type=int, action="append", required=True)
-    parser.add_argument("--max-samples", type=int, default=3)
+    parser.add_argument("--start-frame", type=int, default=None)
+    parser.add_argument("--end-frame", type=int, default=None)
+    parser.add_argument("--max-samples", type=int, default=None)
     args = parser.parse_args()
 
     detections = json.loads(args.detections.read_text(encoding="utf-8"))
@@ -83,6 +85,10 @@ def main() -> None:
                 frame_gap = current["frame_index"] - previous["frame_index"]
                 if frame_gap <= 0:
                     continue
+                if args.start_frame is not None and current["frame_index"] < args.start_frame:
+                    continue
+                if args.end_frame is not None and current["frame_index"] > args.end_frame:
+                    continue
                 prev_frame = _frame(cap, previous["frame_index"])
                 curr_frame = _frame(cap, current["frame_index"])
                 vx, vy = _sample_flow(prev_frame, curr_frame, current["bbox"])
@@ -97,7 +103,7 @@ def main() -> None:
                     f"{old_deg:7.1f}  {corrected_deg:7.1f}"
                 )
                 printed += 1
-                if printed >= args.max_samples:
+                if args.max_samples is not None and printed >= args.max_samples:
                     break
     finally:
         cap.release()

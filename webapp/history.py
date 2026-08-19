@@ -37,8 +37,9 @@ def compute_detections_summary(rows: list) -> dict:
             "pct_moving": 0.0,
             "pct_stationary": 0.0,
             "pct_crush_risk": 0.0,
-            "pct_moving_right": 0.0,
-            "pct_moving_left": 0.0,
+            "pct_moving_single_stream": 0.0,
+            "pct_moving_stream_a": 0.0,
+            "pct_moving_stream_b": 0.0,
             "pct_heading_right": 0.0,
             "pct_heading_left": 0.0,
             "crush_event_count": 0,
@@ -118,15 +119,19 @@ def compute_detections_summary(rows: list) -> dict:
 
     n_stopped = label_counts.get("person_stopped", 0)
     n_crush = label_counts.get("person_crush_zone", 0)
-    n_moving_right = label_counts.get("person_moving_right", 0)
-    n_moving_left = label_counts.get("person_moving_left", 0)
-    n_moving = n_moving_right + n_moving_left + n_crush if (n_moving_right or n_moving_left or n_crush) else (total - n_stopped)
+    n_moving_single = label_counts.get("person_moving", 0)
+    n_moving_stream_a = label_counts.get("person_moving_stream_a", 0)
+    n_moving_stream_b = label_counts.get("person_moving_stream_b", 0)
+    n_moving = (n_moving_single + n_moving_stream_a + n_moving_stream_b + n_crush
+                if (n_moving_single or n_moving_stream_a or n_moving_stream_b or n_crush)
+                else (total - n_stopped))
 
     pct_moving = round((n_moving / total * 100), 1) if total else 0.0
     pct_stationary = round((n_stopped / total * 100), 1) if total else 0.0
     pct_crush_risk = round((n_crush / total * 100), 1) if total else 0.0
-    pct_moving_right = round((n_moving_right / total * 100), 1) if total else 0.0
-    pct_moving_left = round((n_moving_left / total * 100), 1) if total else 0.0
+    pct_moving_single = round((n_moving_single / total * 100), 1) if total else 0.0
+    pct_moving_stream_a = round((n_moving_stream_a / total * 100), 1) if total else 0.0
+    pct_moving_stream_b = round((n_moving_stream_b / total * 100), 1) if total else 0.0
 
     h_total = heading_r + heading_l
     pct_heading_right = round((heading_r / h_total * 100), 1) if h_total else 0.0
@@ -230,8 +235,9 @@ def compute_detections_summary(rows: list) -> dict:
         "pct_moving": pct_moving,
         "pct_stationary": pct_stationary,
         "pct_crush_risk": pct_crush_risk,
-        "pct_moving_right": pct_moving_right,
-        "pct_moving_left": pct_moving_left,
+        "pct_moving_single_stream": pct_moving_single,
+        "pct_moving_stream_a": pct_moving_stream_a,
+        "pct_moving_stream_b": pct_moving_stream_b,
         "pct_heading_right": pct_heading_right,
         "pct_heading_left": pct_heading_left,
         "crush_event_count": crush_events,

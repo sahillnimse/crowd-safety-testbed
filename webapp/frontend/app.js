@@ -353,22 +353,22 @@ function historyOutputCard(group) {
         ? '<span class="pill ready">Kinetics Zero-Shot</span>' : '');
 
     let motionBar = '';
-    if (sum && (sum.pct_moving_left != null || sum.pct_moving_right != null || sum.pct_crush_risk != null)) {
-      const pLeft = sum.pct_moving_left || 0;
-      const pRight = sum.pct_moving_right || 0;
+    if (sum && (sum.pct_moving_single_stream != null || sum.pct_moving_stream_a != null || sum.pct_crush_risk != null)) {
+      const pSingle = sum.pct_moving_single_stream || 0;
+      const pStreamA = sum.pct_moving_stream_a || 0;
+      const pStreamB = sum.pct_moving_stream_b || 0;
+      const hasStreams = pStreamA > 0 || pStreamB > 0;
       const pCrush = sum.pct_crush_risk || 0;
       const pStop = sum.pct_stationary || 0;
       motionBar = `
         <div class="card-dist-bar-wrap">
           <div class="card-dist-bar">
-            <div class="card-dist-seg seg-left" style="width: ${pLeft}%;" title="Left: ${pLeft}%"></div>
-            <div class="card-dist-seg seg-right" style="width: ${pRight}%;" title="Right: ${pRight}%"></div>
+            ${hasStreams ? `<div class="card-dist-seg seg-left" style="width: ${pStreamA}%;" title="Stream A: ${pStreamA}%"></div><div class="card-dist-seg seg-right" style="width: ${pStreamB}%;" title="Stream B: ${pStreamB}%"></div>` : `<div class="card-dist-seg seg-left" style="width: ${pSingle}%;" title="Moving: ${pSingle}%"></div>`}
             <div class="card-dist-seg seg-crush" style="width: ${pCrush}%;" title="Crush: ${pCrush}%"></div>
             <div class="card-dist-seg seg-stopped" style="width: ${pStop}%;" title="Stopped: ${pStop}%"></div>
           </div>
           <div class="card-dist-labels">
-            <span class="c-lbl left">← ${pLeft.toFixed(0)}% L</span>
-            <span class="c-lbl right">→ ${pRight.toFixed(0)}% R</span>
+            ${hasStreams ? `<span class="c-lbl left">${pStreamA.toFixed(0)}% A</span><span class="c-lbl right">${pStreamB.toFixed(0)}% B</span>` : `<span class="c-lbl left">${pSingle.toFixed(0)}% Moving</span>`}
             <span class="c-lbl crush">⚠️ ${pCrush.toFixed(0)}% Crush</span>
             <span class="c-lbl stop">⏹ ${pStop.toFixed(0)}% Stop</span>
           </div>
@@ -704,9 +704,11 @@ function renderModalTab(tabName) {
     const maxConf = d.rows && d.rows.length ? Math.max(...d.rows.map(r => r.confidence || 0)) : 0;
 
     let analyticsHtml = '';
-    if (sum && (sum.pct_moving != null || sum.pct_crush_risk != null || sum.pct_moving_left != null)) {
-      const pLeft = sum.pct_moving_left || 0;
-      const pRight = sum.pct_moving_right || 0;
+    if (sum && (sum.pct_moving != null || sum.pct_crush_risk != null || sum.pct_moving_single_stream != null)) {
+      const pSingle = sum.pct_moving_single_stream || 0;
+      const pStreamA = sum.pct_moving_stream_a || 0;
+      const pStreamB = sum.pct_moving_stream_b || 0;
+      const hasStreams = pStreamA > 0 || pStreamB > 0;
       const pCrush = sum.pct_crush_risk || 0;
       const pStop = sum.pct_stationary || 0;
       const pMoving = sum.pct_moving || (100 - pStop);
@@ -730,9 +732,9 @@ function renderModalTab(tabName) {
 
           <div class="overview-kpis">
             <div class="overview-kpi-item">
-              <div class="overview-kpi-lbl">Direction Split</div>
-              <div class="overview-kpi-val" style="color: #38bdf8;">← ${pLeft.toFixed(1)}% <span style="font-size: 13px; color: var(--muted); font-weight: normal;">vs ${pRight.toFixed(1)}% →</span></div>
-              <div class="overview-kpi-sub">Left: ${sum.label_counts ? (sum.label_counts.person_moving_left || 0).toLocaleString() : 0} · Right: ${sum.label_counts ? (sum.label_counts.person_moving_right || 0).toLocaleString() : 0}</div>
+              <div class="overview-kpi-lbl">Direction Streams</div>
+              <div class="overview-kpi-val" style="color: #38bdf8;">${hasStreams ? `A ${pStreamA.toFixed(1)}% <span style="font-size: 13px; color: var(--muted); font-weight: normal;">/ B ${pStreamB.toFixed(1)}%</span>` : `${pSingle.toFixed(1)}%`}</div>
+              <div class="overview-kpi-sub">${hasStreams ? `Stream A: ${(sum.label_counts?.person_moving_stream_a || 0).toLocaleString()} · Stream B: ${(sum.label_counts?.person_moving_stream_b || 0).toLocaleString()}` : `Single moving stream: ${(sum.label_counts?.person_moving || 0).toLocaleString()}`}</div>
             </div>
             <div class="overview-kpi-item">
               <div class="overview-kpi-lbl">Crush Risk Level</div>
@@ -764,15 +766,13 @@ function renderModalTab(tabName) {
           <div class="u-label">Crowd Velocity & Flow Share</div>
           <div class="card-dist-bar-wrap" style="margin-top: 6px;">
             <div class="card-dist-bar" style="height: 16px; border-radius: 6px;">
-              <div class="card-dist-seg seg-left" style="width: ${pLeft}%;" title="Leftward: ${pLeft}%"></div>
-              <div class="card-dist-seg seg-right" style="width: ${pRight}%;" title="Rightward: ${pRight}%"></div>
+              ${hasStreams ? `<div class="card-dist-seg seg-left" style="width: ${pStreamA}%;" title="Stream A: ${pStreamA}%"></div><div class="card-dist-seg seg-right" style="width: ${pStreamB}%;" title="Stream B: ${pStreamB}%"></div>` : `<div class="card-dist-seg seg-left" style="width: ${pSingle}%;" title="Moving: ${pSingle}%"></div>`}
               <div class="card-dist-seg seg-crush" style="width: ${pCrush}%;" title="Crush Risk: ${pCrush}%"></div>
               <div class="card-dist-seg seg-stopped" style="width: ${pStop}%;" title="Stopped: ${pStop}%"></div>
             </div>
           </div>
           <div class="legend-grid" style="margin-top: 10px;">
-            <div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Moving Left</strong>: ${pLeft.toFixed(1)}%</div>
-            <div class="legend-item"><div class="legend-dot seg-right"></div> <strong>Moving Right</strong>: ${pRight.toFixed(1)}%</div>
+            ${hasStreams ? `<div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Stream A</strong>: ${pStreamA.toFixed(1)}%</div><div class="legend-item"><div class="legend-dot seg-right"></div> <strong>Stream B</strong>: ${pStreamB.toFixed(1)}%</div>` : `<div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Moving</strong>: ${pSingle.toFixed(1)}%</div>`}
             <div class="legend-item"><div class="legend-dot seg-crush"></div> <strong>Crush Zone</strong>: ${pCrush.toFixed(1)}%</div>
             <div class="legend-item"><div class="legend-dot seg-stopped"></div> <strong>Stationary</strong>: ${pStop.toFixed(1)}%</div>
           </div>
@@ -990,21 +990,24 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
 
   if (isMotionMonitor) {
     const total = d.rows.length;
-    const movingLeftCount = d.rows.filter(r => r.label === 'person_moving_left' || (r.extra && r.extra.crowd_direction === 'left')).length;
-    const movingRightCount = d.rows.filter(r => r.label === 'person_moving_right' || (r.extra && r.extra.crowd_direction === 'right')).length;
+    const movingCount = d.rows.filter(r => r.label === 'person_moving' || (r.extra && r.extra.crowd_direction === 'moving')).length;
+    const streamACount = d.rows.filter(r => r.label === 'person_moving_stream_a' || (r.extra && r.extra.crowd_direction === 'stream_a')).length;
+    const streamBCount = d.rows.filter(r => r.label === 'person_moving_stream_b' || (r.extra && r.extra.crowd_direction === 'stream_b')).length;
+    const hasStreams = streamACount > 0 || streamBCount > 0;
     const crushCount = d.rows.filter(r => r.label === 'person_crush_zone' || (r.extra && r.extra.local_crush_risk)).length;
     const stoppedCount = d.rows.filter(r => r.label === 'person_stopped' || (r.extra && r.extra.personally_stationary)).length;
     const cfCount = d.rows.filter(r => r.extra && r.extra.is_counterflow).length;
 
-    const pLeft = total ? (movingLeftCount / total * 100).toFixed(1) : '0.0';
-    const pRight = total ? (movingRightCount / total * 100).toFixed(1) : '0.0';
+    const pMoving = total ? (movingCount / total * 100).toFixed(1) : '0.0';
+    const pStreamA = total ? (streamACount / total * 100).toFixed(1) : '0.0';
+    const pStreamB = total ? (streamBCount / total * 100).toFixed(1) : '0.0';
     const pCrush = total ? (crushCount / total * 100).toFixed(1) : '0.0';
     const pStopped = total ? (stoppedCount / total * 100).toFixed(1) : '0.0';
     const pCf = total ? (cfCount / total * 100).toFixed(1) : '0.0';
 
     const rows = d.rows.map(r => {
       const extra = r.extra || {};
-      const cdir = extra.crowd_direction || (r.label === 'person_moving_right' ? 'right' : 'left');
+      const cdir = extra.crowd_direction || (r.label === 'person_moving_stream_a' ? 'stream_a' : (r.label === 'person_moving_stream_b' ? 'stream_b' : 'moving'));
       const hdeg = extra.heading_deg != null ? extra.heading_deg.toFixed(1) : null;
       const spd = extra.speed_px_frame != null ? extra.speed_px_frame.toFixed(2) : null;
       const isCrush = extra.local_crush_risk || r.label === 'person_crush_zone';
@@ -1018,13 +1021,16 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
         statusBadge = '<span class="badge badge-stopped">⏹ Stopped</span>';
       } else if (isCrush) {
         statusBadge = '<span class="badge badge-crush">⚠️ Crush Zone</span>';
-      } else if (cdir === 'right') {
-        statusBadge = '<span class="badge badge-right">→ Rightward</span>';
+      } else if (cdir === 'stream_a') {
+        statusBadge = '<span class="badge badge-right">Stream A</span>';
+      } else if (cdir === 'stream_b') {
+        statusBadge = '<span class="badge badge-left">Stream B</span>';
       } else {
-        statusBadge = '<span class="badge badge-left">← Leftward</span>';
+        statusBadge = '<span class="badge badge-right">Moving</span>';
       }
 
-      const dirCell = `<span class="badge ${cdir === 'right' ? 'badge-right' : 'badge-left'}">${cdir === 'right' ? '→ Right' : '← Left'}${hdeg ? ` (${hdeg}°)` : ''}</span>`;
+      const dirLabel = cdir === 'stream_a' ? 'Stream A' : (cdir === 'stream_b' ? 'Stream B' : 'Moving');
+      const dirCell = `<span class="badge ${cdir === 'stream_b' ? 'badge-left' : 'badge-right'}">${dirLabel}${hdeg ? ` (${hdeg}°)` : ''}</span>`;
       const spdCell = spd ? `${spd} px/fr` : '—';
       const crushCell = isCrush
         ? `<span class="badge badge-crush">⚠️ Risk${extra.local_divergence != null ? ` (${extra.local_divergence.toFixed(2)})` : ''}</span>`
@@ -1050,16 +1056,7 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
 
     containerEl.innerHTML = `
       <div class="motion-summary-banner">
-        <div class="motion-banner-item">
-          <div class="motion-dot seg-left"></div>
-          <span class="motion-lbl">Moving Left:</span>
-          <span class="motion-val">${pLeft}% (${movingLeftCount.toLocaleString()})</span>
-        </div>
-        <div class="motion-banner-item">
-          <div class="motion-dot seg-right"></div>
-          <span class="motion-lbl">Moving Right:</span>
-          <span class="motion-val">${pRight}% (${movingRightCount.toLocaleString()})</span>
-        </div>
+        ${hasStreams ? `<div class="motion-banner-item"><div class="motion-dot seg-left"></div><span class="motion-lbl">Stream A:</span><span class="motion-val">${pStreamA}% (${streamACount.toLocaleString()})</span></div><div class="motion-banner-item"><div class="motion-dot seg-right"></div><span class="motion-lbl">Stream B:</span><span class="motion-val">${pStreamB}% (${streamBCount.toLocaleString()})</span></div>` : `<div class="motion-banner-item"><div class="motion-dot seg-left"></div><span class="motion-lbl">Moving:</span><span class="motion-val">${pMoving}% (${movingCount.toLocaleString()})</span></div>`}
         <div class="motion-banner-item">
           <div class="motion-dot seg-crush"></div>
           <span class="motion-lbl">Crush Risk:</span>
