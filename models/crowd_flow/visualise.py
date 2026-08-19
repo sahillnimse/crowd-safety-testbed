@@ -543,7 +543,7 @@ class FlowVisualiser:
         if flags.get("gmc_applied"):
             parts.append(f"[GMC:{flags.get('gmc_method','?')}]")
 
-                text = "  ".join(parts)
+        text = "  ".join(parts)
         cv2.rectangle(out, (0, 0), (frame.shape[1], 18), (30, 30, 30), -1)
         cv2.putText(
             out, text, (4, 13),
