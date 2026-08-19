@@ -157,8 +157,7 @@ function renderModels() {
           <div class="name">${esc(m.label)}
             <span class="pill ${m.status}">${m.status}</span></div>
           <div class="blurb">${esc(m.blurb)}</div>
-          ${m.comparable_threshold === false ? `<div class="note fallback">Runs at its own threshold (${
-            m.default_threshold != null ? m.default_threshold.toFixed(2) : 'default'
+          ${m.comparable_threshold === false ? `<div class="note fallback">Runs at its own threshold (${m.default_threshold != null ? m.default_threshold.toFixed(2) : 'default'
           }) — its scores are not on the same scale as the other detectors, so the run-wide threshold does not apply.</div>` : ''}
           ${m.note ? `<div class="note ${m.status}">${esc(m.note)}</div>` : ''}
         </div>`;
@@ -507,8 +506,7 @@ function makeTile(v, video) {
     <figcaption>
       <div class="vname">${esc(v.caption || v.vehicle_class)}</div>
       ${plate}
-      <div class="vmeta">${v.first_seen_sec}s–${v.last_seen_sec}s · ${v.frames_seen} frames${
-        v.plate ? ` · ${Math.round(v.plate_agreement * 100)}% agree` : ''}</div>
+      <div class="vmeta">${v.first_seen_sec}s–${v.last_seen_sec}s · ${v.frames_seen} frames${v.plate ? ` · ${Math.round(v.plate_agreement * 100)}% agree` : ''}</div>
     </figcaption>
   </figure>`;
 }
@@ -516,7 +514,7 @@ function makeTile(v, video) {
 function anprCard(g) {
   const c = g.counts || {};
   const withPlate = g.vehicles.filter((v) => v.plate);
-  const without   = g.vehicles.filter((v) => !v.plate);
+  const without = g.vehicles.filter((v) => !v.plate);
   const ordered = [...withPlate, ...without];
   const total = ordered.length;
   const isExpanded = state.openAnprAll.has(g.video);
@@ -529,10 +527,10 @@ function anprCard(g) {
         ▼ Show all ${total} vehicles (${hiddenCount} more)
        </button>`
     : (isExpanded && total > GALLERY_PREVIEW
-        ? `<button class="gallery-more" data-show-all-anpr="${esc(g.video)}">
+      ? `<button class="gallery-more" data-show-all-anpr="${esc(g.video)}">
             ▲ Show fewer
            </button>`
-        : '');
+      : '');
 
   return `<div class="job">
     <div class="job-head" data-anpr-toggle="${esc(g.video)}">
@@ -722,6 +720,12 @@ function renderModalTab(tabName) {
       const peakCfT = sum.peak_counterflow_timestamp_sec || 0;
       const avgEntropy = sum.avg_directional_entropy != null ? sum.avg_directional_entropy : '—';
       const avgVar = sum.avg_velocity_variance != null ? sum.avg_velocity_variance : '—';
+      const flowCurrent = sum.specific_flow_current != null ? sum.specific_flow_current.toFixed(2) : '—';
+      const flowPeak = sum.specific_flow_peak != null ? sum.specific_flow_peak.toFixed(2) : '—';
+      const flowUnits = sum.specific_flow_units || 'unconfigured';
+      const oscAvg = sum.oscillation_symmetry_avg != null ? sum.oscillation_symmetry_avg.toFixed(2) : '—';
+      const oscPeak = sum.oscillation_symmetry_peak != null ? sum.oscillation_symmetry_peak.toFixed(2) : '—';
+      const oscZones = sum.oscillation_symmetry_zone_count || 0;
 
       analyticsHtml = `
         <div class="overview-analytics-box">
@@ -731,20 +735,15 @@ function renderModalTab(tabName) {
           </div>
 
           <div class="overview-kpis">
-            <div class="overview-kpi-item">
-              <div class="overview-kpi-lbl">Direction Streams</div>
-              <div class="overview-kpi-val" style="color: #38bdf8;">${hasStreams ? `A ${pStreamA.toFixed(1)}% <span style="font-size: 13px; color: var(--muted); font-weight: normal;">/ B ${pStreamB.toFixed(1)}%</span>` : `${pSingle.toFixed(1)}%`}</div>
-              <div class="overview-kpi-sub">${hasStreams ? `Stream A: ${(sum.label_counts?.person_moving_stream_a || 0).toLocaleString()} · Stream B: ${(sum.label_counts?.person_moving_stream_b || 0).toLocaleString()}` : `Single moving stream: ${(sum.label_counts?.person_moving || 0).toLocaleString()}`}</div>
-            </div>
-            <div class="overview-kpi-item">
+            <div class="overview-kpi-item tier-one">
               <div class="overview-kpi-lbl">Crush Risk Level</div>
               <div class="overview-kpi-val" style="color: #fb923c;">${pCrush.toFixed(1)}%</div>
               <div class="overview-kpi-sub">${crushEvents} peak events (max ${peakCrushPeople} people @ ${peakCrushT.toFixed(1)}s)</div>
             </div>
             <div class="overview-kpi-item">
-              <div class="overview-kpi-lbl">Movement Rate</div>
-              <div class="overview-kpi-val" style="color: #34d399;">${pMoving.toFixed(1)}%</div>
-              <div class="overview-kpi-sub">Stationary / Stopped: ${pStop.toFixed(1)}% (${sum.label_counts ? (sum.label_counts.person_stopped || 0).toLocaleString() : 0})</div>
+              <div class="overview-kpi-lbl">Direction Streams</div>
+              <div class="overview-kpi-val" style="color: #38bdf8;">${hasStreams ? `A ${pStreamA.toFixed(1)}% <span style="font-size: 13px; color: var(--muted); font-weight: normal;">/ B ${pStreamB.toFixed(1)}%</span>` : `${pSingle.toFixed(1)}%`}</div>
+              <div class="overview-kpi-sub">${hasStreams ? `Stream A: ${(sum.label_counts?.person_moving_stream_a || 0).toLocaleString()} · Stream B: ${(sum.label_counts?.person_moving_stream_b || 0).toLocaleString()}` : `Single moving stream: ${(sum.label_counts?.person_moving || 0).toLocaleString()}`}</div>
             </div>
             <div class="overview-kpi-item">
               <div class="overview-kpi-lbl">Counter-Flow Friction</div>
@@ -752,11 +751,26 @@ function renderModalTab(tabName) {
               <div class="overview-kpi-sub">${cfEvents} friction events (peak @ ${peakCfT.toFixed(1)}s)</div>
             </div>
             <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Specific Flow</div>
+              <div class="overview-kpi-val" style="color: #22d3ee;">${flowCurrent}</div>
+              <div class="overview-kpi-sub">peak ${flowPeak} ${flowUnits}</div>
+            </div>
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Oscillation Symmetry</div>
+              <div class="overview-kpi-val" style="color: #f472b6;">${oscAvg}</div>
+              <div class="overview-kpi-sub">peak ${oscPeak}; ${oscZones} threshold samples</div>
+            </div>
+            <div class="overview-kpi-item">
+              <div class="overview-kpi-lbl">Movement Rate</div>
+              <div class="overview-kpi-val" style="color: #34d399;">${pMoving.toFixed(1)}%</div>
+              <div class="overview-kpi-sub">Stationary / Stopped: ${pStop.toFixed(1)}% (${sum.label_counts ? (sum.label_counts.person_stopped || 0).toLocaleString() : 0})</div>
+            </div>
+            <div class="overview-kpi-item tier-three">
               <div class="overview-kpi-lbl">Directional Entropy</div>
               <div class="overview-kpi-val" style="color: #a78bfa;">${avgEntropy} <span style="font-size: 13px; color: var(--muted); font-weight: normal;">bits</span></div>
               <div class="overview-kpi-sub">Local vector disorder (0: aligned, 3: chaotic)</div>
             </div>
-            <div class="overview-kpi-item">
+            <div class="overview-kpi-item tier-three">
               <div class="overview-kpi-lbl">Velocity Variance</div>
               <div class="overview-kpi-val" style="color: #06b6d4;">${avgVar}</div>
               <div class="overview-kpi-sub">Track Integrity: ${totalTracks} tracks (${stablePct}% stable)</div>
@@ -1039,8 +1053,8 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
       const dynamicsCell = isCf
         ? `<span class="badge" style="background: rgba(245, 158, 11, 0.2); color: #f59e0b;">⚡ Opposing (${cfAngle}°)</span>`
         : (entropyVal != null && entropyVal > 1.5
-            ? `<span class="badge" style="background: rgba(139, 92, 246, 0.2); color: #c4b5fd;">🌀 Ent: ${entropyVal}</span>`
-            : '<span class="badge badge-ok">✓ Aligned</span>');
+          ? `<span class="badge" style="background: rgba(139, 92, 246, 0.2); color: #c4b5fd;">🌀 Ent: ${entropyVal}</span>`
+          : '<span class="badge badge-ok">✓ Aligned</span>');
 
       return `<tr>
         <td class="u-mono-sm">${r.timestamp_sec.toFixed(2)}s</td>
@@ -1220,11 +1234,11 @@ function routeCard(r) {
       </div>
       <div class="route-summary">${esc(r.summary)}</div>
       ${r.measurements && r.measurements.length
-        ? `<div class="meas-grid">${r.measurements.map(measurementRow).join('')}</div>`
-        : ''}
+      ? `<div class="meas-grid">${r.measurements.map(measurementRow).join('')}</div>`
+      : ''}
       ${r.caveat
-        ? `<div class="route-caveat"><strong>Cannot tell you:</strong> ${esc(r.caveat)}</div>`
-        : ''}
+      ? `<div class="route-caveat"><strong>Cannot tell you:</strong> ${esc(r.caveat)}</div>`
+      : ''}
     </div>`;
 }
 
@@ -1510,7 +1524,7 @@ function wire() {
       let galleries;
       try { ({ galleries } = await api('/api/anpr')); } catch { return; }
       for (const g of galleries) {
-        try { await api(`/api/anpr/${encodeURIComponent(g.video)}`, { method: 'DELETE' }); } catch {}
+        try { await api(`/api/anpr/${encodeURIComponent(g.video)}`, { method: 'DELETE' }); } catch { }
       }
       state.openAnpr.clear();
       refreshAnpr();
