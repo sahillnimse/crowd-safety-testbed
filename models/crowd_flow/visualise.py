@@ -38,6 +38,7 @@ objects carry computed values, not colours.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from typing import Optional
@@ -551,16 +552,32 @@ class FlowVisualiser:
         )
         return out
 
-    # BGR, matched to the Overview KPI card's hex accents in app.js so an
-    # operator sees the same color for the same metric on the dashboard and
-    # on the video.
+    # RGB (not BGR — this panel is composited via PIL), matched to the
+    # Overview KPI card's hex accents in app.js so an operator sees the same
+    # color for the same metric on the dashboard and on the video.
     _HUD_COLORS = {
-        "Divergence":    (60, 146, 251),   # #fb923c
-        "Counter-Flow":  (11, 158, 245),   # #f59e0b
-        "Turbulence":    (238, 211, 34),   # #22d3ee
-        "Entropy":       (250, 127, 167),  # #a78bfa
-        "Oscillation":   (182, 114, 244),  # #f472b6
+        "Divergence":    (251, 146, 60),   # #fb923c
+        "Counter-Flow":  (245, 158, 11),   # #f59e0b
+        "Turbulence":    (34, 211, 238),   # #22d3ee
+        "Entropy":       (167, 127, 250),  # #a78bfa
+        "Oscillation":   (244, 114, 182),  # #f472b6
     }
+
+    _HUD_FONT_PATHS = {
+        "regular": "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "bold":    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    }
+
+    @staticmethod
+    @functools.lru_cache(maxsize=8)
+    def _hud_font(weight: str, size: int):
+        """Cached so the TTF isn't re-parsed from disk every frame."""
+        from PIL import ImageFont
+        path = FlowVisualiser._HUD_FONT_PATHS.get(weight)
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            return ImageFont.load_default()
 
     def metrics_hud(
         self,
@@ -574,8 +591,13 @@ class FlowVisualiser:
         zone wins for the 4 zone-scored metrics, matching the "safety-first,
         show the number that would trigger action" convention used
         elsewhere (peak values in the KPI card, not averages).
+
+        Rendered with PIL (rounded rect, anti-aliased mono type) rather than
+        cv2.putText so it matches the reference HUD mockup instead of
+        looking like a raw debug overlay.
         """
-        out = frame.copy()
+        from PIL import Image, ImageDraw
+
         zones = list(mf.zones.values())
 
         def _max(attr: str) -> float:
@@ -590,38 +612,62 @@ class FlowVisualiser:
             ("Oscillation",  _max("oscillation_symmetry_score")),
         ]
 
-        panel_w = 168
-        row_h = 15
-        top_pad = 22
-        panel_h = top_pad + row_h * len(rows) + 6
+        flow_rate, flow_units = None, ""
         if specific_flow_latest:
-            panel_h += row_h
+            flow_rate = max((d.get("rate", 0.0) for d in specific_flow_latest.values()), default=0.0)
+            flow_units = next((d.get("units") for d in specific_flow_latest.values()), "")
 
-        x0 = frame.shape[1] - panel_w - 8
-        y0 = 8
-        overlay = out.copy()
-        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (18, 12, 10), -1)
-        out = cv2.addWeighted(overlay, 0.72, out, 0.28, 0)
+        panel_w   = 176
+        row_h     = 20
+        top_pad   = 30
+        bottom_pad = 10
+        panel_h   = top_pad + row_h * len(rows) + bottom_pad
+        if flow_rate is not None:
+            panel_h += row_h + 6
 
-        cv2.putText(out, "LIVE METRICS", (x0 + 8, y0 + 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (170, 175, 185), 1, cv2.LINE_AA)
+        x0 = frame.shape[1] - panel_w - 10
+        y0 = 10
 
-        y = y0 + top_pad
+        # Build the panel on its own RGBA canvas so the rounded corners and
+        # translucency anti-alias cleanly, then composite onto the frame.
+        panel = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(panel)
+        draw.rounded_rectangle(
+            [0, 0, panel_w - 1, panel_h - 1], radius=9,
+            fill=(10, 12, 18, 217), outline=(255, 255, 255, 26), width=1,
+        )
+
+        title_font = self._hud_font("bold", 10)
+        label_font = self._hud_font("regular", 11)
+        value_font = self._hud_font("bold", 12)
+
+        draw.text((12, 9), "LIVE METRICS", font=title_font, fill=(131, 139, 163, 255))
+
+        y = top_pad
         for label, value in rows:
-            color = self._HUD_COLORS[label]
-            cv2.circle(out, (x0 + 12, y - 4), 3, color, -1, cv2.LINE_AA)
-            cv2.putText(out, label, (x0 + 20, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, (210, 213, 220), 1, cv2.LINE_AA)
-            cv2.putText(out, f"{value:.2f}", (x0 + panel_w - 42, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
+            color = self._HUD_COLORS[label] + (255,)
+            draw.ellipse([12, y + 5, 18, y + 11], fill=color)
+            draw.text((24, y), label, font=label_font, fill=(207, 211, 224, 255))
+            text = f"{value:.2f}"
+            tw = draw.textlength(text, font=value_font)
+            draw.text((panel_w - 12 - tw, y - 1), text, font=value_font, fill=color)
             y += row_h
 
-        if specific_flow_latest:
-            rate = max((d.get("rate", 0.0) for d in specific_flow_latest.values()), default=0.0)
-            units = next((d.get("units") for d in specific_flow_latest.values()), "")
-            cv2.putText(out, f"-> {rate:.2f} {units}", (x0 + 8, y + 3),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, (238, 211, 34), 1, cv2.LINE_AA)
+        if flow_rate is not None:
+            draw.line([12, y + 2, panel_w - 12, y + 2], fill=(255, 255, 255, 26), width=1)
+            flow_color = self._HUD_COLORS["Turbulence"] + (255,)
+            draw.text((12, y + 9), f"\u2192 {flow_rate:.2f} {flow_units}",
+                       font=label_font, fill=flow_color)
 
+        # Composite the RGBA panel over the region of the frame it covers.
+        region = frame[y0:y0 + panel_h, x0:x0 + panel_w]
+        region_rgb = cv2.cvtColor(region, cv2.COLOR_BGR2RGB)
+        base = Image.fromarray(region_rgb).convert("RGBA")
+        composited = Image.alpha_composite(base, panel).convert("RGB")
+        blended_bgr = cv2.cvtColor(np.array(composited), cv2.COLOR_RGB2BGR)
+
+        out = frame.copy()
+        out[y0:y0 + panel_h, x0:x0 + panel_w] = blended_bgr
         return out
 
     # ------------------------------------------------------------------
