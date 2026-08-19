@@ -109,6 +109,7 @@ class ZoneMetrics:
     mean_variance:   float    # spatial speed variance
     stop_go_score:   float    # [0, 1]; higher = periodic halting detected
     counterflow_score: float  # [0, 1]; fraction of cells opposing dominant dir
+    oscillation_symmetry_score: float  # [0, 1]; halted dense-crowd rocking
     turbulence_index: float   # velocity_variance / mean_speed²; Helbing et al.
     active_cells:    int      # cells with motion above min_magnitude
     umbrella_occluded_frac: float = 0.0  # fraction of zone under umbrella canopy
@@ -128,6 +129,7 @@ class MetricsFrame:
     cell_curl:       np.ndarray   # float32  (signed)
     cell_coherence:  np.ndarray   # float32  [0, 1]
     cell_variance:   np.ndarray   # float32
+    cell_oscillation: np.ndarray  # float32 [0, 1]
 
     # Cell-grid layout info
     cell_size_px: int
@@ -180,15 +182,20 @@ class CrowdMetricsEngine:
         grid_cell_px: int = 16,
         min_magnitude: float = 0.3,
         stop_go_lag_frames: Optional[list[int]] = None,
+        oscillation_density_threshold: float = 2.5,
+        oscillation_stationary_speed: float = 0.5,
     ) -> None:
         self.grid_cell_px = grid_cell_px
         self.min_magnitude = min_magnitude
         # zone name -> already warned that nothing clears its motion floor.
         self._empty_zone_warned: dict[str, bool] = {}
         self.stop_go_lags  = stop_go_lag_frames or [5, 10, 15]
+        self.oscillation_density_threshold = oscillation_density_threshold
+        self.oscillation_stationary_speed = oscillation_stationary_speed
 
         # Per-zone speed history for stop-go detection
         self._speed_history: dict[str, deque] = {}
+        self._vector_history: dict[str, deque] = {}
 
         # Rasterised zone→cell masks, keyed by (zone name, grid shape).
         # The polygons are fixed for a run, so this is computed once each.
@@ -326,6 +333,7 @@ class CrowdMetricsEngine:
 
         # Aggregate per zone
         zone_results: dict[str, ZoneMetrics] = {}
+        cell_oscillation = np.zeros_like(cell_speed, dtype=np.float32)
         for zone in zones:
             zm = self._aggregate_zone(
                 zone, cell_speed, cell_div, cell_curl, cell_coh, cell_var,
@@ -333,6 +341,8 @@ class CrowdMetricsEngine:
                 cell_density, cell_pressure,
             )
             zone_results[zone.name] = zm
+            mask = self._zone_cell_mask(zone, cell_speed.shape[0], cell_speed.shape[1])
+            cell_oscillation[mask] = zm.oscillation_symmetry_score
 
         return MetricsFrame(
             cell_speed      = cell_speed,
@@ -340,6 +350,7 @@ class CrowdMetricsEngine:
             cell_curl       = cell_curl,
             cell_coherence  = cell_coh,
             cell_variance   = cell_var,
+            cell_oscillation = cell_oscillation,
             cell_size_px    = self.grid_cell_px,
             grid_origin     = (0, 0),
             zones           = zone_results,
@@ -574,10 +585,12 @@ class CrowdMetricsEngine:
                 mean_speed=0.0, mean_divergence=0.0, mean_curl=0.0,
                 mean_coherence=1.0, mean_variance=0.0,
                 stop_go_score=0.0, counterflow_score=0.0,
+                oscillation_symmetry_score=0.0,
                 turbulence_index=0.0, active_cells=0,
                 mean_density=mean_density, crowd_pressure=mean_pressure,
             )
             self._update_speed_history(zone.name, 0.0)
+            self._update_vector_history(zone.name, 0.0, 0.0)
             return zm
 
         mean_speed      = float(cell_speed[active].mean())
@@ -589,6 +602,10 @@ class CrowdMetricsEngine:
         stop_go  = self._compute_stop_go(zone.name, mean_speed)
         cf_score = self._compute_counterflow(cell_mx, cell_my, in_zone_mask,
                                              floor)
+        mean_vx, mean_vy = float(cell_mx[active].mean()), float(cell_my[active].mean())
+        oscillation = self._compute_oscillation_symmetry(
+            zone.name, mean_vx, mean_vy, mean_speed, mean_density,
+        )
 
         # Turbulence index (Helbing et al.): σ²(v) / <v>²
         turb = (mean_variance / (mean_speed ** 2)) if mean_speed > 1e-3 else 0.0
@@ -606,6 +623,7 @@ class CrowdMetricsEngine:
                 umb_frac = float(umb_in_zone.sum()) / (zone_h * zone_w)
 
         self._update_speed_history(zone.name, mean_speed)
+        self._update_vector_history(zone.name, mean_vx, mean_vy)
 
         return ZoneMetrics(
             zone_name=zone.name,
@@ -616,6 +634,7 @@ class CrowdMetricsEngine:
             mean_variance=mean_variance,
             stop_go_score=stop_go,
             counterflow_score=cf_score,
+            oscillation_symmetry_score=oscillation,
             turbulence_index=turb,
             active_cells=n_active,
             umbrella_occluded_frac=umb_frac,
@@ -664,6 +683,35 @@ class CrowdMetricsEngine:
                 ac = corr[mid - lag] / var
                 scores.append(max(0.0, -float(ac)))   # negative autocorr → positive score
 
+        return float(np.clip(max(scores) if scores else 0.0, 0.0, 1.0))
+
+    def _update_vector_history(self, zone_name: str, vx: float, vy: float) -> None:
+        if zone_name not in self._vector_history:
+            self._vector_history[zone_name] = deque(maxlen=self._SPEED_BUFFER_LEN)
+        self._vector_history[zone_name].append((vx, vy))
+
+    def _compute_oscillation_symmetry(
+        self, zone_name: str, vx: float, vy: float, mean_speed: float,
+        mean_density: Optional[float],
+    ) -> float:
+        """Negative vector autocorrelation for dense, nearly halted zones."""
+        if (mean_density is None
+                or mean_density < self.oscillation_density_threshold
+                or mean_speed > self.oscillation_stationary_speed):
+            return 0.0
+        buf = self._vector_history.get(zone_name)
+        if buf is None or len(buf) < max(self.stop_go_lags) + 5:
+            return 0.0
+        vectors = np.asarray(buf, dtype=np.float32)
+        centred = vectors - vectors.mean(axis=0, keepdims=True)
+        variance = float(np.sum(centred * centred))
+        if variance < 1e-9:
+            return 0.0
+        scores = []
+        for lag in self.stop_go_lags:
+            if lag < len(centred):
+                autocorr = float(np.sum(centred[:-lag] * centred[lag:]) / variance)
+                scores.append(max(0.0, -autocorr))
         return float(np.clip(max(scores) if scores else 0.0, 0.0, 1.0))
 
     # ------------------------------------------------------------------

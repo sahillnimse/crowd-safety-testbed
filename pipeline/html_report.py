@@ -52,6 +52,12 @@ def generate_report_html(
     avg_var = summary.get("avg_velocity_variance", "—")
     peak_var = summary.get("peak_velocity_variance", "—")
     avg_entropy = summary.get("avg_directional_entropy", "—")
+    specific_flow_current = summary.get("specific_flow_current", 0.0)
+    specific_flow_peak = summary.get("specific_flow_peak", 0.0)
+    specific_flow_units = summary.get("specific_flow_units", "unconfigured")
+    oscillation_avg = summary.get("oscillation_symmetry_avg", 0.0)
+    oscillation_peak = summary.get("oscillation_symmetry_peak", 0.0)
+    oscillation_zones = summary.get("oscillation_symmetry_zone_count", 0)
 
     label_counts = summary.get("label_counts", {})
     speed_by_label = summary.get("speed_by_label", {})
@@ -215,6 +221,10 @@ def generate_report_html(
       position: relative;
       overflow: hidden;
     }}
+    .kpi-card.tier-one {{ grid-column: span 2; border: 2px solid var(--crush-color); background: rgba(249, 115, 22, .12); }}
+    .kpi-card.tier-one .kpi-val {{ font-size: 32px; }}
+    .kpi-card.tier-three {{ opacity: .78; }}
+    .detail-metrics {{ font-size: 12px; color: var(--text-muted); margin-top: 12px; }}
     .kpi-card::before {{
       content: "";
       position: absolute;
@@ -406,17 +416,27 @@ def generate_report_html(
 
   <!-- KPI CARDS -->
   <div class="kpi-grid">
+    <div class="kpi-card crush tier-one">
+      <div class="kpi-label">Primary Safety Signal — Crush Risk</div>
+      <div class="kpi-val">{pct_crush:.1f}%</div>
+      <div class="kpi-sub">{crush_events} events · peak {peak_crush_count} people @ {peak_crush_t:.1f}s</div>
+    </div>
     <div class="kpi-card left">
       <div class="kpi-label">Direction Streams</div>
       <div class="kpi-val">{primary_stream_pct:.1f}% <span style="font-size: 16px; color: var(--left-color);">{'Stream A' if has_streams else 'Moving'}</span></div>
       <div class="kpi-sub">{'vs ' + format(secondary_stream_pct, '.1f') + '% Stream B' if has_streams else 'single detected movement stream'}</div>
     </div>
-    <div class="kpi-card crush">
-      <div class="kpi-label">Crush Risk Detections</div>
-      <div class="kpi-val">{pct_crush:.1f}%</div>
-      <div class="kpi-sub">{crush_events} peak events (peak: {peak_crush_t:.1f}s)</div>
+    <div class="kpi-card" style="border-top: 3px solid #f59e0b;">
+      <div class="kpi-label">Specific Flow</div>
+      <div class="kpi-val">{specific_flow_current:.2f}</div>
+      <div class="kpi-sub">peak {specific_flow_peak:.2f} {specific_flow_units}</div>
     </div>
-    <div class="kpi-card stopped">
+    <div class="kpi-card" style="border-top: 3px solid #a78bfa;">
+      <div class="kpi-label">Oscillation Symmetry</div>
+      <div class="kpi-val">{oscillation_avg:.2f}</div>
+      <div class="kpi-sub">peak {oscillation_peak:.2f}; {oscillation_zones} threshold samples</div>
+    </div>
+    <div class="kpi-card stopped tier-three">
       <div class="kpi-label">Personally Stationary</div>
       <div class="kpi-val">{pct_stationary:.1f}%</div>
       <div class="kpi-sub">{pct_moving:.1f}% actively moving</div>
@@ -426,22 +446,13 @@ def generate_report_html(
       <div class="kpi-val">{pct_cf:.1f}%</div>
       <div class="kpi-sub">{cf_events} friction events (peak: {peak_cf_t:.1f}s)</div>
     </div>
-    <div class="kpi-card" style="border-top: 3px solid #8b5cf6;">
-      <div class="kpi-label">Directional Entropy</div>
-      <div class="kpi-val">{_esc(avg_entropy)} <span style="font-size: 13px; color: var(--text-dim);">bits</span></div>
-      <div class="kpi-sub">Flow disorder (0: aligned, 3: chaotic)</div>
-    </div>
-    <div class="kpi-card" style="border-top: 3px solid #06b6d4;">
-      <div class="kpi-label">Velocity Variance</div>
-      <div class="kpi-val">{_esc(avg_var)}</div>
-      <div class="kpi-sub">Peak circular variance: {_esc(peak_var)}</div>
-    </div>
-    <div class="kpi-card">
+    <div class="kpi-card tier-three">
       <div class="kpi-label">Unique Tracks & Stability</div>
       <div class="kpi-val">{_esc(total_tracks)}</div>
       <div class="kpi-sub">{_esc(stable_pct)}% stable tracks (avg {avg_flips} flips)</div>
     </div>
   </div>
+  <div class="detail-metrics">Supporting diagnostics: velocity variance {_esc(avg_var)} (peak {_esc(peak_var)}); directional entropy {_esc(avg_entropy)} bits.</div>
 
   <!-- MOVEMENT & DENSITY DISTRIBUTION -->
   <div class="section-card">

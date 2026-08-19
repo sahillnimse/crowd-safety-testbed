@@ -181,6 +181,10 @@ class DenseFlowAnalyser(BaseModelWrapper):
         self._last_field: Optional[np.ndarray] = None
         self._last_valid: Optional[np.ndarray] = None
         self._people = None
+        self._specific_flow = None
+        self._specific_flow_latest: dict[str, dict] = {}
+        self.heatmap_metric = "divergence"
+        self.summary: dict = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -269,6 +273,13 @@ class DenseFlowAnalyser(BaseModelWrapper):
             person_height_m=cfg.get("density_person_height_m", 1.65),
         )
         self._density.reset()
+        from models.crowd_flow.density import SpecificFlowCounter
+        self._specific_flow = SpecificFlowCounter(
+            cfg.get("specific_flow_lines", []),
+            window_sec=cfg.get("specific_flow_window_sec", 10.0),
+        )
+        self._specific_flow_latest = {}
+        self.heatmap_metric = cfg.get("heatmap_metric", "divergence")
 
         # People overlay — boxes plus a per-person arrow.  On footage where
         # per-pixel motion is below what the resolution supports, this is the
@@ -294,6 +305,8 @@ class DenseFlowAnalyser(BaseModelWrapper):
             grid_cell_px=cfg.get("grid_cell_px", 16),
             min_magnitude=cfg.get("min_magnitude", 0.3),
             stop_go_lag_frames=cfg.get("stop_go_lag_frames", [5, 10, 15]),
+            oscillation_density_threshold=cfg.get("oscillation_density_threshold", 2.5),
+            oscillation_stationary_speed=cfg.get("oscillation_stationary_speed", 0.5),
         )
 
         # Alert engine.  Built through the helper so the rebuild in
@@ -371,6 +384,10 @@ class DenseFlowAnalyser(BaseModelWrapper):
             grid_cell_px=self._metrics.grid_cell_px,
             calibration=self._calib,
         )
+        if self._specific_flow is not None:
+            self._specific_flow_latest = self._specific_flow.update(
+                self._density.foot_points, timestamp_sec, self._calib,
+            )
 
         # 1c. People tracking.  Runs before the flow is computed for THIS
         # pair only in the sense that it consumes the PREVIOUS field; on the
@@ -448,10 +465,19 @@ class DenseFlowAnalyser(BaseModelWrapper):
             # then the line-art (arrows, zone outlines, boxes) on top.  Drawing
             # arrows before the heatmap blends them away.
             annotated = self._vis.hsv_flow_overlay(curr_frame, flow_result.field_xy)
+            heatmaps = {
+                "divergence": mf.cell_divergence,
+                "counterflow": 1.0 - mf.cell_coherence,
+                "turbulence": mf.cell_variance,
+                "variance": mf.cell_variance,
+                "entropy": 1.0 - mf.cell_coherence,
+                "oscillation_symmetry": mf.cell_oscillation,
+            }
             annotated = self._vis.divergence_heatmap(
-                annotated, mf.cell_divergence, mf.cell_size_px,
+                annotated, heatmaps.get(self.heatmap_metric, mf.cell_divergence), mf.cell_size_px,
                 cell_speed=mf.cell_speed,
             )
+            annotated = self._draw_specific_flow_lines(annotated)
             annotated = self._vis.sparse_arrow_grid(annotated, flow_result.field_xy)
             if self._people is not None:
                 annotated = self._people.draw(annotated)
@@ -521,6 +547,8 @@ class DenseFlowAnalyser(BaseModelWrapper):
                     "counterflow_score": round(zm.counterflow_score, 4),
                     "stop_go_score":     round(zm.stop_go_score, 4),
                     "turbulence_index":  round(zm.turbulence_index, 4),
+                    "oscillation_symmetry_score": round(zm.oscillation_symmetry_score, 4),
+                    "specific_flow": self._specific_flow_latest,
                     "speed_units":       mf.speed_units,
                     "rain_flag":         flow_result.is_rain_flagged,
                     "lowlight_flag":     flow_result.is_lowlight_flagged,
@@ -547,6 +575,19 @@ class DenseFlowAnalyser(BaseModelWrapper):
             return
 
         self._write_csv()
+
+        zone_values = [zm for entry in self._metrics_log for zm in entry.get("zones", {}).values()]
+        oscillation = [z.get("oscillation_symmetry_score", 0.0) for z in zone_values]
+        flow_rates = [line.get("rate", 0.0) for entry in self._metrics_log
+                      for line in entry.get("specific_flow", {}).values()]
+        self.summary = {
+            "specific_flow_current": max((line.get("rate", 0.0) for line in self._specific_flow_latest.values()), default=0.0),
+            "specific_flow_peak": max(flow_rates, default=0.0),
+            "specific_flow_units": next((line.get("units") for line in self._specific_flow_latest.values()), None),
+            "oscillation_symmetry_avg": round(float(np.mean(oscillation)), 4) if oscillation else 0.0,
+            "oscillation_symmetry_peak": round(float(np.max(oscillation)), 4) if oscillation else 0.0,
+            "oscillation_symmetry_zone_count": sum(value >= 0.5 for value in oscillation),
+        }
 
         if self._config.get("output_parquet", False):
             self._write_parquet()
@@ -721,6 +762,7 @@ class DenseFlowAnalyser(BaseModelWrapper):
             "frame_mean_magnitude": round(flow_result.frame_mean_magnitude, 3),
             "vehicle_count":       self._masks.vehicle_count,
             "umbrella_count":      self._masks.umbrella_count,
+            "specific_flow": self._specific_flow_latest,
             "zones": {
                 name: {
                     "mean_speed":       round(zm.mean_speed, 4),
@@ -731,6 +773,7 @@ class DenseFlowAnalyser(BaseModelWrapper):
                     "stop_go_score":    round(zm.stop_go_score, 4),
                     "counterflow_score": round(zm.counterflow_score, 4),
                     "turbulence_index": round(zm.turbulence_index, 4),
+                    "oscillation_symmetry_score": round(zm.oscillation_symmetry_score, 4),
                     "active_cells":     zm.active_cells,
                     "umbrella_occluded_frac": round(zm.umbrella_occluded_frac, 4),
                 }
@@ -752,6 +795,7 @@ class DenseFlowAnalyser(BaseModelWrapper):
             "mean_speed", "mean_divergence", "mean_curl", "mean_coherence",
             "mean_variance", "stop_go_score", "counterflow_score",
             "turbulence_index", "active_cells", "umbrella_occluded_frac",
+            "oscillation_symmetry_score",
         ]
 
         global_fields = [
@@ -801,6 +845,7 @@ class DenseFlowAnalyser(BaseModelWrapper):
             "mean_speed", "mean_divergence", "mean_curl", "mean_coherence",
             "mean_variance", "stop_go_score", "counterflow_score",
             "turbulence_index", "active_cells", "umbrella_occluded_frac",
+            "oscillation_symmetry_score",
         ]
         for entry in self._metrics_log:
             row = {k: v for k, v in entry.items() if k != "zones"}
@@ -816,3 +861,14 @@ class DenseFlowAnalyser(BaseModelWrapper):
         )
         df.to_parquet(out_path, index=False)
         logger.info("Flow metrics Parquet written to %s", out_path)
+    def _draw_specific_flow_lines(self, frame: np.ndarray) -> np.ndarray:
+        out = frame.copy()
+        for name, data in self._specific_flow_latest.items():
+            line = data["line"]
+            start = tuple(map(int, line["start"]))
+            end = tuple(map(int, line["end"]))
+            cv2.line(out, start, end, (0, 255, 255), 2, cv2.LINE_AA)
+            mid = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
+            cv2.putText(out, f"{name}: {data['rate']:.2f} {data['units']}", mid,
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA)
+        return out

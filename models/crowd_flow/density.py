@@ -86,9 +86,79 @@ wrong units checked against a physical constant is worse than no number.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from typing import Optional
 
 import numpy as np
+
+
+class SpecificFlowCounter:
+    """Track foot-point crossings over configured virtual counting lines."""
+
+    def __init__(self, lines: list[dict], window_sec: float = 10.0) -> None:
+        self.lines = [line for line in lines if "start" in line and "end" in line]
+        self.window_sec = max(float(window_sec), 1.0)
+        self._tracks: dict[int, tuple[float, float]] = {}
+        self._next_id = 0
+        self._events: dict[str, deque] = {self._name(line, i): deque() for i, line in enumerate(self.lines)}
+        self._rates: dict[str, float] = {name: 0.0 for name in self._events}
+
+    @staticmethod
+    def _name(line: dict, index: int) -> str:
+        return str(line.get("name", f"line_{index + 1}"))
+
+    @staticmethod
+    def _side(point: tuple[float, float], line: dict) -> float:
+        (x1, y1), (x2, y2) = line["start"], line["end"]
+        return (x2 - x1) * (point[1] - y1) - (y2 - y1) * (point[0] - x1)
+
+    def update(self, points: np.ndarray, timestamp_sec: float, calibration=None) -> dict[str, dict]:
+        """Associate point tracks and update signed-distance crossing rates."""
+        points = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        unmatched = set(range(len(self._tracks)))
+        old_ids = list(self._tracks)
+        assignments: dict[int, tuple[float, float]] = {}
+        for point in points:
+            best = min(unmatched, key=lambda i: float(np.hypot(
+                point[0] - self._tracks[old_ids[i]][0], point[1] - self._tracks[old_ids[i]][1])), default=None)
+            if best is not None and np.hypot(point[0] - self._tracks[old_ids[best]][0], point[1] - self._tracks[old_ids[best]][1]) <= 80.0:
+                track_id = old_ids[best]
+                unmatched.remove(best)
+            else:
+                track_id = self._next_id
+                self._next_id += 1
+            assignments[track_id] = (float(point[0]), float(point[1]))
+
+        for index, line in enumerate(self.lines):
+            name = self._name(line, index)
+            events = self._events[name]
+            for track_id, point in assignments.items():
+                previous = self._tracks.get(track_id)
+                if previous is not None:
+                    before, after = self._side(previous, line), self._side(point, line)
+                    if before * after < 0.0:
+                        events.append(timestamp_sec)
+            while events and timestamp_sec - events[0] > self.window_sec:
+                events.popleft()
+            self._rates[name] = len(events) / self.window_sec
+
+        self._tracks = assignments
+        result = {}
+        for index, line in enumerate(self.lines):
+            name = self._name(line, index)
+            length_m = None
+            if calibration is not None and calibration.is_calibrated:
+                a = calibration.pixel_to_world(*line["start"])
+                b = calibration.pixel_to_world(*line["end"])
+                length_m = float(np.hypot(a[0] - b[0], a[1] - b[1]))
+            rate = self._rates[name]
+            result[name] = {
+                "rate": rate if length_m is None or length_m <= 1e-6 else rate / length_m,
+                "crossings_per_sec": rate,
+                "units": "people/m/s" if length_m else "crossings/s (UNCALIBRATED)",
+                "line": line,
+            }
+        return result
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +254,7 @@ class DensityEstimator:
         self._implausible_warned: bool = False
         # update() calls seen, which is what `stride` counts.  See update().
         self._calls: int = 0
+        self._last_foot_points = np.empty((0, 2), dtype=np.float32)
 
     # ------------------------------------------------------------------
 
@@ -206,11 +277,17 @@ class DensityEstimator:
         self._last_n_persons = 0
         self._frames_since_detect = 0
         self._calls = 0
+        self._last_foot_points = np.empty((0, 2), dtype=np.float32)
 
     @property
     def n_persons(self) -> int:
         """People detected in the most recent detector pass."""
         return self._last_n_persons
+
+    @property
+    def foot_points(self) -> np.ndarray:
+        """Most recent detector foot points, for line-crossing throughput."""
+        return self._last_foot_points.copy()
 
     # ------------------------------------------------------------------
 
@@ -248,6 +325,7 @@ class DensityEstimator:
             return
 
         feet = self._foot_points(frame, calibration)
+        self._last_foot_points = feet.copy()
         self._frames_since_detect = 0
 
         counts = np.zeros((n_y, n_x), dtype=np.float32)
