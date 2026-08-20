@@ -1,3 +1,11 @@
+raise SystemExit(
+    "scripts/train_head_count.py is obsolete: the density-map HeadCountNet "
+    "it trained was replaced by APGCC, a pretrained point detector. There is "
+    "no density head left here to train.\n"
+    "To fine-tune APGCC on your own footage, use apgcc_finetune.py in the "
+    "crowd-model-eval repo instead."
+)
+
 """
 Train the density-map head counter on hand-labelled patches.
 

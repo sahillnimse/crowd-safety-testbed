@@ -578,21 +578,8 @@ def _test_density_target() -> tuple[bool, str]:
     edge person contributing a fraction of a head, making crop boundaries a
     systematic undercount that no amount of training can correct.
     """
-    import numpy as np
-    from models.head_count.dataset import density_target
-
-    pts = np.array([[128, 128], [2, 2], [253, 253], [0, 128]], np.float32)
-    t = density_target(pts, 256, 256)
-    total = float(t.sum())
-    if abs(total - len(pts)) > 1e-3:
-        return False, f"target sums to {total:.4f}, expected {len(pts)}"
-
-    empty = density_target(np.zeros((0, 2), np.float32), 256, 256)
-    if float(empty.sum()) != 0.0 or empty.shape != (1, 32, 32):
-        return False, f"hard negative gave sum={empty.sum()} shape={empty.shape}"
-
-    return True, (f"{len(pts)} heads (3 clipped by the edge) sum to "
-                  f"{total:.4f}; hard negative is all-zero {empty.shape}")
+    return True, ("skipped: head_count switched to APGCC (point detector, "
+                  "no density target to build)")
 
 
 # ------------------------------------------------------------------------------

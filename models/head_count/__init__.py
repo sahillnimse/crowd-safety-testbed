@@ -1,20 +1,42 @@
 """
-Head counting for crowd density.
+Head counting for crowd density and RT-DETRv2/APGCC fusion.
 
-A density-map counter trained from the point labels that
-scripts/annotate_heads.py produces.  It exists to supply the rho in Helbing
-crowd pressure (see models/crowd_flow/density.py): at the density where a
-crush becomes possible, bodies are almost entirely occluded and a box
-detector stops counting, while heads stay visible and a summed density map
-stays correct.
+APGCC (VGG16-BN encoder, IFI decoder) replaces the earlier ResNet-18
+density-map net entirely. It supplies per-point head detections used two
+ways:
 
-    scripts/extract_patches.py      cut training patches out of your footage
-    scripts/annotate_heads.py       click the heads
-    scripts/train_head_count.py     train
-    HeadCounter                     use it
+    models/crowd_flow/density.py            rho for Helbing crowd pressure
+    models/crowd_flow/crowd_motion_monitor  fills gaps RT-DETRv2 misses
+
+    HeadCounter            use it directly (density.py's own instance)
+    get_head_counter()     shared cached instance (crowd_motion_monitor)
 """
 
-from models.head_count.infer import HeadCounter
-from models.head_count.model import HeadCountNet, CountLoss, OUTPUT_STRIDE
+import threading
+from typing import Optional
 
-__all__ = ["HeadCounter", "HeadCountNet", "CountLoss", "OUTPUT_STRIDE"]
+from models.head_count.infer import HeadCounter
+
+__all__ = ["HeadCounter", "get_head_counter"]
+
+_CACHE: dict[tuple, HeadCounter] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def get_head_counter(
+    weights: Optional[str] = None,
+    device: Optional[str] = None,
+    score_threshold: float = 0.5,
+) -> HeadCounter:
+    """
+    Shared HeadCounter for (weights, device). Mirrors get_detector() in
+    models/_detectors.py.
+    """
+    key = (weights, device or "cpu", score_threshold)
+    with _CACHE_LOCK:
+        hc = _CACHE.get(key)
+        if hc is None:
+            hc = HeadCounter(weights=weights, device=device,
+                              score_threshold=score_threshold)
+            _CACHE[key] = hc
+    return hc

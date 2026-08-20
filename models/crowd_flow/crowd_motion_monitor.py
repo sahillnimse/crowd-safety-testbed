@@ -67,6 +67,7 @@ import numpy as np
 from models.base import BaseModelWrapper, Detection
 from models._detectors import get_detector, COCO_PERSON
 from models._tracker import IoUTracker, sustained
+from models.head_count import get_head_counter
 
 # Re-use the project's streaming H.264 writer (encoder utility, not model
 # logic — same rationale as importing get_detector from _detectors.py).
@@ -105,6 +106,18 @@ _FB_FLAGS      = 0
 
 # Divergence grid for crush-risk: cell size in pixels.
 _DIV_CELL_PX = 32
+
+# APGCC has no box, only a point. This is the synthetic box half-size (px)
+# built around each surviving point, used for IoU tracking and drawing —
+# small enough not to falsely overlap a neighbouring RT-DETRv2 box, big
+# enough for the tracker's IoU match to hold across a few frames.
+_APGCC_SYNTH_HALF_BOX_PX = 12
+
+# An APGCC point is considered "already claimed" by RT-DETRv2 if it falls
+# inside an RT-DETRv2 box, expanded by this fraction on every side — a point
+# exactly on a box edge is still that person, not a second one standing
+# next to them.
+_APGCC_CLAIM_MARGIN = 0.15
 
 
 class CrowdMotionMonitor(BaseModelWrapper):
@@ -173,6 +186,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
         detect_every: int = 5,
         detect_tile_grid: Optional[tuple] = (2, 2),
         detect_conf_threshold: float = 0.28,
+        apgcc_weights: Optional[str] = None,
+        apgcc_score_threshold: float = 0.5,
+        apgcc_every: int = 5,
     ) -> None:
         super().__init__(device=device)
 
@@ -193,6 +209,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self.detect_every                    = detect_every
         self.detect_tile_grid                = detect_tile_grid
         self.detect_conf_threshold           = detect_conf_threshold
+        self.apgcc_weights                   = apgcc_weights
+        self.apgcc_score_threshold           = apgcc_score_threshold
+        self.apgcc_every                     = apgcc_every
 
         # jobs.py sets these after construction for any flow_pair model.
         self._fps: float = 25.0
@@ -201,7 +220,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         # Runtime state — initialised in load().
         self._detector  = None
+        self._head_counter = None
         self._tracker:  Optional[IoUTracker]           = None
+        self._last_apgcc_boxes: list[list[float]] = []
 
         # Per-track speed history: dict[track_id, deque[float]]
         # Lives here, not in the tracker's state store, so this model is
@@ -253,6 +274,13 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._detector = get_detector(device=self.device)
         self._detector.load()
 
+        self._head_counter = get_head_counter(
+            weights=self.apgcc_weights,
+            device=self.device,
+            score_threshold=self.apgcc_score_threshold,
+        )
+        self._head_counter.load()
+
         self._tracker = IoUTracker(
             iou_threshold=0.3,
             max_age=30,
@@ -264,6 +292,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._stationary_tracks.clear()
         self._moving_streak.clear()
         self._last_boxes = []
+        self._last_apgcc_boxes = []
         self._writer = None
         self._frames_written = 0
         self.annotated_video_path = None
@@ -337,21 +366,28 @@ class CrowdMotionMonitor(BaseModelWrapper):
             )
 
         # 2. Compute spatial grids (divergence and velocity variance) using shared cell iterator.
-        div_grid = self._compute_divergence_grid(flow)  # shape (n_rows, n_cols)
         var_grid = self._compute_variance_grid(flow)    # shape (n_rows, n_cols)
 
-        # 3. Person detection (runs every detect_every frames; boxes carried on others).
-        if frame_index % self.detect_every == 0:
-            self._last_boxes = self._detector.detect(
-                curr_frame,
-                classes=(COCO_PERSON,),
-                tile_grid=self.detect_tile_grid,
-                conf_threshold=self.detect_conf_threshold,
+        rtdetr_boxes = self._last_boxes
+
+        # 3. APGCC fusion — ground truth for head detection, but RT-DETRv2
+        # claims a person first. An APGCC point that falls inside an
+        # existing RT-DETRv2 box is the same person already covered and is
+        # dropped; only points RT-DETRv2 missed become new synthetic boxes.
+        # This is what stops the same person getting two triangles.
+        if frame_index % self.apgcc_every == 0:
+            apgcc_points = self._head_counter.points(curr_frame)
+            self._last_apgcc_boxes = self._apgcc_points_to_boxes(
+                apgcc_points, rtdetr_boxes, curr_frame.shape[:2],
             )
 
-        boxes = self._last_boxes
+        boxes = rtdetr_boxes + self._last_apgcc_boxes
 
-        # 4. IoU tracking → one track ID per box, in order.
+        # 4. IoU tracking → one track ID per box, in order. RT-DETRv2 boxes
+        # come first in `boxes`, so when both sources compete for the same
+        # track next frame, the greedy one-to-one match in IoUTracker favours
+        # whichever pairs best — RT-DETRv2 identity is not displaced by an
+        # APGCC box arriving after it in the same list.
         track_ids = self._tracker.update(boxes, frame_index)
 
         # 5. Evict speed/heading history for tracks the tracker dropped.
@@ -824,6 +860,46 @@ class CrowdMotionMonitor(BaseModelWrapper):
     # ──────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _apgcc_points_to_boxes(
+        points: np.ndarray,
+        rtdetr_boxes: list[list[float]],
+        frame_shape: tuple[int, int],
+    ) -> list[list[float]]:
+        """
+        Turn surviving APGCC head points into synthetic [x1,y1,x2,y2] boxes,
+        dropping any point RT-DETRv2 already has a box on.
+
+        A point is "claimed" if it falls inside an RT-DETRv2 box expanded by
+        _APGCC_CLAIM_MARGIN on every side. Only unclaimed points become new
+        boxes — this is the whole dedup rule: RT-DETRv2 gets first claim,
+        APGCC only fills what it missed, so nobody gets two triangles.
+        """
+        if points is None or len(points) == 0:
+            return []
+
+        h, w = frame_shape
+        expanded = []
+        for x1, y1, x2, y2 in rtdetr_boxes:
+            bw, bh = x2 - x1, y2 - y1
+            mx, my = bw * _APGCC_CLAIM_MARGIN, bh * _APGCC_CLAIM_MARGIN
+            expanded.append((x1 - mx, y1 - my, x2 + mx, y2 + my))
+
+        out: list[list[float]] = []
+        half = _APGCC_SYNTH_HALF_BOX_PX
+        for px, py in points:
+            claimed = any(ex1 <= px <= ex2 and ey1 <= py <= ey2
+                          for ex1, ey1, ex2, ey2 in expanded)
+            if claimed:
+                continue
+            x1 = max(0.0, float(px) - half)
+            y1 = max(0.0, float(py) - half)
+            x2 = min(float(w), float(px) + half)
+            y2 = min(float(h), float(py) + half)
+            if x2 > x1 and y2 > y1:
+                out.append([x1, y1, x2, y2])
+        return out
 
     @staticmethod
     def _infer_direction_streams(track_records: list[dict]) -> list[tuple[float, float]]:

@@ -1,134 +1,94 @@
 """
-Density-map head counter.
+Point-based head counter — APGCC (VGG16-BN encoder, IFI decoder).
 
-Architecture
-------------
-ResNet-18 frontend truncated after layer3, with layer3's stride replaced by
-dilation so the output is stride 8 rather than 16, then a small dilated
-backend and a 1x1 head producing a single-channel density map.
+This module used to hold a custom ResNet-18 density-map net (HeadCountNet).
+That model is gone. APGCC replaces it entirely, on your call: APGCC is
+treated as ground truth for head detection, at a different point in the
+pipeline than the old density net occupied.
 
-    input   (B, 3, H, W)
-    output  (B, 1, H/8, W/8)   non-negative; sum over any region = head count
+    input   (B, 3, H, W), ImageNet-normalised, H and W multiples of 16
+    output  points: (N, 2) head locations in source pixels
+            scores: (N,)   float32 in [0, 1], softmax confidence per point
 
-Why a density map rather than boxes or points
----------------------------------------------
-This exists to answer "how many people are in this grid cell", which is the
-rho in Helbing crowd pressure.  A density map answers that by integration
-over the cell — no detection, no NMS, no identity, and no threshold to tune.
-That matters because the regime where the count is most needed is exactly
-the one where box detectors collapse: at the back of a dense crowd bodies
-are 90% occluded and boxes merge, while the summed density is still a
-count.  Point localisation is recoverable from local maxima when it is
-wanted (see infer.py), but the count never depends on it.
+Why points now, not a density map
+----------------------------------
+APGCC is a detection-style point predictor (DETR-like point queries decoded
+per anchor), not a density regressor — there is no per-pixel density map to
+integrate; the count *is* len(points) after score-thresholding. The old
+HeadCountNet's density_map()/count()-by-integration approach doesn't apply
+here. HeadCounter (infer.py) keeps count() and points() as the public
+surface so density.py and crowd_motion_monitor.py don't need to know the
+model underneath changed shape, but internally count is now
+len(points_above_threshold), not a spatial sum.
 
-Why stride 8
-------------
-At stride 16 a 1280x720 frame yields an 80x45 map — coarser than the 16 px
-metrics grid the density has to be aggregated onto, so cells would have to
-share map pixels and the per-cell counts would be interpolation rather than
-measurement.  Stride 8 gives 160x90, two map pixels per 16 px cell in each
-direction, so every metrics cell integrates over its own values.
-
-Why ResNet-18 and not something larger
---------------------------------------
-It has to fine-tune on a 4 GB card.  ResNet-18 at stride 8 with 512x512
-crops fits in roughly 2 GB at batch 8; ResNet-50 does not fit at any useful
-batch size, and gradient accumulation on a batch of 1 makes batch-norm
-statistics useless.  The frontend is ImageNet-pretrained, which is what
-makes training on a few hundred hand-labelled patches viable at all.
+Why APGCC over the previous ResNet-18 density net
+--------------------------------------------------
+Per your call: APGCC's accuracy on this task is high enough to treat its
+output as ground truth, and its detections are what crowd_motion_monitor.py
+now fuses against RT-DETRv2 boxes (RT-DETRv2 claims a person first; APGCC
+only supplies people RT-DETRv2 missed). A per-point confidence score is what
+that fusion needs to decide which points are real detections — a density
+map has no equivalent per-instance confidence to threshold on.
 """
 
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-# Every part of the pipeline agrees on this: the dataset builds targets at
-# this stride, the model outputs at it, and inference scales by it.
-OUTPUT_STRIDE = 8
+from models.head_count._apgcc_loader import build_apgcc, load_apgcc
+
+# APGCC's own STRIDE: 8 config plus ENCODER_kwargs.last_pool=False means the
+# deepest encoder feature is H/16, W/16.  Padding input to a multiple of 16
+# (rather than trimming, as the old stride-8 density net did) keeps every
+# source pixel in the count — APGCC has no tolerance for losing a partial
+# cell the way a summed density map did.
+INPUT_DIVISOR = 16
+
+# ImageNet stats APGCC's own datasets/build.py normalises with.  Must match
+# exactly: this is a pretrained checkpoint, not one trained here.
+_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+# Upstream's own evaluate_crowd_counting[_and_loc] threshold (engine.py).
+DEFAULT_SCORE_THRESHOLD = 0.5
 
 
-class HeadCountNet(nn.Module):
-    """ResNet-18 frontend + dilated backend -> single-channel density map."""
-
-    def __init__(self, pretrained: bool = True) -> None:
-        super().__init__()
-        import torchvision.models as tvm
-
-        weights = tvm.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
-        net = tvm.resnet18(weights=weights)
-
-        self.stem = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool)
-        self.layer1 = net.layer1            # stride 4,  64 ch
-        self.layer2 = net.layer2            # stride 8, 128 ch
-        self.layer3 = net.layer3            # stride 16 -> dilated to 8, 256 ch
-
-        # Replace layer3's downsampling with dilation.  Striding here would
-        # halve the output grid again; dilation keeps the receptive field
-        # that the pretrained weights expect while holding the resolution.
-        for module in self.layer3.modules():
-            if isinstance(module, nn.Conv2d):
-                if module.stride == (2, 2):
-                    module.stride = (1, 1)
-                if module.kernel_size == (3, 3):
-                    module.dilation = (2, 2)
-                    module.padding = (2, 2)
-
-        self.backend = nn.Sequential(
-            nn.Conv2d(256, 128, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
-            nn.Conv2d(128, 64, 3, padding=2, dilation=2), nn.ReLU(inplace=True),
-            nn.Conv2d(64, 32, 3, padding=1), nn.ReLU(inplace=True),
-        )
-        self.head = nn.Conv2d(32, 1, 1)
-
-        for m in list(self.backend.modules()) + [self.head]:
-            if isinstance(m, nn.Conv2d):
-                nn.init.normal_(m.weight, std=0.01)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.stem(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.backend(x)
-        x = self.head(x)
-        # Density is a count per unit area and cannot be negative.  softplus
-        # rather than relu: relu's zero gradient on the whole negative side
-        # lets a head that initialises slightly negative stop learning
-        # entirely on the empty patches, which are most of a crowd image.
-        return F.softplus(x)
-
-    @torch.no_grad()
-    def count(self, x: torch.Tensor) -> torch.Tensor:
-        """Predicted head count per image in the batch."""
-        return self.forward(x).sum(dim=(1, 2, 3))
+def build_model(config: str = "shha", imagenet_init: bool = False):
+    """Construct an untrained APGCC model. Rarely needed directly — see load_apgcc."""
+    return build_apgcc(config=config, imagenet_init=imagenet_init)
 
 
-class CountLoss(nn.Module):
+def load_model(weights: str | None = None, device: str = "cpu",
+                config: str = "shha", strict: bool = True):
+    """Build APGCC and load a checkpoint. Returns (model, load_info)."""
+    return load_apgcc(weights=weights, device=device, config=config, strict=strict)
+
+
+def preprocess(frame_rgb_float01: torch.Tensor) -> torch.Tensor:
     """
-    Pixelwise density loss plus a direct count term.
+    ImageNet-normalise a (B, 3, H, W) float tensor already in [0, 1].
 
-    The pixel term alone optimises a number that is ~0 almost everywhere, so
-    a model that predicts all zeros starts at a very low loss and the count
-    can be badly wrong while the MSE looks converged.  The count term is what
-    the metric actually is, and weighting it explicitly stops the optimiser
-    from being satisfied by an empty prediction.
+    Kept as a standalone function (rather than inlined in infer.py) because
+    it is the one piece of preprocessing that must byte-for-byte match
+    datasets/build.py's transform — anything else here is free to change,
+    this specific pair of constants is not.
     """
+    mean = _MEAN.to(frame_rgb_float01.device, frame_rgb_float01.dtype)
+    std = _STD.to(frame_rgb_float01.device, frame_rgb_float01.dtype)
+    return (frame_rgb_float01 - mean) / std
 
-    def __init__(self, count_weight: float = 0.1, pixel_scale: float = 100.0) -> None:
-        super().__init__()
-        self.count_weight = count_weight
-        # Targets sum to the head count spread over thousands of pixels, so
-        # raw values are ~1e-3 and the MSE gradient is negligible against
-        # float32 noise.  Scaling both sides puts it in a trainable range.
-        self.pixel_scale = pixel_scale
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> tuple:
-        pixel = F.mse_loss(pred * self.pixel_scale, target * self.pixel_scale)
-        pred_n = pred.sum(dim=(1, 2, 3))
-        true_n = target.sum(dim=(1, 2, 3))
-        count = F.l1_loss(pred_n, true_n)
-        return pixel + self.count_weight * count, pixel.detach(), count.detach()
+@torch.no_grad()
+def points_and_scores(model, tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Run APGCC and return (points, scores) BEFORE thresholding.
+
+    points: (N, 2) in the *tensor's* pixel space (caller rescales to source).
+    scores: (N,) softmax confidence for the person class (index 1 of 2,
+    per engine.py's own evaluate_crowd_counting: index 0 is "no object").
+    """
+    out = model(tensor)
+    scores = F.softmax(out["pred_logits"], dim=-1)[:, :, 1][0]
+    points = out["pred_points"][0]
+    return points, scores
