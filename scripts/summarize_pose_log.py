@@ -7,6 +7,7 @@ Usage:
     python scripts/summarize_pose_log.py outputs/logs/YzcawvDGe4Y_pose_fall.json
 """
 
+import argparse
 import json
 import sys
 import os
@@ -20,13 +21,16 @@ def format_time(seconds: float) -> str:
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python scripts/summarize_pose_log.py <path_to_pose_fall_log.json>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Summarize pose fall detection JSON log.")
+    parser.add_argument("input_path", help="Path to pose fall detection JSON log")
+    args = parser.parse_args()
 
-    input_path = sys.argv[1]
+    input_path = args.input_path
+    if not os.path.exists(input_path):
+        print(f"Error: file not found: {input_path}")
+        sys.exit(1)
     print(f"Loading {input_path} ...")
-    with open(input_path) as f:
+    with open(input_path, encoding="utf-8") as f:
         detections = json.load(f)
 
     if not detections:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 raise SystemExit(
     "scripts/train_head_count.py is obsolete: the density-map HeadCountNet "
     "it trained was replaced by APGCC, a pretrained point detector. There is "
@@ -25,7 +27,6 @@ result will be specific to your footage in ways that are hard to see — which
 is fine if that is the only camera it will ever run on, and misleading if it
 is not.
 """
-from __future__ import annotations
 
 import argparse
 import logging

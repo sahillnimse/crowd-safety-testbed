@@ -59,6 +59,7 @@ for d in DIRS.values():
 OK    = "[OK]"
 SKIP  = "[SKIP]"
 ERR   = "[ERR]"
+WARN  = "[WARN]"
 INFO  = "[INFO]"
 
 
@@ -385,6 +386,7 @@ ALL_MODELS = [
     ("fall_optical_flow",           "Fall Detection",        "Classical CV — Farnebäck",            "None (no weights)",              "N/A"),
     ("optical_flow_crush",          "Crowd Crush",           "Classical CV — Farnebäck",            "None (no weights)",              "N/A"),
     ("dense_flow",                  "Crowd Crush",           "Classical CV — DIS optical flow + ORB global-motion compensation", "None (no weights)", "N/A"),
+    ("crowd_motion_monitor",        "Crowd Crush",           "RT-DETRv2-R18 + APGCC Point Detector + Farneback Flow", "models/head_count/weights/APGCC_SHHA_best.pth + HF rtdetr_v2_r18vd", "ShanghaiTech-A APGCC + PekingU/rtdetr_v2_r18vd (Apache 2.0)"),
     ("roboflow_combined",           "Violence Detection",    "Roboflow hosted model",               "API only",                       "universe.roboflow.com — violence-ftjyp/1"),
     ("violence_x3d",                "Violence Detection",    "X3D-S + Kinetics-400 zero-shot",      "pytorchvideo/x3d_s_kinetics400.pt", "torch.hub facebookresearch/pytorchvideo"),
     ("violence_slowfast",           "Violence Detection",    "SlowFast-R50 + Kinetics-400 zero-shot","pytorchvideo/slowfast_r50_kinetics400.pt", "torch.hub facebookresearch/pytorchvideo"),

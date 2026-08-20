@@ -6,6 +6,7 @@ Usage:
     python scripts/split_log_by_model.py outputs/logs/DJd5F3G9Qbg_all_models_dense_crowd.json
 """
 
+import argparse
 import json
 import sys
 import os
@@ -13,12 +14,15 @@ from collections import defaultdict
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python scripts/split_log_by_model.py <path_to_combined_log.json>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Split combined detection JSON into per-model JSON files.")
+    parser.add_argument("input_path", help="Path to combined detection log JSON")
+    args = parser.parse_args()
 
-    input_path = sys.argv[1]
-    with open(input_path) as f:
+    input_path = args.input_path
+    if not os.path.exists(input_path):
+        print(f"Error: file not found: {input_path}")
+        sys.exit(1)
+    with open(input_path, encoding="utf-8") as f:
         detections = json.load(f)
 
     by_model = defaultdict(list)

@@ -63,6 +63,12 @@ COLOR_MAP = {
     "crowd_pressure_warning":     (140, 0, 220),   # purple — Helbing pressure
     "crowd_pressure_critical":    (90, 0, 150),    # dark purple — stampede range
     "vehicle_in_ped_zone_warning": (0, 180, 0),    # green — vehicle alert
+    # CrowdMotionMonitor per-person tracking labels.
+    "person_stopped":             (0, 0, 255),     # red - stationary
+    "person_crush_zone":          (0, 0, 180),     # dark red - crush zone
+    "person_moving_stream_a":     (255, 100, 0),   # blue - stream a
+    "person_moving_stream_b":     (0, 200, 100),   # green - stream b
+    "person_moving":              (0, 255, 0),     # bright green - moving
     # Per-frame summary row, not an alert.
     "flow_analysis":              (200, 200, 200), # grey
 }

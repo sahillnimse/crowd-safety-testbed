@@ -16,18 +16,18 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from scripts.run_all import MODEL_REGISTRY  # reuse the same registry
+from webapp import registry
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, choices=list(MODEL_REGISTRY.keys()))
+    parser.add_argument("--model", required=True, choices=sorted(registry.BY_KEY.keys()))
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--video_frame", default=None,
                          help="Path to a video file — reads its first frame instead of using a blank dummy.")
     args = parser.parse_args()
 
-    model = MODEL_REGISTRY[args.model](device=args.device)
+    model = registry.build_model(args.model, device=args.device)
     print(f"Loading {model.name} ...")
     model.load()
     print(f"Loaded. consumption_type={model.consumption_type}")

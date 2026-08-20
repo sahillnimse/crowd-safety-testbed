@@ -89,6 +89,9 @@ POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
                    # its plate turned out to be legible.
                    "vehicle_plate", "vehicle_unread",
                    "umbrella",
+                   # CrowdMotionMonitor (models/crowd_flow/crowd_motion_monitor.py)
+                   "person_stopped", "person_crush_zone", "person_moving",
+                   "person_moving_stream_a", "person_moving_stream_b",
                    # DenseFlowAnalyser's per-frame summary row, which is not an
                    # alert and so is not in DENSE_FLOW_ALERT_LABELS.
                    "flow_analysis"}
