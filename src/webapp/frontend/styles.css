@@ -1475,17 +1475,21 @@ table.stages td.num.zero {
    Analytical Modal & Inspector
    ========================================================================== */
 
+/* ==========================================================================
+   Analytical Modal & Inspector
+   ========================================================================== */
+
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(5, 7, 12, 0.85);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(5, 7, 14, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  z-index: 1000;
+  z-index: 99999;
 }
 
 .modal-card {
@@ -1494,11 +1498,12 @@ table.stages td.num.zero {
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 1050px;
-  max-height: 90vh;
+  max-height: 88vh;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-lg);
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.85);
   overflow: hidden;
+  position: relative;
 }
 
 .modal-head {
@@ -1508,6 +1513,7 @@ table.stages td.num.zero {
   justify-content: space-between;
   align-items: center;
   background: var(--panel-2);
+  flex-shrink: 0;
 }
 
 .modal-head h3 {
@@ -1515,42 +1521,171 @@ table.stages td.num.zero {
   font-size: 17px;
   font-weight: 800;
   color: #ffffff;
+  letter-spacing: -0.3px;
 }
 
 .modal-nav-tabs {
   display: flex;
+  gap: 4px;
   border-bottom: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.2);
-  padding: 0 16px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 6px 16px 0;
   overflow-x: auto;
+  flex-shrink: 0;
 }
 
 .modal-tab-btn {
-  background: none;
+  background: transparent;
   border: none;
-  color: var(--muted);
-  padding: 12px 16px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
   border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   transition: all var(--t-fast);
   white-space: nowrap;
+  font-family: var(--font-main);
 }
 
 .modal-tab-btn:hover {
   color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .modal-tab-btn.active {
-  color: var(--accent-light);
+  color: #ffffff;
+  font-weight: 700;
   border-bottom-color: var(--accent);
+  background: rgba(99, 102, 241, 0.12);
 }
 
 .modal-body {
   padding: 24px;
   overflow-y: auto;
   flex: 1;
+}
+
+/* Overview Section Layout inside Modal */
+.detail-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.detail-metric-card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--t-fast);
+}
+
+.detail-metric-card:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.detail-metric-card .val {
+  font-size: 26px;
+  font-weight: 800;
+  font-family: var(--font-code);
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.detail-metric-card .val.highlight {
+  color: #34d399;
+}
+
+.detail-metric-card .lbl {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.overview-analytics-box {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 22px;
+}
+
+.overview-analytics-box .section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.overview-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.overview-kpi-item {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.overview-kpi-lbl {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.overview-kpi-val {
+  font-size: 20px;
+  font-weight: 800;
+  font-family: var(--font-code);
+  line-height: 1.25;
+}
+
+.overview-kpi-sub {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.no-data-text {
+  color: var(--subtle);
+  font-style: italic;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.no-data-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--subtle);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-code);
 }
 
 /* ==========================================================================
@@ -2090,4 +2225,260 @@ pre.raw-json {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--subtle);
+}
+
+/* ==========================================================================
+   Timeline Tab — Motion KPI Summary Cards
+   ========================================================================== */
+
+.motion-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.motion-kpi-card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color var(--t-fast);
+}
+
+.motion-kpi-card:hover {
+  background: var(--panel-hover);
+}
+
+.motion-kpi-lbl {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.motion-kpi-val {
+  font-size: 22px;
+  font-weight: 800;
+  font-family: var(--font-code);
+  line-height: 1.1;
+}
+
+.motion-kpi-count {
+  font-size: 11px;
+  color: var(--subtle);
+  font-family: var(--font-code);
+}
+
+/* ==========================================================================
+   Badge components — inline status chips inside tables
+   ========================================================================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+
+.badge-ok {
+  color: #34d399;
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+}
+
+.badge-crush {
+  color: #fb7185;
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
+}
+
+.badge-stopped {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+}
+
+.badge-right, .badge-stream-a {
+  color: #818cf8;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+}
+
+.badge-left, .badge-stream-b {
+  color: #c084fc;
+  background: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
+.plate-badge {
+  display: inline-block;
+  font-family: var(--font-code);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+  color: #34d399;
+  letter-spacing: 0.04em;
+}
+
+/* ==========================================================================
+   Selector Table Row Interactions (model/video picker inside modal)
+   ========================================================================== */
+
+.video-select-row {
+  cursor: pointer;
+  transition: background var(--t-fast);
+}
+
+.video-select-row:hover td {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.video-select-row.is-active td {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.u-accent {
+  color: var(--accent-light);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+/* ==========================================================================
+   Table Utility Helpers
+   ========================================================================== */
+
+.u-num {
+  text-align: right;
+  font-family: var(--font-code);
+}
+
+.u-mono-sm {
+  font-family: var(--font-code);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.u-mono-sm strong {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.u-muted {
+  color: var(--muted);
+}
+
+.u-strong {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.u-caption {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 10px 0 6px;
+}
+
+.u-mt-0 { margin-top: 0; }
+.u-mb-3 { margin-bottom: 12px; }
+.u-mr-1 { margin-right: 4px; }
+
+.detail-section-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--subtle);
+  margin-bottom: 10px;
+  margin-top: 20px;
+}
+
+.detail-info-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.detail-info-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle;
+}
+
+.detail-info-table td.key {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  width: 160px;
+  white-space: nowrap;
+}
+
+.detail-info-table td.val {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.detail-info-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Legend bar items */
+.legend-grid {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.legend-dot.seg-left { background: var(--accent); }
+.legend-dot.seg-right { background: var(--accent-purple); }
+.legend-dot.seg-crush { background: var(--bad); }
+.legend-dot.seg-stopped { background: var(--muted); }
+
+/* JSON payload tab */
+.json-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.json-code-box {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  overflow-x: auto;
+  font-family: var(--font-code);
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.55;
+  max-height: 55vh;
+  white-space: pre;
 }

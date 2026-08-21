@@ -730,20 +730,20 @@ function renderModalTab(tabName) {
       const pCounterflow = sum.pct_counterflow_people || 0;
       const cfEvents = sum.counterflow_events_count || 0;
       const peakCfT = sum.peak_counterflow_timestamp_sec || 0;
-      const avgEntropy = sum.avg_directional_entropy != null ? sum.avg_directional_entropy : '—';
-      const avgVar = sum.avg_velocity_variance != null ? sum.avg_velocity_variance : '—';
-      const flowCurrent = sum.specific_flow_current != null ? sum.specific_flow_current.toFixed(2) : '—';
-      const flowPeak = sum.specific_flow_peak != null ? sum.specific_flow_peak.toFixed(2) : '—';
-      const flowUnits = sum.specific_flow_units || 'unconfigured';
-      const oscAvg = sum.oscillation_symmetry_avg != null ? sum.oscillation_symmetry_avg.toFixed(2) : '—';
-      const oscPeak = sum.oscillation_symmetry_peak != null ? sum.oscillation_symmetry_peak.toFixed(2) : '—';
-      const oscZones = sum.oscillation_symmetry_zone_count || 0;
+      const avgEntropy = sum.avg_directional_entropy != null ? `${sum.avg_directional_entropy} <span style="font-size: 12px; color: var(--muted); font-weight: normal;">bits</span>` : '<span class="no-data-text">No data</span>';
+      const avgVar = sum.avg_velocity_variance != null ? sum.avg_velocity_variance : '<span class="no-data-text">No data</span>';
+
+      const flowCurrent = sum.specific_flow_current != null ? sum.specific_flow_current.toFixed(2) : '<span class="no-data-text">No data</span>';
+      const flowSub = sum.specific_flow_peak != null ? `peak ${sum.specific_flow_peak.toFixed(2)} ${sum.specific_flow_units || ''}` : '<span class="no-data-badge">Unconfigured</span>';
+
+      const oscAvg = sum.oscillation_symmetry_avg != null ? sum.oscillation_symmetry_avg.toFixed(2) : '<span class="no-data-text">No data</span>';
+      const oscSub = sum.oscillation_symmetry_peak != null ? `peak ${sum.oscillation_symmetry_peak.toFixed(2)}; ${oscZones} threshold samples` : '<span class="no-data-badge">Unconfigured</span>';
 
       analyticsHtml = `
         <div class="overview-analytics-box">
-          <div class="section-title" style="margin-bottom: 14px;">
+          <div class="section-title">
             <span>📈 Run Analytics & Crowd Dynamics</span>
-            ${s.report_html ? `<a href="/api/files/run/${esc(s.report_html)}" target="_blank" class="btn-card-detail" style="font-size: 12px; padding: 5px 12px;">📄 View Standalone HTML Report</a>` : ''}
+            ${s.report_html ? `<a href="/api/files/run/${esc(s.report_html)}" target="_blank" class="btn-card-detail">📄 View Standalone HTML Report</a>` : ''}
           </div>
 
           <div class="overview-kpis">
@@ -765,12 +765,12 @@ function renderModalTab(tabName) {
             <div class="overview-kpi-item">
               <div class="overview-kpi-lbl">Specific Flow</div>
               <div class="overview-kpi-val" style="color: #22d3ee;">${flowCurrent}</div>
-              <div class="overview-kpi-sub">peak ${flowPeak} ${flowUnits}</div>
+              <div class="overview-kpi-sub">${flowSub}</div>
             </div>
             <div class="overview-kpi-item">
               <div class="overview-kpi-lbl">Oscillation Symmetry</div>
               <div class="overview-kpi-val" style="color: #f472b6;">${oscAvg}</div>
-              <div class="overview-kpi-sub">peak ${oscPeak}; ${oscZones} threshold samples</div>
+              <div class="overview-kpi-sub">${oscSub}</div>
             </div>
             <div class="overview-kpi-item">
               <div class="overview-kpi-lbl">Movement Rate</div>
@@ -779,7 +779,7 @@ function renderModalTab(tabName) {
             </div>
             <div class="overview-kpi-item tier-three">
               <div class="overview-kpi-lbl">Directional Entropy</div>
-              <div class="overview-kpi-val" style="color: #a78bfa;">${avgEntropy} <span style="font-size: 13px; color: var(--muted); font-weight: normal;">bits</span></div>
+              <div class="overview-kpi-val" style="color: #a78bfa;">${avgEntropy}</div>
               <div class="overview-kpi-sub">Local vector disorder (0: aligned, 3: chaotic)</div>
             </div>
             <div class="overview-kpi-item tier-three">
@@ -874,7 +874,7 @@ function renderModalTab(tabName) {
     host.innerHTML = `
       <div class="detail-section-title u-mt-0">⏱️ Select a Model to View Detections</div>
       <p class="hint u-mb-3">${allStages.length} models scored this video — click any row to load its detection rows below.</p>
-      <table class="table-frame">
+      <table class="stages">
         <thead><tr><th>Model</th><th class="u-num">Alerts</th><th class="u-num">Total Rows</th><th></th></tr></thead>
         <tbody>${selectorRows}</tbody>
       </table>
@@ -943,7 +943,7 @@ function renderModalTab(tabName) {
       host.innerHTML = `
         <div class="detail-section-title u-mt-0">🎬 Select a Model Output Video</div>
         <p class="hint u-mb-3">${allVids.length} annotated outputs available — click any row to switch playback.</p>
-        <table class="table-frame">
+        <table class="stages">
           <thead><tr>
             <th>Video File</th>
             <th>Model</th>
@@ -1081,26 +1081,42 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
     }).join('');
 
     containerEl.innerHTML = `
-      <div class="motion-summary-banner">
-        ${hasStreams ? `<div class="motion-banner-item"><div class="motion-dot seg-left"></div><span class="motion-lbl">Stream A:</span><span class="motion-val">${pStreamA}% (${streamACount.toLocaleString()})</span></div><div class="motion-banner-item"><div class="motion-dot seg-right"></div><span class="motion-lbl">Stream B:</span><span class="motion-val">${pStreamB}% (${streamBCount.toLocaleString()})</span></div>` : `<div class="motion-banner-item"><div class="motion-dot seg-left"></div><span class="motion-lbl">Moving:</span><span class="motion-val">${pMoving}% (${movingCount.toLocaleString()})</span></div>`}
-        <div class="motion-banner-item">
-          <div class="motion-dot seg-crush"></div>
-          <span class="motion-lbl">Crush Risk:</span>
-          <span class="motion-val alert-text">${pCrush}% (${crushCount.toLocaleString()})</span>
+      <div class="motion-kpi-grid">
+        ${hasStreams
+          ? `<div class="motion-kpi-card" style="border-color: rgba(99,102,241,0.4);">
+               <div class="motion-kpi-lbl">Stream A</div>
+               <div class="motion-kpi-val" style="color: #818cf8;">${pStreamA}%</div>
+               <div class="motion-kpi-count">${streamACount.toLocaleString()} detections</div>
+             </div>
+             <div class="motion-kpi-card" style="border-color: rgba(139,92,246,0.4);">
+               <div class="motion-kpi-lbl">Stream B</div>
+               <div class="motion-kpi-val" style="color: #c084fc;">${pStreamB}%</div>
+               <div class="motion-kpi-count">${streamBCount.toLocaleString()} detections</div>
+             </div>`
+          : `<div class="motion-kpi-card" style="border-color: rgba(99,102,241,0.4);">
+               <div class="motion-kpi-lbl">Moving</div>
+               <div class="motion-kpi-val" style="color: #818cf8;">${pMoving}%</div>
+               <div class="motion-kpi-count">${movingCount.toLocaleString()} detections</div>
+             </div>`
+        }
+        <div class="motion-kpi-card" style="border-color: rgba(244,63,94,0.4);">
+          <div class="motion-kpi-lbl">Crush Risk</div>
+          <div class="motion-kpi-val" style="color: #fb7185;">${pCrush}%</div>
+          <div class="motion-kpi-count">${crushCount.toLocaleString()} detections</div>
         </div>
-        <div class="motion-banner-item">
-          <div class="motion-dot seg-stopped"></div>
-          <span class="motion-lbl">Stationary:</span>
-          <span class="motion-val">${pStopped}% (${stoppedCount.toLocaleString()})</span>
+        <div class="motion-kpi-card">
+          <div class="motion-kpi-lbl">Stationary</div>
+          <div class="motion-kpi-val" style="color: var(--muted);">${pStopped}%</div>
+          <div class="motion-kpi-count">${stoppedCount.toLocaleString()} detections</div>
         </div>
-        <div class="motion-banner-item">
-          <div class="motion-dot" style="background: #f59e0b;"></div>
-          <span class="motion-lbl">Counter-Flow:</span>
-          <span class="motion-val" style="color: #f59e0b;">${pCf}% (${cfCount.toLocaleString()})</span>
+        <div class="motion-kpi-card" style="border-color: rgba(245,158,11,0.4);">
+          <div class="motion-kpi-lbl">Counter-Flow</div>
+          <div class="motion-kpi-val" style="color: #fbbf24;">${pCf}%</div>
+          <div class="motion-kpi-count">${cfCount.toLocaleString()} detections</div>
         </div>
       </div>
-      <div class="hint u-mb-3">Showing top ${d.rows.length} of ${d.total} detections for <strong>${esc(modelLabel || 'Crowd Motion Monitor')}</strong> with enriched kinematic telemetry.</div>
-      <table>
+      <div class="hint u-mb-3" style="margin-bottom:12px;">Showing top ${d.rows.length} of ${d.total} detections for <strong>${esc(modelLabel || 'Crowd Motion Monitor')}</strong> with enriched kinematic telemetry.</div>
+      <table class="stages">
         <thead>
           <tr>
             <th>Time</th>
@@ -1146,9 +1162,9 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
   }).join('');
 
   containerEl.innerHTML = `
-    <div class="hint u-mb-3">Total positive detections: ${d.total}; showing top ${d.rows.length} rows for <strong>${esc(modelLabel || '')}</strong>.</div>
-    <table>
-      <thead><tr><th>Timestamp</th><th>Class Label</th><th>Conf</th>
+    <div class="hint u-mb-3" style="margin-bottom:12px;">Total positive detections: ${d.total}; showing top ${d.rows.length} rows for <strong>${esc(modelLabel || '')}</strong>.</div>
+    <table class="stages">
+      <thead><tr><th>Timestamp</th><th>Class Label</th><th class="u-num">Conf</th>
         <th>Track ID</th>${hasPlates ? '<th>Plate Read</th>' : ''}<th>Details</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
