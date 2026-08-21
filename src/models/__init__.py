@@ -1,6 +1,5 @@
 from models.base import BaseModelWrapper, Detection
-from models.optical_flow_crush import OpticalFlowCrushDetector
-from models.roboflow_combined import RoboflowCombinedDetector
+from models.crush.optical_flow_crush import OpticalFlowCrushDetector
 from models.crowd_flow import DenseFlowAnalyser
 
 from models.fall import (
@@ -16,6 +15,7 @@ from models.violence import (
     C3DViolenceClassifier,
     TSMViolenceClassifier,
     MMActionSlowOnlyClassifier,
+    RoboflowCombinedDetector,
 )
 from models.traffic import (
     RTDetrV2TrafficDetector,

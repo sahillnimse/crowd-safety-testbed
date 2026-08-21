@@ -82,7 +82,7 @@ def run_dir(video: str, model_key: str, create: bool = False) -> str:
 # at startup and models.crowd_flow.zones pulls in cv2 and numpy, which is a
 # second of page-load time for a set of strings.
 POSITIVE_LABELS = {"fall", "violence", "fire", "smoke",
-                   # OpticalFlowCrushDetector (models/optical_flow_crush.py)
+                   # OpticalFlowCrushDetector (src/models/crush/optical_flow_crush.py)
                    "turbulence", "convergence", "crush_risk",
                    "vehicle_moving", "vehicle_parked",
                    # ANPR: every captured vehicle is a result, whether or not

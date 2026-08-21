@@ -18,9 +18,10 @@ crowd-safety-testbed/
 │   ├── models/
 │   │   ├── base.py                 # Common BaseModelWrapper interface & Detection schema
 │   │   ├── _detectors.py           # SHARED RT-DETRv2 box detector (person / vehicle)
+│   │   ├── _tracker.py             # Simple IoU tracker
 │   │   ├── _weights.py             # Central model checkpoint search & resolution
-│   │   ├── optical_flow_crush.py   # Farnebäck dense optical flow (circular variance & convergence)
-│   │   ├── roboflow_combined.py    # Roboflow hosted violence & fall classifier
+│   │   ├── crush/                  # Crowd crush / turbulence — 1 model wrapper
+│   │   │   └── optical_flow_crush.py # Farnebäck dense optical flow (circular variance & convergence)
 │   │   ├── crowd_flow/             # Kumbh Mela Dense Optical Flow Crowd Safety Engine
 │   │   │   ├── dense_flow_analyser.py # DIS flow pipeline wrapper (consumption_type="flow_pair")
 │   │   │   ├── flow_field.py       # DIS/Farnebäck flow, GMC guards, smoothing, reliability
@@ -39,6 +40,7 @@ crowd-safety-testbed/
 │   │   │   ├── movenet.py            # Google MoveNet multipose
 │   │   │   └── optical_flow_fall.py  # Pose-free flow drop heuristic
 │   │   ├── violence/               # Violence/altercation detection — 8 model wrappers
+│   │   │   ├── roboflow_combined.py  # Roboflow hosted violence & fall classifier
 │   │   │   ├── x3d.py                # Lightweight 3D-CNN (pytorchvideo)
 │   │   │   ├── slowfast.py           # Dual-pathway 3D-CNN (fast motion sensitive)
 │   │   │   ├── videomae.py           # Transformer video classifier

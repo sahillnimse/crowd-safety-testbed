@@ -3,7 +3,7 @@ Calibration helper: analyzes the real distribution of optical flow statistics
 (circular variance, divergence, magnitude) across a video, so you can set
 thresholds based on actual percentiles instead of guessing.
 
-Uses the exact same statistics as models/optical_flow_crush.py — importing
+Uses the exact same statistics as src/models/crush/optical_flow_crush.py — importing
 them rather than reimplementing, so calibration can't drift away from what
 the detector actually computes. It previously did reimplement them, and
 calibrated a metric (plain std of flow angles) that measured leftward
@@ -31,7 +31,7 @@ if _SRC_DIR not in sys.path:
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from models.optical_flow_crush import OpticalFlowCrushDetector  # noqa: E402
+from models.crush.optical_flow_crush import OpticalFlowCrushDetector  # noqa: E402
 
 
 def main():

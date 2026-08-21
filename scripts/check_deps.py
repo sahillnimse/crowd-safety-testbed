@@ -20,8 +20,8 @@ if _PROJECT_ROOT not in sys.path:
 # deleted — which made a clean report mean considerably less than it looked.
 # A mismatch against the registry is itself reported below.
 MODELS_TO_CHECK = {
-    "optical_flow_crush": "models.optical_flow_crush",
-    "roboflow_combined": "models.roboflow_combined",
+    "optical_flow_crush": "models.crush.optical_flow_crush",
+    "roboflow_combined": "models.violence.roboflow_combined",
     "dense_flow": "models.crowd_flow.dense_flow_analyser",
     # Fall
     "fall_mediapipe_pose": "models.fall.mediapipe_pose",

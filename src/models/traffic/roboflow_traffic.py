@@ -1,6 +1,6 @@
 """
 Roboflow-hosted vehicle detector, following the exact same pattern as
-models/roboflow_combined.py (fall/violence) — hosted inference API, no
+models/violence/roboflow_combined.py (fall/violence) — hosted inference API, no
 local GPU/training needed, model pretrained specifically on traffic-camera
 footage rather than general COCO images.
 

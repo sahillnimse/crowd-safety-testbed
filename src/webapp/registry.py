@@ -338,8 +338,8 @@ def build_model(key: str, device: Optional[str],
                 video_name: str = "run", threshold: Optional[float] = None):
     """Construct a wrapper instance. Imports are deferred to call time so the
     API can list models without paying torch's import cost."""
-    from models.optical_flow_crush import OpticalFlowCrushDetector
-    from models.roboflow_combined import RoboflowCombinedDetector
+    from models.crush.optical_flow_crush import OpticalFlowCrushDetector
+    from models.violence.roboflow_combined import RoboflowCombinedDetector
     from models.fall import (
         MediaPipeFallDetector, MoveNetFallDetector, OpticalFlowFallDetector,
     )
