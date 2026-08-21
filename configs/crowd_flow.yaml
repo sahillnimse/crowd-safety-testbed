@@ -59,7 +59,7 @@ crowd_flow:
                              # medium ≈ 4-8 ms on 320×180 at CPU; upgrade if
                              # flow quality on oblique ghat cameras looks noisy.
 
-  # Measured with scripts/validate_flow_routes.py --routes a --sweep on
+  # Measured with tests/validate_flow_routes.py --routes a --sweep on
   # test_videos/Foregin Traffic.mp4 (1280x720 traffic camera), mean endpoint
   # error against known synthetic warps:
   #

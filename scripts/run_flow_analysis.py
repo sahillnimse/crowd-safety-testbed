@@ -58,9 +58,13 @@ import cv2
 import numpy as np
 import yaml
 
-# Ensure project root is on the path so `models/` is importable.
+# Ensure project root and src are on the path so `models/` is importable.
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_PROJECT_ROOT))
+_SRC_DIR = _PROJECT_ROOT / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from models.crowd_flow.dense_flow_analyser import DenseFlowAnalyser
 
@@ -268,7 +272,7 @@ def main() -> None:
 
     if args.validate:
         # Delegate to the validation script
-        val_script = _PROJECT_ROOT / "scripts" / "validate_flow.py"
+        val_script = _PROJECT_ROOT / "tests" / "validate_flow.py"
         logger.info("Running validation suite: %s", val_script)
         ret = subprocess.run(
             [sys.executable, str(val_script), "--all"],

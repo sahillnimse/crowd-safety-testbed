@@ -2,7 +2,7 @@
 
 Comprehensive computer vision test harness, benchmarking framework, and interactive web evaluation platform for real-time video analytics: dense optical flow & crowd crush analysis (Kumbh Mela engine), fall detection (pose), violence/altercation classification, vehicle tracking & ANPR (number plates), and umbrella detection against real surveillance and crowd footage.
 
-**24 models, no YOLO.** Every detector is Apache 2.0 or MIT — `ultralytics` (AGPL-3.0) is not a dependency, so nothing here carries a copyleft obligation onto surrounding code. Wrappers that need person or vehicle boxes share one RT-DETRv2 detector in [`models/_detectors.py`](models/_detectors.py) rather than each loading their own backbone.
+**24 models, no YOLO.** Every detector is Apache 2.0 or MIT — `ultralytics` (AGPL-3.0) is not a dependency, so nothing here carries a copyleft obligation onto surrounding code. Wrappers that need person or vehicle boxes share one RT-DETRv2 detector in [`src/models/_detectors.py`](src/models/_detectors.py) rather than each loading their own backbone.
 
 The dense flow engine ships with **annotation-free accuracy measurement** — three routes that manufacture ground truth without anyone labelling a frame, so "is this measurement any good?" has a number behind it rather than an opinion. See [Validating the Flow Field](#-validating-the-flow-field-3-annotation-free-routes).
 
@@ -12,82 +12,91 @@ The dense flow engine ships with **annotation-free accuracy measurement** — th
 
 ```
 crowd-safety-testbed/
-├── ingestion/
-│   └── youtube_fetch.py        # yt-dlp wrapper: URL -> local video file
-├── models/
-│   ├── base.py                 # Common BaseModelWrapper interface & Detection schema
-│   ├── _detectors.py           # SHARED RT-DETRv2 box detector (person / vehicle)
-│   ├── _weights.py             # Central model checkpoint search & resolution
-│   ├── optical_flow_crush.py   # Farnebäck dense optical flow (circular variance & convergence)
-│   ├── roboflow_combined.py    # Roboflow hosted violence & fall classifier
-│   ├── crowd_flow/             # Kumbh Mela Dense Optical Flow Crowd Safety Engine
-│   │   ├── dense_flow_analyser.py # DIS flow pipeline wrapper (consumption_type="flow_pair")
-│   │   ├── flow_field.py       # DIS/Farnebäck flow, GMC guards, smoothing, reliability
-│   │   ├── ground_plane.py     # Camera perspective calibration & pixel <-> m/s conversion
-│   │   ├── crowd_metrics.py    # Divergence, curl, coherence, stop-and-go waves, turbulence
-│   │   ├── zones.py            # Polygonal zone thresholding, hysteresis & alert engine
-│   │   ├── detector_masks.py   # Vehicle & umbrella exclusion mask layers
-│   │   ├── visualise.py        # HSV flow overlays, divergence heatmaps, time-series plots
-│   │   └── validation/         # Annotation-free accuracy measurement (3 routes)
-│   │       ├── report.py         # Shared result types; every route states its own blind spot
-│   │       ├── synthetic_warp.py # (a) known warp on a real frame -> endpoint error + sweep
-│   │       ├── cross_camera.py   # (b) two calibrated views -> ground-plane disagreement
-│   │       └── cross_family.py   # (c) tracker vs flow, incl. two-arrow comparison video
-│   ├── fall/                   # Fall detection — 3 model wrappers
-│   │   ├── mediapipe_pose.py     # MediaPipe BlazePose (+ RT-DETRv2 person detector)
-│   │   ├── movenet.py            # Google MoveNet multipose
-│   │   └── optical_flow_fall.py  # Pose-free flow drop heuristic
-│   ├── violence/               # Violence/altercation detection — 8 model wrappers
-│   │   ├── x3d.py                # Lightweight 3D-CNN (pytorchvideo)
-│   │   ├── slowfast.py           # Dual-pathway 3D-CNN (fast motion sensitive)
-│   │   ├── videomae.py           # Transformer video classifier
-│   │   ├── i3d.py                # Inflated 3D ConvNet literature baseline
-│   │   ├── c3d.py                # Simple 3D-CNN baseline
-│   │   ├── tsm.py                # Temporal Shift Module on ResNet-50
-│   │   └── mmaction_slowonly.py  # MMAction2 SlowOnly config/checkpoint pipeline
-│   ├── traffic/                # Traffic / vehicle tracking — 3 model wrappers
-│   │   ├── rtdetrv2_traffic.py   # RT-DETRv2-S vehicle detector (Apache 2.0, 20M params)
-│   │   ├── roboflow_traffic.py   # Roboflow hosted traffic model
-│   │   └── mog2_parked.py        # MOG2 background subtraction parked car detector
-│   ├── anpr/                   # Automatic Number Plate Recognition — 4 model wrappers
-│   │   ├── anpr.py               # RT-DETRv2 vehicle detect + DETR plate crop + EasyOCR + Voting
-│   │   ├── indian_anpr.py        # Roboflow Indian vehicle/plate detector + EasyOCR
-│   │   ├── rapid_ocr_wrapper.py  # RapidOCR (PP-OCRv4 ONNX Runtime engine)
-│   │   └── rtdetrv2_anpr.py      # RT-DETRv2 vehicle/color classification + RapidOCR/EasyOCR
-│   └── umbrella/               # Umbrella detection & crowd density — 4 model wrappers
-│       ├── umbrella_ssd.py       # SSDLite320 + MobileNetV3 (CPU-friendly)
-│       ├── umbrella_rfdetr.py    # RF-DETR Nano (DINOv2 backbone for occluded umbrellas)
-│       ├── umbrella_rtdetrv2.py  # RT-DETRv2-S COCO zero-shot detector
-│       └── umbrella_trained.py  # RT-DETRv2 fine-tuned single-class umbrella model
-├── pipeline/
-│   ├── frame_buffer.py         # Sliding window buffer for temporal clip models
-│   ├── runner.py               # Main pipeline runner (video -> frames -> models -> results)
-│   ├── annotate.py             # Box interpolation, centered smoothing & ffmpeg H.264 writer
-│   └── device.py               # Central PyTorch CUDA / CPU resolution & hardware reports
-├── webapp/                     # FastAPI Backend & Web Dashboard
-│   ├── app.py                  # API endpoints, video streaming, upload, history & ANPR routes
-│   ├── jobs.py                 # Background JobManager & thread worker pool with GPU locking
-│   ├── registry.py             # Dynamic model catalog & live availability checker
-│   ├── history.py              # Disk-backed run scanner (survives server restarts)
-│   ├── validation.py           # Background runner for the dense-flow validation routes
-│   └── frontend/               # Dashboard frontend (HTML5, Vanilla CSS, JS)
+├── src/                        # Application source root (add to sys.path / package root)
+│   ├── ingestion/
+│   │   └── youtube_fetch.py        # yt-dlp wrapper: URL -> local video file
+│   ├── models/
+│   │   ├── base.py                 # Common BaseModelWrapper interface & Detection schema
+│   │   ├── _detectors.py           # SHARED RT-DETRv2 box detector (person / vehicle)
+│   │   ├── _weights.py             # Central model checkpoint search & resolution
+│   │   ├── optical_flow_crush.py   # Farnebäck dense optical flow (circular variance & convergence)
+│   │   ├── roboflow_combined.py    # Roboflow hosted violence & fall classifier
+│   │   ├── crowd_flow/             # Kumbh Mela Dense Optical Flow Crowd Safety Engine
+│   │   │   ├── dense_flow_analyser.py # DIS flow pipeline wrapper (consumption_type="flow_pair")
+│   │   │   ├── flow_field.py       # DIS/Farnebäck flow, GMC guards, smoothing, reliability
+│   │   │   ├── ground_plane.py     # Camera perspective calibration & pixel <-> m/s conversion
+│   │   │   ├── crowd_metrics.py    # Divergence, curl, coherence, stop-and-go waves, turbulence
+│   │   │   ├── zones.py            # Polygonal zone thresholding, hysteresis & alert engine
+│   │   │   ├── detector_masks.py   # Vehicle & umbrella exclusion mask layers
+│   │   │   ├── visualise.py        # HSV flow overlays, divergence heatmaps, time-series plots
+│   │   │   └── validation/         # Annotation-free accuracy measurement (3 routes)
+│   │   │       ├── report.py         # Shared result types; every route states its own blind spot
+│   │   │       ├── synthetic_warp.py # (a) known warp on a real frame -> endpoint error + sweep
+│   │   │       ├── cross_camera.py   # (b) two calibrated views -> ground-plane disagreement
+│   │   │       └── cross_family.py   # (c) tracker vs flow, incl. two-arrow comparison video
+│   │   ├── fall/                   # Fall detection — 3 model wrappers
+│   │   │   ├── mediapipe_pose.py     # MediaPipe BlazePose (+ RT-DETRv2 person detector)
+│   │   │   ├── movenet.py            # Google MoveNet multipose
+│   │   │   └── optical_flow_fall.py  # Pose-free flow drop heuristic
+│   │   ├── violence/               # Violence/altercation detection — 8 model wrappers
+│   │   │   ├── x3d.py                # Lightweight 3D-CNN (pytorchvideo)
+│   │   │   ├── slowfast.py           # Dual-pathway 3D-CNN (fast motion sensitive)
+│   │   │   ├── videomae.py           # Transformer video classifier
+│   │   │   ├── i3d.py                # Inflated 3D ConvNet literature baseline
+│   │   │   ├── c3d.py                # Simple 3D-CNN baseline
+│   │   │   ├── tsm.py                # Temporal Shift Module on ResNet-50
+│   │   │   └── mmaction_slowonly.py  # MMAction2 SlowOnly config/checkpoint pipeline
+│   │   ├── traffic/                # Traffic / vehicle tracking — 3 model wrappers
+│   │   │   ├── rtdetrv2_traffic.py   # RT-DETRv2-S vehicle detector (Apache 2.0, 20M params)
+│   │   │   ├── roboflow_traffic.py   # Roboflow hosted traffic model
+│   │   │   └── mog2_parked.py        # MOG2 background subtraction parked car detector
+│   │   ├── anpr/                   # Automatic Number Plate Recognition — 4 model wrappers
+│   │   │   ├── anpr.py               # RT-DETRv2 vehicle detect + DETR plate crop + EasyOCR + Voting
+│   │   │   ├── indian_anpr.py        # Roboflow Indian vehicle/plate detector + EasyOCR
+│   │   │   ├── rapid_ocr_wrapper.py  # RapidOCR (PP-OCRv4 ONNX Runtime engine)
+│   │   │   └── rtdetrv2_anpr.py      # RT-DETRv2 vehicle/color classification + RapidOCR/EasyOCR
+│   │   └── umbrella/               # Umbrella detection & crowd density — 4 model wrappers
+│   │       ├── umbrella_ssd.py       # SSDLite320 + MobileNetV3 (CPU-friendly)
+│   │       ├── umbrella_rfdetr.py    # RF-DETR Nano (DINOv2 backbone for occluded umbrellas)
+│   │       ├── umbrella_rtdetrv2.py  # RT-DETRv2-S COCO zero-shot detector
+│   │       └── umbrella_trained.py  # RT-DETRv2 fine-tuned single-class umbrella model
+│   ├── pipeline/
+│   │   ├── frame_buffer.py         # Sliding window buffer for temporal clip models
+│   │   ├── runner.py               # Main pipeline runner (video -> frames -> models -> results)
+│   │   ├── annotate.py             # Box interpolation, centered smoothing & ffmpeg H.264 writer
+│   │   └── device.py               # Central PyTorch CUDA / CPU resolution & hardware reports
+│   └── webapp/                     # FastAPI Backend & Web Dashboard
+│       ├── app.py                  # API endpoints, video streaming, upload, history & ANPR routes
+│       ├── jobs.py                 # Background JobManager & thread worker pool with GPU locking
+│       ├── registry.py             # Dynamic model catalog & live availability checker
+│       ├── history.py              # Disk-backed run scanner (survives server restarts)
+│       ├── validation.py           # Background runner for the dense-flow validation routes
+│       └── frontend/               # Dashboard frontend (HTML5, Vanilla CSS, JS)
+├── vendor/
+│   └── apgcc/                  # Vendored APGCC crowd counter (upstream, unmodified)
+│       ├── config.py, models/, util/, configs/
+│       └── ...                 # Loaded dynamically by src/models/head_count/_apgcc_loader.py
+├── tests/
+│   ├── validate_flow.py        # 18 synthetic contract tests (sign conventions, GMC, ...)
+│   └── validate_flow_routes.py # The 3 annotation-free accuracy routes + config sweep
+├── docs/
+│   └── Final_Models.md         # Model registry reference
 ├── configs/
 │   ├── crowd_flow.yaml         # Camera calibration, polygons, and zone threshold configs
 │   └── test_videos.yaml        # Test video catalog and ground-truth evaluation windows
-├── scripts/
+├── scripts/                    # Operational CLI scripts (all add src/ to sys.path)
 │   ├── setup.sh                # Environment setup
 │   ├── run_single.py           # Single model CLI runner
 │   ├── run_all.py              # Multi-model batch test runner
 │   ├── compare_models.py       # Head-to-head metrics comparison table
 │   ├── calibrate_optical_flow.py  # Optical flow threshold calibration CLI
 │   ├── calibrate_ground_plane.py  # Homography builder (px -> m/s) per camera
-│   ├── run_flow_analysis.py       # Dense-flow CLI: video/glob/RTSP -> CSV, video, plots
-│   ├── validate_flow.py           # 11 synthetic contract tests (sign conventions, GMC, ...)
-│   └── validate_flow_routes.py    # The 3 annotation-free accuracy routes + config sweep
+│   └── run_flow_analysis.py       # Dense-flow CLI: video/glob/RTSP -> CSV, video, plots
 ├── outputs/                    # ALL generated artifacts (see outputs/README.md)
 │   ├── runs/<video>/<model>/   #   detections.json, detections.csv, annotated.mp4
 │   ├── anpr/<video>/           #   vehicle portraits, plate crops, manifest.json
 │   └── validation/             #   TEST artifacts — not model output
+├── main.py                     # Repo entry point (adds src/ to sys.path)
 └── requirements.txt
 ```
 
@@ -164,7 +173,7 @@ A quiet window in the same video stayed at 0.001 with cropping enabled, sharpeni
 
 ## 🌊 Dense Flow Analysis Engine (`dense_flow`)
 
-The Kumbh Mela dense optical flow module ([dense_flow_analyser.py](file:///c:/Users/sahil/Downloads/Projects/crowd-safety-testbed/models/crowd_flow/dense_flow_analyser.py)) is designed for high-density crowd safety monitoring:
+The Kumbh Mela dense optical flow module ([dense_flow_analyser.py](file:///c:/Users/sahil/Downloads/Projects/crowd-safety-testbed/src/models/crowd_flow/dense_flow_analyser.py)) is designed for high-density crowd safety monitoring:
 
 - **DIS Optical Flow Field (`flow_field.py`)**: Computes dense motion vectors at downsampled compute resolution (480px default, see below), featuring Global Motion Compensation (GMC) to strip out camera shake, temporal smoothing, and rain/low-light gradient reliability gating.
 - **Ground Plane Calibration (`ground_plane.py`)**: Transforms pixel velocities into real physical speed (`m/s`) via camera homography or height/pitch perspective calibration.
@@ -265,14 +274,14 @@ Agreement reads as one thick arrow and a green box; disagreement as a visible V,
 
 ```bash
 # All three routes, with the comparison video
-python scripts/validate_flow_routes.py --source "test_videos/Nashik Crowd.mp4" \
+python tests/validate_flow_routes.py --source "test_videos/Nashik Crowd.mp4" \
     --routes abc --comparison-video
 
 # Route (a) plus a configuration sweep
-python scripts/validate_flow_routes.py --source test_videos/clip.mp4 --routes a --sweep
+python tests/validate_flow_routes.py --source test_videos/clip.mp4 --routes a --sweep
 
 # Route (b) machinery self-test on a synthetic camera pair (no real pair needed)
-python scripts/validate_flow_routes.py --source test_videos/clip.mp4 \
+python tests/validate_flow_routes.py --source test_videos/clip.mp4 \
     --routes b --selftest-cross-camera
 ```
 
@@ -280,7 +289,7 @@ python scripts/validate_flow_routes.py --source test_videos/clip.mp4 \
 
 ## 💳 Automatic Number Plate Recognition (ANPR)
 
-The ANPR subsystem ([anpr.py](file:///c:/Users/sahil/Downloads/Projects/crowd-safety-testbed/models/anpr/anpr.py)) captures each tracked vehicle and exports a photo gallery to `outputs/anpr/<video>/`:
+The ANPR subsystem ([anpr.py](file:///c:/Users/sahil/Downloads/Projects/crowd-safety-testbed/src/models/anpr/anpr.py)) captures each tracked vehicle and exports a photo gallery to `outputs/anpr/<video>/`:
 
 ```
 outputs/anpr/<video>/
@@ -326,9 +335,9 @@ Umbrella models estimate crowd density and serve as an overhead rain proxy (whic
   - `"flow_pair"`: Consecutive frame pair $(t-1, t)$ for optical flow metrics.
 - **Interpreting Confidence**: `Detection.confidence` represents **the probability of the reported event label** (e.g., fall or violence), not the generic person-detector score. Upstream detector confidence is preserved in `extra.detector_confidence`.
 - **Shared Fall Components**:
-  - `models/fall/_geometry.py`: Torso angle calculation, aspect ratio, posture scoring.
-  - `models/fall/_tracker.py`: Greedy 1-to-1 IoU tracking + $K$-consecutive frame confirmation (`sustained()`). Also supplies the independent velocity estimate for dense-flow validation route (c).
-  - `models/fall/_skeleton.py`: Keypoint normalization and Gaussian heatmap rendering.
+  - `src/models/fall/_geometry.py`: Torso angle calculation, aspect ratio, posture scoring.
+  - `src/models/fall/_tracker.py`: Greedy 1-to-1 IoU tracking + $K$-consecutive frame confirmation (`sustained()`). Also supplies the independent velocity estimate for dense-flow validation route (c).
+  - `src/models/fall/_skeleton.py`: Keypoint normalization and Gaussian heatmap rendering.
 
 ---
 
@@ -337,14 +346,14 @@ Umbrella models estimate crowd density and serve as an overhead rain proxy (whic
 Start the web server:
 
 ```bash
-python -m webapp
+python -m src.webapp
 ```
 
 Then navigate to **`http://127.0.0.1:8000`**.
 
 - **One Global Confidence Threshold**: a single slider in Execution Settings applies to every selected model. Per-model sliders were a false affordance — comparing detectors only means something when they are judged at the same operating point, and a grid of sliders invites tuning each until it looks good, which is how a benchmark stops measuring anything. Classical-CV models with no confidence score are skipped rather than given a meaningless value.
 - **Sidebar Model Registry**: Displays model status badges (`ready`, `fallback`, `blocked`) based on local checkpoint availability without paying PyTorch startup import costs.
-- **Video Ingestion**: YouTube URL downloading & caching (`ingestion/youtube_fetch.py`), local `test_videos/` selection, or drag-and-drop file upload.
+- **Video Ingestion**: YouTube URL downloading & caching (`src/ingestion/youtube_fetch.py`), local `test_videos/` selection, or drag-and-drop file upload.
 - **GPU Thread Pool Manager**: `JobManager` handles asynchronous background execution with single-GPU thread locks to prevent out-of-memory crashes.
 - **Interactive Analytical Modal**: Inspect key KPIs, detection timelines, browser-compatible H.264 annotated video streams (`_FFmpegH264Writer`), raw JSON payloads, and — for `dense_flow` results — a **Validation** tab carrying the three routes and the two-arrow comparison video. Opening that tab on any other model says so plainly rather than showing flow numbers beside an unrelated result.
 - **Dense Flow Validation Panel**: *Run validation* / *Delete output* / *Refresh* against the selected video. Skipped routes are called out (*"the picture is incomplete, not clean"*) and measurements with no tolerance render visually neutral, so a number that was never judged cannot be misread as one that passed. Deletion is refused while a run is in progress, since the worker would rewrite the files moments later.
@@ -378,14 +387,14 @@ python scripts/run_flow_analysis.py --source test_videos/crowd_sample.mp4 \
     --camera default --output-dir outputs/flow_run_001
 
 # 7. Dense Flow Correctness — synthetic contract tests (sign conventions, GMC, calibration)
-python scripts/validate_flow.py --all
+python tests/validate_flow.py --all
 
 # 8. Dense Flow Accuracy — the 3 annotation-free routes, with the comparison video
-python scripts/validate_flow_routes.py --source test_videos/crowd_sample.mp4 \
+python tests/validate_flow_routes.py --source test_videos/crowd_sample.mp4 \
     --routes abc --comparison-video
 ```
 
-**`validate_flow.py` vs `validate_flow_routes.py`** — the first asks *"are the contracts intact?"* (sign conventions, unit handling, internal self-tests) on synthetic data, and must pass before a run is trusted at all. The second asks *"how wrong is it on real imagery?"* and produces the error figures. Both are needed: the eleven contract tests passed clean while GMC was corrupting real footage by up to 179 px/frame, because synthetic frames contain no independently moving objects for the estimator to lock onto.
+**`tests/validate_flow.py` vs `tests/validate_flow_routes.py`** — the first asks *"are the contracts intact?"* (sign conventions, unit handling, internal self-tests) on synthetic data, and must pass before a run is trusted at all. The second asks *"how wrong is it on real imagery?"* and produces the error figures. Both are needed: the eighteen contract tests passed clean while GMC was corrupting real footage by up to 179 px/frame, because synthetic frames contain no independently moving objects for the estimator to lock onto.
 
 ---
 

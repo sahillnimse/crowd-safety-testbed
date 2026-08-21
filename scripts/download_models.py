@@ -256,5 +256,9 @@ def main():
 
 if __name__ == "__main__":
     set_cache_env()                    # before any heavy import
-    sys.path.insert(0, PROJECT_ROOT)
+    _src = os.path.join(PROJECT_ROOT, "src")
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+    if PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT)
     main()

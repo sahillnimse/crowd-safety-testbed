@@ -105,5 +105,5 @@ matplotlib>=3.8.0
 
 # Head-count / APGCC point detector (models/head_count/)
 # easydict: required by the vendored APGCC config loader
-#   (_apgcc_vendor/config.py uses `from easydict import EasyDict as edict`).
+#   (vendor/apgcc/config.py uses `from easydict import EasyDict as edict`).
 easydict>=1.10

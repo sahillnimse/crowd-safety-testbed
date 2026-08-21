@@ -47,7 +47,12 @@ import cv2
 import numpy as np
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SRC_DIR = _PROJECT_ROOT / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from models.crowd_flow.head_points import (   # noqa: E402
     read_points, write_points, write_lists, require_gui,

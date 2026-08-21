@@ -410,7 +410,11 @@ ALL_MODELS = [
 
 # Fail loudly on drift rather than emitting a confident, wrong manifest.
 try:
-    sys.path.insert(0, str(PROJECT_ROOT))
+    _src = PROJECT_ROOT / "src"
+    if str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
     from webapp import registry as _registry
     _known = set(_registry.BY_KEY)
     _listed = {row[0] for row in ALL_MODELS}

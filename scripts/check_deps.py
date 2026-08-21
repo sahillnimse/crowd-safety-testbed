@@ -8,8 +8,12 @@ Usage:
 """
 
 import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_SRC_DIR = os.path.join(_PROJECT_ROOT, "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # Every key in webapp/registry.py, so the check covers what the project can
 # actually run.  This listed 11 of 24 models and included three that had been
