@@ -102,3 +102,8 @@ scipy>=1.12.0
 # matplotlib: time-series PNG plots written by FlowVisualiser.save_timeseries_plots().
 #   Optional; a WARNING is logged and plots are skipped if absent.
 matplotlib>=3.8.0
+
+# Head-count / APGCC point detector (models/head_count/)
+# easydict: required by the vendored APGCC config loader
+#   (_apgcc_vendor/config.py uses `from easydict import EasyDict as edict`).
+easydict>=1.10

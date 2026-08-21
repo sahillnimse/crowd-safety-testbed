@@ -35,12 +35,13 @@ Either of two sources, selected by ``source``:
     bodies are almost entirely occluded and boxes merge.
 
 ``"heads"``
-    models/head_count — a density-map counter trained on point labels from
-    your own footage.  Heads stay visible where bodies do not, and the count
-    is an integral over a density map rather than a number of successful
-    detections, so it does not collapse when individuals stop being
-    separable.  This is the better source, and it requires you to label
-    patches and train (see models/head_count/__init__.py).
+    models/head_count — a pretrained APGCC point detector (VGG16-BN
+    encoder, IFI decoder, trained on SHA/SHB crowd benchmarks).  Heads
+    stay visible where bodies do not, and APGCC predicts a set of head
+    point coordinates rather than accumulating a density map, so it does
+    not collapse when individuals stop being separable.  No labelling or
+    training on this project's footage is required — the model is
+    downloaded from the SHHA checkpoint.
 
 Head points are NOT ground contacts
 -----------------------------------
@@ -262,9 +263,9 @@ class DensityEstimator:
         if not self.enabled or self._detector is not None:
             return
         if self.source == "heads":
-            from models.head_count import HeadCounter
-            self._detector = HeadCounter(weights=self.head_weights,
-                                         device=self.device)
+            from models.head_count import get_head_counter
+            self._detector = get_head_counter(weights=self.head_weights,
+                                              device=self.device)
         else:
             from models._detectors import get_detector
             self._detector = get_detector(device=self.device)

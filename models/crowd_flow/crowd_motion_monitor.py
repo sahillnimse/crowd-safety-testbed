@@ -375,10 +375,32 @@ class CrowdMotionMonitor(BaseModelWrapper):
         # existing RT-DETRv2 box is the same person already covered and is
         # dropped; only points RT-DETRv2 missed become new synthetic boxes.
         # This is what stops the same person getting two triangles.
+        #
+        # APGCC *points* are only recomputed every apgcc_every frames (the
+        # expensive step). But the dedup-against-RT-DETRv2 filter runs on
+        # every frame using the *current* frame's RT-DETRv2 boxes, so a
+        # person detected mid-interval by RT-DETRv2 is immediately removed
+        # from the stale APGCC box list rather than creating a double-track
+        # until the next APGCC recompute.
         if frame_index % self.apgcc_every == 0:
             apgcc_points = self._head_counter.points(curr_frame)
             self._last_apgcc_boxes = self._apgcc_points_to_boxes(
                 apgcc_points, rtdetr_boxes, curr_frame.shape[:2],
+            )
+
+        # Re-filter stale APGCC boxes against the *current* frame's
+        # RT-DETRv2 boxes every frame, not only on recompute frames.
+        # _apgcc_points_to_boxes works on points, so on skip frames we
+        # reconstruct synthetic centre points from the stored boxes and
+        # let the same claim/expand logic drop any that are now covered.
+        if frame_index % self.apgcc_every != 0 and self._last_apgcc_boxes:
+            synth_centres = np.array(
+                [[(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5]
+                 for b in self._last_apgcc_boxes],
+                dtype=np.float32,
+            )
+            self._last_apgcc_boxes = self._apgcc_points_to_boxes(
+                synth_centres, rtdetr_boxes, curr_frame.shape[:2],
             )
 
         boxes = rtdetr_boxes + self._last_apgcc_boxes

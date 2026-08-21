@@ -201,7 +201,7 @@ class ASPP(nn.Module):
 
     def forward(self, x):
         _, _, h, w = x.size()
-        feat1 = F.upsample(self.conv1(x), size=(h, w), mode='bilinear', align_corners=True)
+        feat1 = F.interpolate(self.conv1(x), size=(h, w), mode='bilinear', align_corners=True)  # upstream: F.upsample (deprecated, patched for forward-compat)
         feat2 = self.conv2(x)
         feat3 = self.conv3(x)
         feat4 = self.conv4(x)
@@ -394,7 +394,7 @@ def make_coord(shape, ranges=None, flatten=True):
         r = (v1 - v0) / (2 * n)
         seq = v0 + r + (2 * r) * torch.arange(n).float()
         coord_seqs.append(seq)
-    ret = torch.stack(torch.meshgrid(*coord_seqs), dim=-1)
+    ret = torch.stack(torch.meshgrid(*coord_seqs, indexing='ij'), dim=-1)  # indexing='ij' matches old default, silences future torch warning
     if flatten:
         ret = ret.view(-1, ret.shape[-1])
     # print("Coord:", ret.size())
