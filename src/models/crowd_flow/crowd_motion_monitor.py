@@ -41,6 +41,7 @@ Integration contract
   confidence : normalised speed (moving) or 0.0 (stopped)
   bbox       : [x1, y1, x2, y2] person box in source pixels
   extra      : {track_id, speed_px_frame, heading_deg, crowd_direction,
+                stream_screen_direction, stream_angle_deg,
                 personally_stationary, local_divergence, local_crush_risk}
 - finalize() closes the streaming H.264 writer and sets
   self.annotated_video_path (picked up by webapp/jobs.py via getattr).
@@ -265,6 +266,11 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._counterflow_people_count: int = 0
         self._frame_counterflow_counts: list[tuple[int, float, int, float]] = []
 
+        # Running sum of the two inferred stream centres (unit heading vectors)
+        # so finalize() can emit one screen-relative direction per stream.
+        self._stream_centre_acc: list[list[float]] = [[0.0, 0.0], [0.0, 0.0]]
+        self._stream_centre_n: int = 0
+
     # ──────────────────────────────────────────────────────────────────────
     # Lifecycle
     # ──────────────────────────────────────────────────────────────────────
@@ -311,6 +317,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._entropy_records.clear()
         self._counterflow_people_count = 0
         self._frame_counterflow_counts.clear()
+        self._stream_centre_acc = [[0.0, 0.0], [0.0, 0.0]]
+        self._stream_centre_n = 0
 
         os.makedirs(self._output_dir, exist_ok=True)
         self._model = "ready"
@@ -522,8 +530,27 @@ class CrowdMotionMonitor(BaseModelWrapper):
         # tracks.  The helper uses deterministic initialization and orders the
         # resulting centres, so an equivalent frame produces the same labels.
         stream_centres = self._infer_direction_streams(track_records)
+        stream_dir_a = stream_dir_b = None
+        stream_ang_a = stream_ang_b = None
+        if len(stream_centres) == 2:
+            stream_dir_a, stream_ang_a = self._screen_direction_from_vector(*stream_centres[0])
+            stream_dir_b, stream_ang_b = self._screen_direction_from_vector(*stream_centres[1])
+            self._stream_centre_acc[0][0] += float(stream_centres[0][0])
+            self._stream_centre_acc[0][1] += float(stream_centres[0][1])
+            self._stream_centre_acc[1][0] += float(stream_centres[1][0])
+            self._stream_centre_acc[1][1] += float(stream_centres[1][1])
+            self._stream_centre_n += 1
         for tr in track_records:
             tr["crowd_direction"] = self._nearest_stream(tr["heading_vec"], stream_centres)
+            if tr["crowd_direction"] == "stream_a":
+                tr["stream_screen_direction"] = stream_dir_a
+                tr["stream_angle_deg"] = stream_ang_a
+            elif tr["crowd_direction"] == "stream_b":
+                tr["stream_screen_direction"] = stream_dir_b
+                tr["stream_angle_deg"] = stream_ang_b
+            else:
+                tr["stream_screen_direction"] = None
+                tr["stream_angle_deg"] = None
 
         # 7. Pass 2: Calculate local directional entropy and counterflow opposition scores.
         detections: list[Detection] = []
@@ -634,6 +661,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
                     "speed_px_frame":            round(tr["speed"], 4),
                     "heading_deg":               round(hdeg, 2),
                     "crowd_direction":           crowd_direction,
+                    "stream_screen_direction":   tr.get("stream_screen_direction"),
+                    "stream_angle_deg":          tr.get("stream_angle_deg"),
                     "personally_stationary":     p_stat,
                     "local_divergence":          round(local_div, 5),
                     "local_crush_risk":          local_crush_risk,
@@ -871,6 +900,14 @@ class CrowdMotionMonitor(BaseModelWrapper):
             "heading_histogram": heading_bins,
         }
 
+        # Screen-relative stream directions from the run's accumulated centres.
+        # Additive keys only — existing summary schema is unchanged.
+        dir_a, ang_a, dir_b, ang_b = self._run_stream_directions()
+        self.summary["stream_a_direction"] = dir_a
+        self.summary["stream_b_direction"] = dir_b
+        self.summary["stream_a_angle_deg"] = ang_a
+        self.summary["stream_b_angle_deg"] = ang_b
+
         logger.info(
             "CrowdMotionMonitor summary: total=%d, moving=%.1f%% (single:%.1f%%, A:%.1f%%, B:%.1f%%), "
             "crush=%.1f%% (%d events), counterflow=%.1f%% (%d events), entropy=%.3f, var=%.3f",
@@ -976,6 +1013,55 @@ class CrowdMotionMonitor(BaseModelWrapper):
             return "moving"
         dots = [heading[0] * centre[0] + heading[1] * centre[1] for centre in centres]
         return "stream_a" if dots[0] >= dots[1] else "stream_b"
+
+    @staticmethod
+    def _screen_direction_from_vector(cx: float, cy: float) -> tuple[str, float]:
+        """
+        Map an image-space heading vector (cx, cy) to a 4-way screen-relative
+        label and the raw heading angle in degrees.
+
+        Axis convention matches heading_deg elsewhere in this module:
+        ``angle = atan2(cy, cx)`` with +x right and +y downward (OpenCV /
+        optical-flow image space).  The existing 2-way colour comments treat
+        heading_deg in ±90° as rightward (TEAL-GREEN) and outside ±90° as
+        leftward (ELECTRIC BLUE).  This helper refines that into four 90°
+        quadrants centred on the axes — not 8-way diagonal buckets.
+
+        These labels are relative to the camera framing, not geographic
+        compass directions.  The pipeline has no camera calibration /
+        homography by default (see the "Camera is uncalibrated" warning
+        path in zones.py).
+
+        Quadrants (boundaries at ±45° / ±135°):
+          Rightward        : |angle| <= 45°          (+x)
+          Toward camera    :  45° < angle <= 135°    (+y, down the frame)
+          Leftward         : |angle| > 135°          (-x)
+          Away from camera : -135° <= angle < -45°   (-y, up the frame)
+        """
+        angle_deg = math.degrees(math.atan2(cy, cx))
+        if -45.0 <= angle_deg <= 45.0:
+            label = "Rightward"
+        elif 45.0 < angle_deg <= 135.0:
+            label = "Toward camera"
+        elif angle_deg < -135.0 or angle_deg > 135.0:
+            label = "Leftward"
+        else:
+            label = "Away from camera"
+        return label, round(angle_deg, 2)
+
+    def _run_stream_directions(self) -> tuple[Optional[str], Optional[float], Optional[str], Optional[float]]:
+        """One screen-relative label per stream from accumulated centres."""
+        if self._stream_centre_n <= 0:
+            return None, None, None, None
+        out: list[tuple[Optional[str], Optional[float]]] = []
+        for acc in self._stream_centre_acc:
+            n = math.hypot(acc[0], acc[1])
+            if n <= 1e-6:
+                out.append((None, None))
+                continue
+            out.append(self._screen_direction_from_vector(acc[0] / n, acc[1] / n))
+        (dir_a, ang_a), (dir_b, ang_b) = out[0], out[1]
+        return dir_a, ang_a, dir_b, ang_b
 
     @staticmethod
     def _iterate_grid_cells(h: int, w: int, cell_fn) -> np.ndarray:

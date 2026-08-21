@@ -16,12 +16,34 @@ pointless work.
 """
 
 import json
+import math
 import os
 from collections import Counter, defaultdict
 
 from webapp.jobs import (POSITIVE_LABELS, RUNS_DIR, RUN_CSV,
                          RUN_JSON, RUN_REPORT, RUN_SUMMARY, RUN_VIDEO)
 from webapp.registry import BY_KEY
+
+
+def _mean_heading_screen_direction(headings: list[float]):
+    """Bucket a mean image-space heading using the monitor's 4-way helper."""
+    if not headings:
+        return None, None
+    ux = sum(math.cos(math.radians(h)) for h in headings) / len(headings)
+    uy = sum(math.sin(math.radians(h)) for h in headings) / len(headings)
+    if math.hypot(ux, uy) <= 1e-6:
+        return None, None
+    from models.crowd_flow.crowd_motion_monitor import CrowdMotionMonitor
+    return CrowdMotionMonitor._screen_direction_from_vector(ux, uy)
+
+
+def _majority_or_mean_direction(labels: list[str], angles: list[float], headings: list[float]):
+    """Prefer per-detection screen labels from the monitor; else mean heading."""
+    if labels:
+        dir_label = Counter(labels).most_common(1)[0][0]
+        ang = round(sum(angles) / len(angles), 2) if angles else None
+        return dir_label, ang
+    return _mean_heading_screen_direction(headings)
 
 # path -> (mtime, size, summary dict)
 _CACHE: dict[str, tuple[float, int, dict]] = {}
@@ -40,6 +62,10 @@ def compute_detections_summary(rows: list) -> dict:
             "pct_moving_single_stream": 0.0,
             "pct_moving_stream_a": 0.0,
             "pct_moving_stream_b": 0.0,
+            "stream_a_direction": None,
+            "stream_b_direction": None,
+            "stream_a_angle_deg": None,
+            "stream_b_angle_deg": None,
             "pct_heading_right": 0.0,
             "pct_heading_left": 0.0,
             "crush_event_count": 0,
@@ -70,6 +96,12 @@ def compute_detections_summary(rows: list) -> dict:
     heading_l = 0
     boundary_crush = 0
     counterflow_count = 0
+    stream_a_headings: list[float] = []
+    stream_b_headings: list[float] = []
+    stream_a_labels: list[str] = []
+    stream_b_labels: list[str] = []
+    stream_a_angles: list[float] = []
+    stream_b_angles: list[float] = []
 
     for r in rows:
         lbl = getattr(r, "label", None) or (r.get("label") if isinstance(r, dict) else "")
@@ -111,6 +143,21 @@ def compute_detections_summary(rows: list) -> dict:
             heading_bins[b_idx] += 1
             if is_crush and abs(abs(hdeg) - 90.0) < 15.0:
                 boundary_crush += 1
+            if cdir == "stream_a":
+                stream_a_headings.append(hdeg)
+            elif cdir == "stream_b":
+                stream_b_headings.append(hdeg)
+
+        screen_dir = extra.get("stream_screen_direction")
+        screen_ang = extra.get("stream_angle_deg")
+        if cdir == "stream_a" and screen_dir:
+            stream_a_labels.append(screen_dir)
+            if screen_ang is not None:
+                stream_a_angles.append(float(screen_ang))
+        elif cdir == "stream_b" and screen_dir:
+            stream_b_labels.append(screen_dir)
+            if screen_ang is not None:
+                stream_b_angles.append(float(screen_ang))
 
         if is_crush and f_idx is not None:
             frame_crush[f_idx] += 1
@@ -229,6 +276,9 @@ def compute_detections_summary(rows: list) -> dict:
             "direction": direction,
         })
 
+    dir_a, ang_a = _majority_or_mean_direction(stream_a_labels, stream_a_angles, stream_a_headings)
+    dir_b, ang_b = _majority_or_mean_direction(stream_b_labels, stream_b_angles, stream_b_headings)
+
     return {
         "total_detections": total,
         "total_tracks": total_tracks,
@@ -238,6 +288,10 @@ def compute_detections_summary(rows: list) -> dict:
         "pct_moving_single_stream": pct_moving_single,
         "pct_moving_stream_a": pct_moving_stream_a,
         "pct_moving_stream_b": pct_moving_stream_b,
+        "stream_a_direction": dir_a,
+        "stream_b_direction": dir_b,
+        "stream_a_angle_deg": ang_a,
+        "stream_b_angle_deg": ang_b,
         "pct_heading_right": pct_heading_right,
         "pct_heading_left": pct_heading_left,
         "crush_event_count": crush_events,

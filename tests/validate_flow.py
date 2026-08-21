@@ -752,6 +752,59 @@ def _test_validity_gating() -> tuple[bool, str]:
 
 
 # ------------------------------------------------------------------------------
+# Test 19: Screen-relative 4-way stream direction buckets
+# ------------------------------------------------------------------------------
+
+def _test_stream_screen_direction_buckets() -> tuple[bool, str]:
+    """
+    Feed two known opposing and two known perpendicular heading fields into
+    the stream-centre inference + 4-way screen-relative bucket helper.
+    """
+    from models.crowd_flow.crowd_motion_monitor import CrowdMotionMonitor
+
+    def _field(vec, n=8):
+        return [{"confirmed": True, "is_moving": True, "heading_vec": vec} for _ in range(n)]
+
+    right = (1.0, 0.0)
+    left = (-1.0, 0.0)
+    toward = (0.0, 1.0)   # +y down in image space
+    away = (0.0, -1.0)
+
+    cases = [
+        ("opposing", _field(right) + _field(left), "Rightward", "Leftward"),
+        ("perpendicular", _field(right) + _field(toward), "Rightward", "Toward camera"),
+        ("vertical", _field(away) + _field(toward), "Away from camera", "Toward camera"),
+    ]
+    details = []
+    for name, records, expect_a, expect_b in cases:
+        centres = CrowdMotionMonitor._infer_direction_streams(records)
+        if len(centres) != 2:
+            return False, f"{name}: expected 2 stream centres, got {centres!r}"
+        got_a, ang_a = CrowdMotionMonitor._screen_direction_from_vector(*centres[0])
+        got_b, ang_b = CrowdMotionMonitor._screen_direction_from_vector(*centres[1])
+        if got_a != expect_a or got_b != expect_b:
+            return False, (
+                f"{name}: expected stream_a={expect_a!r}, stream_b={expect_b!r}; "
+                f"got {got_a!r} ({ang_a}°) / {got_b!r} ({ang_b}°) from centres {centres}"
+            )
+        details.append(f"{name}: {got_a} ({ang_a}°) vs {got_b} ({ang_b}°)")
+
+    # Axis-aligned unit vectors must land in the named quadrant, not a diagonal.
+    axis_cases = [
+        (1.0, 0.0, "Rightward", 0.0),
+        (-1.0, 0.0, "Leftward", 180.0),
+        (0.0, 1.0, "Toward camera", 90.0),
+        (0.0, -1.0, "Away from camera", -90.0),
+    ]
+    for cx, cy, expect, expect_ang in axis_cases:
+        got, ang = CrowdMotionMonitor._screen_direction_from_vector(cx, cy)
+        if got != expect or abs(ang - expect_ang) > 1e-6:
+            return False, f"axis ({cx},{cy}): expected {expect} {expect_ang}°, got {got} {ang}°"
+
+    return True, "; ".join(details)
+
+
+# ------------------------------------------------------------------------------
 # Registry and runner
 # ------------------------------------------------------------------------------
 
@@ -774,6 +827,7 @@ _TESTS: list[tuple[int, str, Callable]] = [
     (16, "Per-zone scale (ped vs vehicle)", _test_zone_types),
     (17, "RAFT backend known translation",  _test_raft_backend),
     (18, "Validity gating rejects invented", _test_validity_gating),
+    (19, "Screen-relative stream directions", _test_stream_screen_direction_buckets),
 ]
 
 

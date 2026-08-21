@@ -50,6 +50,13 @@ function fmtDuration(sec) {
   return `${m}m ${Math.round(sec - m * 60)}s`;
 }
 
+/** Screen-relative stream slot label (relative to camera view, not compass). */
+function streamSlotLabel(slot, summary) {
+  const name = slot === 'b' ? 'Stream B' : 'Stream A';
+  const dir = summary && (slot === 'b' ? summary.stream_b_direction : summary.stream_a_direction);
+  return dir ? `${name} (${dir})` : name;
+}
+
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -371,15 +378,17 @@ function historyOutputCard(group) {
       const hasStreams = pStreamA > 0 || pStreamB > 0;
       const pCrush = sum.pct_crush_risk || 0;
       const pStop = sum.pct_stationary || 0;
+      const labelA = streamSlotLabel('a', sum);
+      const labelB = streamSlotLabel('b', sum);
       motionBar = `
         <div class="card-dist-bar-wrap">
           <div class="card-dist-bar">
-            ${hasStreams ? `<div class="card-dist-seg seg-left" style="width: ${pStreamA}%;" title="Stream A: ${pStreamA}%"></div><div class="card-dist-seg seg-right" style="width: ${pStreamB}%;" title="Stream B: ${pStreamB}%"></div>` : `<div class="card-dist-seg seg-left" style="width: ${pSingle}%;" title="Moving: ${pSingle}%"></div>`}
+            ${hasStreams ? `<div class="card-dist-seg seg-left" style="width: ${pStreamA}%;" title="${esc(labelA)}: ${pStreamA}% (direction relative to camera view)"></div><div class="card-dist-seg seg-right" style="width: ${pStreamB}%;" title="${esc(labelB)}: ${pStreamB}% (direction relative to camera view)"></div>` : `<div class="card-dist-seg seg-left" style="width: ${pSingle}%;" title="Moving: ${pSingle}%"></div>`}
             <div class="card-dist-seg seg-crush" style="width: ${pCrush}%;" title="Crush: ${pCrush}%"></div>
             <div class="card-dist-seg seg-stopped" style="width: ${pStop}%;" title="Stopped: ${pStop}%"></div>
           </div>
           <div class="card-dist-labels">
-            ${hasStreams ? `<span class="c-lbl left">${pStreamA.toFixed(0)}% A</span><span class="c-lbl right">${pStreamB.toFixed(0)}% B</span>` : `<span class="c-lbl left">${pSingle.toFixed(0)}% Moving</span>`}
+            ${hasStreams ? `<span class="c-lbl left">${pStreamA.toFixed(0)}% ${esc(labelA)}</span><span class="c-lbl right">${pStreamB.toFixed(0)}% ${esc(labelB)}</span>` : `<span class="c-lbl left">${pSingle.toFixed(0)}% Moving</span>`}
             <span class="c-lbl crush">⚠️ ${pCrush.toFixed(0)}% Crush</span>
             <span class="c-lbl stop">⏹ ${pStop.toFixed(0)}% Stop</span>
           </div>
@@ -722,6 +731,8 @@ function renderModalTab(tabName) {
       const pCrush = sum.pct_crush_risk || 0;
       const pStop = sum.pct_stationary || 0;
       const pMoving = sum.pct_moving || (100 - pStop);
+      const labelA = streamSlotLabel('a', sum);
+      const labelB = streamSlotLabel('b', sum);
       const totalTracks = sum.total_tracks != null ? sum.total_tracks : '—';
       const stablePct = sum.stable_tracks_pct != null ? sum.stable_tracks_pct : '—';
       const crushEvents = sum.crush_event_count || 0;
@@ -755,7 +766,7 @@ function renderModalTab(tabName) {
             <div class="overview-kpi-item">
               <div class="overview-kpi-lbl">Direction Streams</div>
               <div class="overview-kpi-val" style="color: #38bdf8;">${hasStreams ? `A ${pStreamA.toFixed(1)}% <span style="font-size: 13px; color: var(--muted); font-weight: normal;">/ B ${pStreamB.toFixed(1)}%</span>` : `${pSingle.toFixed(1)}%`}</div>
-              <div class="overview-kpi-sub">${hasStreams ? `Stream A: ${(sum.label_counts?.person_moving_stream_a || 0).toLocaleString()} · Stream B: ${(sum.label_counts?.person_moving_stream_b || 0).toLocaleString()}` : `Single moving stream: ${(sum.label_counts?.person_moving || 0).toLocaleString()}`}</div>
+              <div class="overview-kpi-sub">${hasStreams ? `${esc(labelA)}: ${(sum.label_counts?.person_moving_stream_a || 0).toLocaleString()} · ${esc(labelB)}: ${(sum.label_counts?.person_moving_stream_b || 0).toLocaleString()}` : `Single moving stream: ${(sum.label_counts?.person_moving || 0).toLocaleString()}`}</div>
             </div>
             <div class="overview-kpi-item">
               <div class="overview-kpi-lbl">Counter-Flow Friction</div>
@@ -792,16 +803,17 @@ function renderModalTab(tabName) {
           <div class="u-label">Crowd Velocity & Flow Share</div>
           <div class="card-dist-bar-wrap" style="margin-top: 6px;">
             <div class="card-dist-bar" style="height: 16px; border-radius: 6px;">
-              ${hasStreams ? `<div class="card-dist-seg seg-left" style="width: ${pStreamA}%;" title="Stream A: ${pStreamA}%"></div><div class="card-dist-seg seg-right" style="width: ${pStreamB}%;" title="Stream B: ${pStreamB}%"></div>` : `<div class="card-dist-seg seg-left" style="width: ${pSingle}%;" title="Moving: ${pSingle}%"></div>`}
+              ${hasStreams ? `<div class="card-dist-seg seg-left" style="width: ${pStreamA}%;" title="${esc(labelA)}: ${pStreamA}% (direction relative to camera view)"></div><div class="card-dist-seg seg-right" style="width: ${pStreamB}%;" title="${esc(labelB)}: ${pStreamB}% (direction relative to camera view)"></div>` : `<div class="card-dist-seg seg-left" style="width: ${pSingle}%;" title="Moving: ${pSingle}%"></div>`}
               <div class="card-dist-seg seg-crush" style="width: ${pCrush}%;" title="Crush Risk: ${pCrush}%"></div>
               <div class="card-dist-seg seg-stopped" style="width: ${pStop}%;" title="Stopped: ${pStop}%"></div>
             </div>
           </div>
           <div class="legend-grid" style="margin-top: 10px;">
-            ${hasStreams ? `<div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Stream A</strong>: ${pStreamA.toFixed(1)}%</div><div class="legend-item"><div class="legend-dot seg-right"></div> <strong>Stream B</strong>: ${pStreamB.toFixed(1)}%</div>` : `<div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Moving</strong>: ${pSingle.toFixed(1)}%</div>`}
+            ${hasStreams ? `<div class="legend-item"><div class="legend-dot seg-left"></div> <strong>${esc(labelA)}</strong>: ${pStreamA.toFixed(1)}%</div><div class="legend-item"><div class="legend-dot seg-right"></div> <strong>${esc(labelB)}</strong>: ${pStreamB.toFixed(1)}%</div>` : `<div class="legend-item"><div class="legend-dot seg-left"></div> <strong>Moving</strong>: ${pSingle.toFixed(1)}%</div>`}
             <div class="legend-item"><div class="legend-dot seg-crush"></div> <strong>Crush Zone</strong>: ${pCrush.toFixed(1)}%</div>
             <div class="legend-item"><div class="legend-dot seg-stopped"></div> <strong>Stationary</strong>: ${pStop.toFixed(1)}%</div>
           </div>
+          ${hasStreams ? '<div class="hint" style="margin-top: 8px;">Stream directions are relative to camera view, not geographic compass headings.</div>' : ''}
         </div>
       `;
     }
@@ -982,7 +994,11 @@ function renderModalTab(tabName) {
   } else if (tabName === 'validation') {
     renderValidationTab(host, detail);
   } else if (tabName === 'raw') {
-    const rawJsonStr = JSON.stringify(detail.detections, null, 2);
+    const stageSummary = (detail.primaryStage && detail.primaryStage.summary) || {};
+    const rawJsonStr = JSON.stringify({
+      summary: stageSummary,
+      detections: detail.detections,
+    }, null, 2);
     host.innerHTML = `
       <div class="json-actions">
         <button class="btn-card-detail" id="copy-json-btn">📋 Copy JSON to Clipboard</button>
@@ -1023,6 +1039,9 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
     const crushCount = d.rows.filter(r => r.label === 'person_crush_zone' || (r.extra && r.extra.local_crush_risk)).length;
     const stoppedCount = d.rows.filter(r => r.label === 'person_stopped' || (r.extra && r.extra.personally_stationary)).length;
     const cfCount = d.rows.filter(r => r.extra && r.extra.is_counterflow).length;
+    const sum = (state.currentDetail && state.currentDetail.primaryStage && state.currentDetail.primaryStage.summary) || {};
+    const labelA = streamSlotLabel('a', sum);
+    const labelB = streamSlotLabel('b', sum);
 
     const pMoving = total ? (movingCount / total * 100).toFixed(1) : '0.0';
     const pStreamA = total ? (streamACount / total * 100).toFixed(1) : '0.0';
@@ -1048,15 +1067,18 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
       } else if (isCrush) {
         statusBadge = '<span class="badge badge-crush">⚠️ Crush Zone</span>';
       } else if (cdir === 'stream_a') {
-        statusBadge = '<span class="badge badge-right">Stream A</span>';
+        statusBadge = `<span class="badge badge-right">${esc(labelA)}</span>`;
       } else if (cdir === 'stream_b') {
-        statusBadge = '<span class="badge badge-left">Stream B</span>';
+        statusBadge = `<span class="badge badge-left">${esc(labelB)}</span>`;
       } else {
         statusBadge = '<span class="badge badge-right">Moving</span>';
       }
 
-      const dirLabel = cdir === 'stream_a' ? 'Stream A' : (cdir === 'stream_b' ? 'Stream B' : 'Moving');
-      const dirCell = `<span class="badge ${cdir === 'stream_b' ? 'badge-left' : 'badge-right'}">${dirLabel}${hdeg ? ` (${hdeg}°)` : ''}</span>`;
+      const extraDir = extra.stream_screen_direction;
+      const dirLabel = cdir === 'stream_a'
+        ? (extraDir ? `Stream A (${extraDir})` : labelA)
+        : (cdir === 'stream_b' ? (extraDir ? `Stream B (${extraDir})` : labelB) : 'Moving');
+      const dirCell = `<span class="badge ${cdir === 'stream_b' ? 'badge-left' : 'badge-right'}">${esc(dirLabel)}${hdeg ? ` (${hdeg}°)` : ''}</span>`;
       const spdCell = spd ? `${spd} px/fr` : '—';
       const crushCell = isCrush
         ? `<span class="badge badge-crush">⚠️ Risk${extra.local_divergence != null ? ` (${extra.local_divergence.toFixed(2)})` : ''}</span>`
@@ -1084,12 +1106,12 @@ function renderDetectionsTable(d, modelLabel, containerEl) {
       <div class="motion-kpi-grid">
         ${hasStreams
           ? `<div class="motion-kpi-card" style="border-color: rgba(99,102,241,0.4);">
-               <div class="motion-kpi-lbl">Stream A</div>
+               <div class="motion-kpi-lbl">${esc(labelA)}</div>
                <div class="motion-kpi-val" style="color: #818cf8;">${pStreamA}%</div>
                <div class="motion-kpi-count">${streamACount.toLocaleString()} detections</div>
              </div>
              <div class="motion-kpi-card" style="border-color: rgba(139,92,246,0.4);">
-               <div class="motion-kpi-lbl">Stream B</div>
+               <div class="motion-kpi-lbl">${esc(labelB)}</div>
                <div class="motion-kpi-val" style="color: #c084fc;">${pStreamB}%</div>
                <div class="motion-kpi-count">${streamBCount.toLocaleString()} detections</div>
              </div>`
