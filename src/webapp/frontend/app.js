@@ -235,18 +235,18 @@ function stageRow(job, s) {
   }
 
   const fallbackTag = s.scoring_modes && s.scoring_modes.geometric_fallback
-    ? '<div class="scoring-tag">geometric fallback</div>'
+    ? '<div class="scoring-tag fallback">geometric fallback</div>'
     : (s.scoring_modes && s.scoring_modes.kinetics_zeroshot
-      ? '<div class="scoring-tag">kinetics zero-shot</div>' : '');
+      ? '<div class="scoring-tag zeroshot">kinetics zero-shot</div>' : '');
 
   const posClass = s.positives > 0 ? 'pos' : 'zero';
   return `<tr>
-    <td>${esc(name)}${fallbackTag}</td>
-    <td>${progressCell}</td>
-    <td class="num ${posClass}">${s.positives}</td>
-    <td class="num">${s.detections}</td>
-    <td class="num">${fmtDuration(s.elapsed_sec)}</td>
-    <td>
+    <td class="col-model"><span class="model-name">${esc(name)}</span>${fallbackTag}</td>
+    <td class="col-progress">${progressCell}</td>
+    <td class="num col-events ${posClass}">${s.positives}</td>
+    <td class="num col-rows">${s.detections}</td>
+    <td class="num col-time">${fmtDuration(s.elapsed_sec)}</td>
+    <td class="col-actions">
       <button class="btn-card-detail" data-inspect-job="${esc(job.id)}" data-inspect-model="${esc(s.model_key)}">Inspect Details</button>
     </td>
   </tr>`;
@@ -259,18 +259,30 @@ function jobCard(job) {
 
   return `<div class="job" data-job="${job.id}">
     <div class="job-head" data-toggle="${job.id}">
-      <span class="status ${job.status}">${job.status}</span>
-      <span class="title">${esc(job.video_name || job.source)}</span>
-      <span class="meta">${done}/${job.stages.length} models · stride ${job.sample_every_n_frames} · ${fmtDuration(job.elapsed_sec)}</span>
-      ${cancellable ? `<button class="link-btn" data-cancel="${job.id}">cancel</button>` : ''}
-      <span class="meta">${open ? '▾' : '▸'}</span>
+      <div class="job-head-left">
+        <span class="pill ${job.status}"><span class="status-dot"></span>${job.status.toUpperCase()}</span>
+        <span class="title">${esc(job.video_name || job.source)}</span>
+      </div>
+      <div class="job-head-right">
+        <div class="job-chips">
+          <span class="meta-chip">📦 ${done}/${job.stages.length} models</span>
+          <span class="meta-chip">⚡ Stride ${job.sample_every_n_frames}</span>
+          <span class="meta-chip">⏱️ ${fmtDuration(job.elapsed_sec)}</span>
+        </div>
+        ${cancellable ? `<button class="btn-cancel" data-cancel="${job.id}">✕ Cancel</button>` : ''}
+        <span class="toggle-icon">${open ? '▾' : '▸'}</span>
+      </div>
     </div>
     ${open ? `<div class="job-body">
-      <div class="job-msg">${esc(job.message || '')}${job.error ? ` — ${esc(job.error)}` : ''}</div>
+      ${job.message || job.error ? `<div class="job-msg">${esc(job.message || '')}${job.error ? ` — ${esc(job.error)}` : ''}</div>` : ''}
       <table class="stages">
         <thead><tr>
-          <th>Model</th><th>Progress</th><th class="u-num">Events</th>
-          <th class="u-num">Rows</th><th class="u-num">Time</th><th>Actions</th>
+          <th class="col-model">Model</th>
+          <th class="col-progress">Progress</th>
+          <th class="u-num col-events">Events</th>
+          <th class="u-num col-rows">Rows</th>
+          <th class="u-num col-time">Time</th>
+          <th class="col-actions">Actions</th>
         </tr></thead>
         <tbody>${job.stages.map((s) => stageRow(job, s)).join('')}</tbody>
       </table>
@@ -1248,8 +1260,12 @@ function renderValidation() {
   if (!host) return;
 
   if (!st || (st.status === 'idle' && !st.report)) {
-    host.innerHTML = `<div class="empty">No validation run yet. Pick a video
-      above and click Run validation.</div>`;
+    host.innerHTML = `<div class="empty-state-card">
+      <div class="empty-icon">🌊</div>
+      <div class="empty-title">No Validation Run Yet</div>
+      <div class="empty-desc">Pick a source video in the panel above and click Run validation to measure dense flow accuracy across 3 annotation-free routes.</div>
+      <button class="btn-card-detail" onclick="document.getElementById('run-validation').click()">▶ Run Validation Now</button>
+    </div>`;
     return;
   }
 
