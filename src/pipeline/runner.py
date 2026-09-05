@@ -98,7 +98,7 @@ _ALERT_SINK = _AlertSinkFacade()
 
 class PipelineRunner:
     def __init__(self, models: list, clip_buffer_len: int = None,
-                 sample_every_n_frames: int = 1):
+                 sample_every_n_frames: int = 1, retain_detections: bool = True):
         """
         models: list of BaseModelWrapper instances (already constructed, not yet loaded)
         clip_buffer_len: how many frames to keep for clip-based models. Defaults
@@ -107,6 +107,13 @@ class PipelineRunner:
             duplication.
         sample_every_n_frames: process every Nth frame (1 = every frame; raise this
             to speed up testing on long videos at the cost of temporal resolution)
+        retain_detections: keep every detection to return at the end of the run.
+            True for batch runs, which report on the whole video afterwards.
+            Set False for live streaming, where the consumer has already
+            handled each frame through `on_detections` and the accumulated
+            list is never read: a crowd camera produces ~650 detections per
+            frame with no end to the stream, so retaining them is an
+            unbounded leak in the one mode that is meant to run for a shift.
         """
         self.models = models
         required = max([getattr(m, "clip_len", 1) for m in models], default=1)
@@ -119,6 +126,7 @@ class PipelineRunner:
             clip_buffer_len = required
         self.clip_buffer_len = clip_buffer_len
         self.sample_every_n_frames = sample_every_n_frames
+        self.retain_detections = retain_detections
         self._frame_buffer = FrameBuffer(max_len=clip_buffer_len)
         # Present before run() so a caller that inspects it after a crash (or
         # before starting) gets a defined object rather than AttributeError.
@@ -154,6 +162,9 @@ class PipelineRunner:
         is_stream = self._is_stream(video_path, total_frames)
 
         all_detections: list[Detection] = []
+        # Running total, so progress reporting stays correct when the
+        # detections themselves are not retained.
+        n_detections = 0
         error_counts: dict[str, int] = defaultdict(int)
         prev_sampled = None   # previous SAMPLED frame, for flow_pair models
         frame_index = 0
@@ -236,7 +247,10 @@ class PipelineRunner:
                         else:
                             raise ValueError(f"Unknown consumption_type: {model.consumption_type}")
 
-                        all_detections.extend(dets)
+                        if self.retain_detections:
+                            all_detections.extend(dets)
+                        else:
+                            n_detections += len(dets)
                         frame_dets.extend(dets)
 
                     except Exception as e:
@@ -264,7 +278,10 @@ class PipelineRunner:
             pbar.update(1)
 
             if progress_callback is not None:
-                progress_callback(frame_index, total_frames, len(all_detections))
+                progress_callback(
+                    frame_index, total_frames,
+                    len(all_detections) if self.retain_detections else n_detections,
+                )
             if should_cancel is not None and should_cancel():
                 print(f"[runner] cancelled at frame {frame_index}")
                 self.source_status.outcome = "cancelled"
@@ -293,6 +310,33 @@ class PipelineRunner:
         return all_detections
 
     TRUNCATION_TOLERANCE = _TRUNCATION_TOLERANCE
+
+    @staticmethod
+    def is_live_source(video_path: str) -> bool:
+        """Whether this source produces frames on its own clock.
+
+        A camera does: frames arrive whether or not anything is ready for
+        them, so a consumer that cannot keep up must skip or fall behind
+        reality.  A file does not — it waits, and a slow pass over it is
+        simply a slow pass, not a growing lag against the world.
+
+        The distinction decides whether the live preview is allowed to drop
+        frames to keep pace.  Callers that only have a path (no open capture)
+        use this; ``run()`` uses ``_is_stream`` with the capture's own frame
+        count, which additionally catches a device index.
+        """
+        import cv2 as _cv2
+
+        lowered = str(video_path).lower()
+        if lowered.startswith(("rtsp://", "rtmp://", "http://", "https://", "udp://")):
+            return True
+        cap = _cv2.VideoCapture(video_path)
+        try:
+            if not cap.isOpened():
+                return False
+            return int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) <= 0
+        finally:
+            cap.release()
 
     @staticmethod
     def _is_stream(video_path: str, total_frames: int) -> bool:

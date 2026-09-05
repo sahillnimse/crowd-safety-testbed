@@ -141,6 +141,95 @@ class BoxDetector:
                                          results["scores"].cpu().tolist())
         ]
 
+    def _is_oom(self, exc: BaseException) -> bool:
+        """Whether this exception means "not enough memory" specifically.
+
+        torch.cuda.OutOfMemoryError only exists on a CUDA build, and both CPU
+        allocation failures and some CUDA paths surface as a plain
+        RuntimeError, so the message is checked too.  Deliberately narrow: a
+        broken model must keep raising, not be quietly retried one image at a
+        time and reported as a memory problem.
+        """
+        oom = getattr(getattr(self._torch, "cuda", None), "OutOfMemoryError", None)
+        if oom is not None and isinstance(exc, oom):
+            return True
+        if isinstance(exc, (RuntimeError, MemoryError)):
+            text = str(exc).lower()
+            return "out of memory" in text or "cuda oom" in text
+        return False
+
+    def _infer_many(
+        self, images: list[np.ndarray], conf: float
+    ) -> list[list[tuple[list[float], int, float]]]:
+        """One forward pass over several BGR images, each in its own coordinates.
+
+        Tiling asks the detector the same question five times per frame (four
+        crops plus the full frame).  Run one at a time that is five separate
+        preprocessing passes, five host-to-device copies and five forward
+        passes over a GPU that was never close to full on any of them.
+
+        The processor resizes every input to the checkpoint's fixed size, so
+        the five tensors agree in shape and stack into one batch.  RT-DETR
+        has no cross-image interaction and runs in eval mode, so a batched
+        pass returns per-image results identical to the serial ones.  If a
+        processor ever does hand back mismatched shapes, fall back to the
+        serial path rather than guessing.
+        """
+        from PIL import Image
+
+        if not images:
+            return []
+        if len(images) == 1:
+            return [self._infer(images[0], conf)]
+
+        results = None
+        with self._lock:
+            inputs = self._proc(images=[Image.fromarray(im[:, :, ::-1]) for im in images],
+                                return_tensors="pt")
+            pixel_values = inputs.get("pixel_values")
+            if pixel_values is not None and pixel_values.shape[0] == len(images):
+                try:
+                    inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                    with self._torch.no_grad():
+                        outputs = self._model(**inputs)
+                    target = self._torch.tensor(
+                        [[im.shape[0], im.shape[1]] for im in images], device=self.device)
+                    results = self._proc.post_process_object_detection(
+                        outputs, threshold=conf, target_sizes=target)
+                except Exception as exc:  # noqa: BLE001 - re-raised unless OOM
+                    # A batch of five costs several times the peak memory of
+                    # one pass, which is the whole point of it -- and on a
+                    # small card, with other wrappers resident, that headroom
+                    # is not guaranteed.  Speed is the optional part here, so
+                    # give the memory back and let the serial path below
+                    # produce the same detections more slowly.
+                    if not self._is_oom(exc):
+                        raise
+                    print(f"[detector] batched inference out of memory "
+                          f"({exc.__class__.__name__}); falling back to one "
+                          f"image at a time")
+                    results = None
+                    try:
+                        self._torch.cuda.empty_cache()
+                    except Exception:  # noqa: BLE001 - CPU build, or no CUDA
+                        pass
+
+        # Fallback runs OUTSIDE the lock: _infer takes the same non-reentrant
+        # lock, so calling it from in here would deadlock the detector for
+        # every model sharing it.
+        if results is None:
+            return [self._infer(im, conf) for im in images]
+
+        out = []
+        for res in results:
+            out.append([
+                ([float(v) for v in box], int(label), float(score))
+                for box, label, score in zip(res["boxes"].cpu().tolist(),
+                                             res["labels"].cpu().tolist(),
+                                             res["scores"].cpu().tolist())
+            ])
+        return out
+
     def _tile_rects(
         self, h: int, w: int, grid: tuple[int, int], overlap: float
     ) -> list[tuple[int, int, int, int]]:
@@ -262,9 +351,11 @@ class BoxDetector:
             dets = self._infer(frame, conf)
         else:
             h, w = frame.shape[:2]
+            rects = self._tile_rects(h, w, tile_grid, tile_overlap)
+            crops = [frame[y1:y2, x1:x2] for x1, y1, x2, y2 in rects]
             dets = []
-            for x1, y1, x2, y2 in self._tile_rects(h, w, tile_grid, tile_overlap):
-                for box, label, score in self._infer(frame[y1:y2, x1:x2], conf):
+            for (x1, y1, _, _), tile_dets in zip(rects, self._infer_many(crops, conf)):
+                for box, label, score in tile_dets:
                     dets.append(([box[0] + x1, box[1] + y1,
                                   box[2] + x1, box[3] + y1], label, score))
             dets = self._merge(dets, merge_iou)

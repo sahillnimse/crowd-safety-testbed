@@ -219,6 +219,19 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._frame_stride: int = 1
         self.output_fps: Optional[float] = None
 
+        # Whether to stream annotated frames to an MP4 on disk.
+        #
+        # Only the WRITER is optional.  The marker overlay itself always
+        # renders, because latest_annotated_frame is what the live preview
+        # displays — drawing the live view a second way would give the
+        # operator a different picture from the video the same run saves,
+        # and the direction each person is heading would be visible in one
+        # and not the other.
+        #
+        # jobs.py turns the writer off for a camera source, whose stream has
+        # no end and whose file would therefore grow until the disk is full.
+        self.write_annotated_video: bool = True
+
         # Runtime state — initialised in load().
         self._detector  = None
         self._head_counter = None
@@ -495,9 +508,13 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 sy2 = y2 - iy
 
             if sx2 > sx1 and sy2 > sy1:
-                patch = flow[sy1:sy2, sx1:sx2]
-                vx = float(np.median(patch[..., 0]))
-                vy = float(np.median(patch[..., 1]))
+                # Both medians in one call over an (N, 2) view: the two
+                # separate calls this replaces each paid numpy's dispatch and
+                # copy overhead on a strided component slice, which at ~600
+                # tracks a frame added up to more than the tracker itself.
+                # Bit-identical result.
+                patch = flow[sy1:sy2, sx1:sx2].reshape(-1, 2)
+                vx, vy = (float(v) for v in np.median(patch, axis=0))
             else:
                 vx, vy = 0.0, 0.0
 
@@ -603,7 +620,62 @@ class CrowdMotionMonitor(BaseModelWrapper):
         entropy_grid = np.zeros((n_rows, n_cols), dtype=np.float32)
         counterflow_grid = np.zeros((n_rows, n_cols), dtype=np.float32)
 
-        for tr in track_records:
+        # Neighbourhood statistics for every track in one pass.
+        #
+        # Every track draws its neighbours from the SAME pool — confirmed,
+        # non-stationary tracks — so "who is near me" is one distance matrix
+        # rather than a Python rescan of every track for every track.  At
+        # crowd scale (650 tracks) that inner rescan was ~400k math.hypot
+        # calls per frame and the second-largest cost in the pipeline.
+        #
+        # A track is its own neighbour whenever it is in the pool (distance
+        # zero always clears the radius), which is what `_self_is_cand`
+        # records — the counterflow score below excludes self by track ID.
+        _n_tracks = len(track_records)
+        _nb_count = np.zeros(_n_tracks, dtype=np.int64)
+        _nb_entropy = np.zeros(_n_tracks, dtype=np.float64)
+        _nb_sum_ux = np.zeros(_n_tracks, dtype=np.float64)
+        _nb_sum_uy = np.zeros(_n_tracks, dtype=np.float64)
+        _self_is_cand = np.zeros(_n_tracks, dtype=bool)
+
+        _cand = [i for i, tr in enumerate(track_records)
+                 if tr["confirmed"] and not tr["personally_stationary"]]
+        if _cand:
+            _all_xy = np.array([[tr["cx"], tr["cy"]] for tr in track_records],
+                               dtype=np.float64)
+            _cand_xy = _all_xy[_cand]
+            _cand_hv = np.array([track_records[i]["heading_vec"] for i in _cand],
+                                dtype=np.float64)
+            _cand_bin = np.array(
+                [int((track_records[i]["heading_deg"] + 180.0) / 45.0) % 8
+                 for i in _cand],
+                dtype=np.int64,
+            )
+            _self_is_cand[_cand] = True
+
+            _near = (np.hypot(_all_xy[:, None, 0] - _cand_xy[None, :, 0],
+                              _all_xy[:, None, 1] - _cand_xy[None, :, 1])
+                     <= radius_px)
+            _nearf = _near.astype(np.float64)
+
+            _nb_count = _near.sum(axis=1)
+            _nb_sum_ux = _nearf @ _cand_hv[:, 0]
+            _nb_sum_uy = _nearf @ _cand_hv[:, 1]
+
+            # 8-bin heading histogram per track -> Shannon entropy, zero for
+            # any track with fewer than two neighbours (as before).
+            _hist = np.stack(
+                [(_near & (_cand_bin == b)).sum(axis=1) for b in range(8)], axis=1
+            ).astype(np.float64)
+            _tot = np.where(_nb_count > 0, _nb_count, 1).astype(np.float64)
+            _p = _hist / _tot[:, None]
+            _terms = np.where(_p > 0.0, _p * np.log2(np.where(_p > 0.0, _p, 1.0)), 0.0)
+            _nb_entropy = np.where(_nb_count >= 2, -_terms.sum(axis=1), 0.0)
+
+        # Loop-invariant: depends only on configuration, not on the track.
+        max_crush_spd = max(self.crush_max_speed_px, 2.5 * self.stationary_speed_px)
+
+        for _tr_idx, tr in enumerate(track_records):
             cx, cy = tr["cx"], tr["cy"]
             tid = tr["tid"]
             hx, hy = tr["heading_vec"]
@@ -615,40 +687,24 @@ class CrowdMotionMonitor(BaseModelWrapper):
             gc = min(cx // _DIV_CELL_PX, n_cols - 1)
 
             local_div = float(div_grid[gr, gc])
-            max_crush_spd = max(self.crush_max_speed_px, 2.5 * self.stationary_speed_px)
             local_crush_risk = (local_div < self.crush_divergence_threshold) and (tr["speed"] <= max_crush_spd) and (not p_stat)
             local_var = float(var_grid[gr, gc])
 
-            # Find neighboring moving tracks
-            neighbors = [
-                other for other in track_records
-                if other["confirmed"] and (not other["personally_stationary"])
-                and math.hypot(other["cx"] - cx, other["cy"] - cy) <= radius_px
-            ]
+            # Neighbouring moving tracks — counts and aggregates precomputed above.
+            n_neighbors = int(_nb_count[_tr_idx])
 
             # 7a. Directional entropy: Shannon entropy over 8-bin heading histogram
-            if len(neighbors) >= 2:
-                bins = [0] * 8
-                for nb in neighbors:
-                    b_idx = int((nb["heading_deg"] + 180.0) / 45.0) % 8
-                    bins[b_idx] += 1
-                n_total = len(neighbors)
-                ent = 0.0
-                for cnt in bins:
-                    if cnt > 0:
-                        p = cnt / n_total
-                        ent -= p * math.log2(p)
-                local_entropy = round(ent, 3)
-            else:
-                local_entropy = 0.0
+            local_entropy = round(float(_nb_entropy[_tr_idx]), 3)
 
             entropy_grid[gr, gc] = max(entropy_grid[gr, gc], local_entropy)
 
-            # 7b. Counterflow opposition score
-            other_moving = [nb for nb in neighbors if nb["tid"] != tid]
-            if (not p_stat) and len(other_moving) >= 1:
-                mean_ux = sum(nb["heading_vec"][0] for nb in other_moving) / len(other_moving)
-                mean_uy = sum(nb["heading_vec"][1] for nb in other_moving) / len(other_moving)
+            # 7b. Counterflow opposition score.  Self is excluded from the
+            # neighbour aggregate when it is in the pool at all.
+            _self_in = bool(_self_is_cand[_tr_idx])
+            n_other = n_neighbors - (1 if _self_in else 0)
+            if (not p_stat) and n_other >= 1:
+                mean_ux = (float(_nb_sum_ux[_tr_idx]) - (hx if _self_in else 0.0)) / n_other
+                mean_uy = (float(_nb_sum_uy[_tr_idx]) - (hy if _self_in else 0.0)) / n_other
                 mean_norm = math.hypot(mean_ux, mean_uy)
 
                 if mean_norm > 0.15:
@@ -742,7 +798,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         self._record_frame_metrics(track_records, curr_frame.shape[:2], timestamp_sec)
 
-        # 8. Video overlay rendering
+        # 8. Video overlay rendering.  Always runs: this frame is both what
+        # the live preview shows and what the saved video records.
         if self.overlay_mode in ("heatmap", "combined"):
             if self.heatmap_metric == "variance":
                 target_grid = var_grid
@@ -789,7 +846,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         # 9. Stream annotated frame.
         self.latest_annotated_frame = annotated
-        self._write_frame(annotated)
+        if self.write_annotated_video:
+            self._write_frame(annotated)
 
         return detections
 
@@ -1191,26 +1249,35 @@ class CrowdMotionMonitor(BaseModelWrapper):
             return []
 
         h, w = frame_shape
-        expanded = []
-        for x1, y1, x2, y2 in rtdetr_boxes:
-            bw, bh = x2 - x1, y2 - y1
-            mx, my = bw * _APGCC_CLAIM_MARGIN, bh * _APGCC_CLAIM_MARGIN
-            expanded.append((x1 - mx, y1 - my, x2 + mx, y2 + my))
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
 
-        out: list[list[float]] = []
+        # Point-in-any-expanded-box as one broadcast.  This runs on EVERY
+        # frame (the re-filter pass below the call site), so at crowd scale
+        # the Python `any(...)` over every box for every point was hundreds
+        # of thousands of comparisons per frame.
+        if len(rtdetr_boxes):
+            b = np.asarray(rtdetr_boxes, dtype=np.float64).reshape(-1, 4)
+            mx = (b[:, 2] - b[:, 0]) * _APGCC_CLAIM_MARGIN
+            my = (b[:, 3] - b[:, 1]) * _APGCC_CLAIM_MARGIN
+            ex1, ey1 = b[:, 0] - mx, b[:, 1] - my
+            ex2, ey2 = b[:, 2] + mx, b[:, 3] + my
+
+            claimed = (
+                (pts[:, None, 0] >= ex1[None, :]) & (pts[:, None, 0] <= ex2[None, :])
+                & (pts[:, None, 1] >= ey1[None, :]) & (pts[:, None, 1] <= ey2[None, :])
+            ).any(axis=1)
+        else:
+            claimed = np.zeros(len(pts), dtype=bool)
+
+        free = pts[~claimed]
         half = _APGCC_SYNTH_HALF_BOX_PX
-        for px, py in points:
-            claimed = any(ex1 <= px <= ex2 and ey1 <= py <= ey2
-                          for ex1, ey1, ex2, ey2 in expanded)
-            if claimed:
-                continue
-            x1 = max(0.0, float(px) - half)
-            y1 = max(0.0, float(py) - half)
-            x2 = min(float(w), float(px) + half)
-            y2 = min(float(h), float(py) + half)
-            if x2 > x1 and y2 > y1:
-                out.append([x1, y1, x2, y2])
-        return out
+        x1 = np.maximum(0.0, free[:, 0] - half)
+        y1 = np.maximum(0.0, free[:, 1] - half)
+        x2 = np.minimum(float(w), free[:, 0] + half)
+        y2 = np.minimum(float(h), free[:, 1] + half)
+        keep = (x2 > x1) & (y2 > y1)
+
+        return np.stack([x1, y1, x2, y2], axis=1)[keep].tolist()
 
     @staticmethod
     def _infer_direction_streams(track_records: list[dict]) -> list[tuple[float, float]]:
@@ -1335,6 +1402,24 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         return grid
 
+    @staticmethod
+    def _cell_blocks(arr: np.ndarray) -> np.ndarray:
+        """Reshape a full-frame array into (n_rows, n_cols, g*g) cell blocks.
+
+        Same tiling as _iterate_grid_cells — including dropping the trailing
+        partial row/column of pixels, which that iterator never visits either
+        — but it lets the per-cell statistic run as one array operation
+        instead of 880 Python callbacks per frame.
+        """
+        g = _DIV_CELL_PX
+        h, w = arr.shape[:2]
+        n_rows = max(1, h // g)
+        n_cols = max(1, w // g)
+        cropped = arr[:n_rows * g, :n_cols * g]
+        return (cropped.reshape(n_rows, g, n_cols, g)
+                       .transpose(0, 2, 1, 3)
+                       .reshape(n_rows, n_cols, g * g))
+
     def _compute_divergence_grid(self, flow: np.ndarray) -> np.ndarray:
         """
         Per-cell p10 divergence of the optical flow field.
@@ -1345,11 +1430,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         div = np.gradient(fx, axis=1) + np.gradient(fy, axis=0)
         h, w = div.shape
 
-        def _div_cell(r_s, c_s, r, c):
-            cell = div[r_s, c_s]
-            return float(np.percentile(cell, 10)) if cell.size > 0 else 0.0
-
-        return self._iterate_grid_cells(h, w, _div_cell)
+        blocks = self._cell_blocks(div)
+        return np.percentile(blocks, 10, axis=-1).astype(np.float32)
 
     def _compute_variance_grid(self, flow: np.ndarray) -> np.ndarray:
         """
@@ -1361,21 +1443,26 @@ class CrowdMotionMonitor(BaseModelWrapper):
         fy = flow[..., 1]
         h, w = fx.shape
 
-        def _var_cell(r_s, c_s, r, c):
-            cell_fx = fx[r_s, c_s]
-            cell_fy = fy[r_s, c_s]
-            mags = np.hypot(cell_fx, cell_fy)
-            moving = mags > 0.3
-            if np.count_nonzero(moving) < 4:
-                return 0.0
-            ux = cell_fx[moving] / mags[moving]
-            uy = cell_fy[moving] / mags[moving]
-            mean_ux = np.mean(ux)
-            mean_uy = np.mean(uy)
-            R = float(np.hypot(mean_ux, mean_uy))
-            return float(np.clip(1.0 - R, 0.0, 1.0))
+        bx = self._cell_blocks(fx)
+        by = self._cell_blocks(fy)
+        mags = np.hypot(bx, by)
+        moving = mags > 0.3
 
-        return self._iterate_grid_cells(h, w, _var_cell)
+        # Unit flow vectors, zeroed where the pixel is below the motion floor
+        # so it contributes nothing to the cell's mean.
+        safe_mags = np.where(moving, mags, 1.0)
+        ux = np.where(moving, bx / safe_mags, 0.0)
+        uy = np.where(moving, by / safe_mags, 0.0)
+
+        counts = moving.sum(axis=-1)
+        denom = np.where(counts > 0, counts, 1).astype(bx.dtype)
+        R = np.hypot(ux.sum(axis=-1) / denom, uy.sum(axis=-1) / denom)
+
+        # Cells with too few moving pixels report no directional disorder,
+        # rather than a variance estimated from three pixels.
+        return np.where(counts >= 4,
+                        np.clip(1.0 - R, 0.0, 1.0),
+                        0.0).astype(np.float32)
 
     def _render_heatmap_overlay(
         self,

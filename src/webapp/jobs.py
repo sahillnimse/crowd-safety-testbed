@@ -17,6 +17,7 @@ running several models on the same clip.
 """
 
 import contextlib
+import math
 import os
 import threading
 import time
@@ -99,6 +100,60 @@ def run_dir(video: str, model_key: str, create: bool = False) -> str:
 # for the run video by STEM rather than assume the extension, or a fallback
 # encode is invisible to the history view even though it is on disk.
 RUN_VIDEO_EXTS = (".mp4", ".avi")
+
+# Ceiling on the live preview's adaptive frame skip.  The governor converts
+# measured per-frame cost into a stride, so a model having a bad second can
+# ask for an arbitrarily large one; past a couple of seconds of video per
+# processed frame the preview has stopped being a view of the crowd and the
+# flow_pair models are being handed frames too far apart to measure motion
+# between.  Falling behind real time is the better failure here, and the
+# stage already reports its true FPS.
+_MAX_LIVE_STRIDE = 60
+
+#: How many recent frames the live stride governor averages over.
+_LIVE_COST_WINDOW = 10
+
+
+class LiveStrideGovernor:
+    """Chooses the live preview's frame stride from measured frame cost.
+
+    The preview processes every Nth frame and paces itself to the video's
+    own clock.  If one processed frame costs more wall time than the stretch
+    of video it advances past, the preview falls behind real time and keeps
+    falling; N is what holds the two in step.
+
+    The cost that matters is the WHOLE cost of advancing one processed frame
+    — decode, inference, annotation, encode — which is the wall time between
+    two consecutive frame completions, minus any pacing sleep taken between
+    them.  Feeding it anything narrower makes the preview look cheap and the
+    stride too small, which is exactly how a live view ends up minutes
+    behind the camera it is meant to be showing.
+    """
+
+    def __init__(self, video_fps: float, window: int = _LIVE_COST_WINDOW,
+                 max_stride: int = _MAX_LIVE_STRIDE) -> None:
+        self.video_fps = max(1e-6, float(video_fps))
+        self.window = window
+        self.max_stride = max_stride
+        self._costs: list[float] = []
+
+    def observe(self, frame_period_sec: float, pacing_sleep_sec: float = 0.0) -> None:
+        """Record one frame: wall time since the previous frame, and the
+        pacing sleep that sat inside that interval."""
+        cost = frame_period_sec - pacing_sleep_sec
+        if cost <= 0.0:
+            return
+        self._costs.append(cost)
+        if len(self._costs) > self.window:
+            self._costs.pop(0)
+
+    @property
+    def stride(self) -> int:
+        """Frames to advance per processed frame; 1 until anything is known."""
+        if not self._costs:
+            return 1
+        avg_cost = sum(self._costs) / len(self._costs)
+        return max(1, min(math.ceil(self.video_fps * avg_cost), self.max_stride))
 
 
 def find_run_video(model_dir: str) -> Optional[str]:
@@ -197,6 +252,13 @@ class Stage:
     source_outcome: str = "completed"
     source_detail: str = ""
     frames_read: int = 0
+    # Live runs only. `live_source` is True for a camera/stream, whose run
+    # cannot produce end-of-run artifacts; a live run over a FILE exports
+    # exactly what a batch run does, and `export_error` names the reason if
+    # that export was the part that failed -- distinct from `error`, which
+    # would mean the run itself did.
+    live_source: bool = False
+    export_error: Optional[str] = None
 
     def to_dict(self) -> dict:
         elapsed = None
@@ -224,6 +286,8 @@ class Stage:
             "source_outcome": self.source_outcome,
             "source_detail": self.source_detail,
             "frames_read": self.frames_read,
+            "live_source": self.live_source,
+            "export_error": self.export_error,
         }
 
 
@@ -848,9 +912,22 @@ class JobManager:
         Executes model with live streaming:
         1. Draws annotated frames with draw_frame (no lookahead smoothing).
         2. Encodes JPEG and broadcasts to LIVE_HUB for WebSocket clients.
-        3. Paces execution to real-time wall-clock video rate.
-        4. Dynamically skips frames if model inference falls behind real time.
-        5. Does NOT write heavy video or CSV/JSON artifacts to disk.
+        3. Paces execution so playback never runs ahead of the video clock.
+        4. Drops frames to hold real time, but only against a live camera.
+
+        Artifacts depend on whether the source ENDS.
+
+        A file does, so a live run over one produces exactly what the batch
+        path produces — detections JSON/CSV, summary, HTML report and the
+        annotated video — and the run is afterwards indistinguishable in the
+        history from a batch run of the same video.  Watching a run happen
+        should not cost you the record of it.
+
+        A camera does not end, so none of those artifacts are well defined:
+        retaining every detection of an open-ended stream is an unbounded
+        leak, and its "annotated video" is a file that grows until the disk
+        is full.  For that source the run streams and keeps running totals
+        only, and says so.
         """
         import base64
         import math
@@ -870,6 +947,12 @@ class JobManager:
         self._persist(job)
 
         try:
+            # Decided once, up front: it governs frame skipping, whether the
+            # model renders its own overlay, whether detections are retained,
+            # and whether the run exports artifacts at the end.
+            is_live_source = PipelineRunner.is_live_source(job.video_path)
+            stage.live_source = is_live_source
+
             model = build_model(
                 model_key,
                 job.device,
@@ -885,9 +968,32 @@ class JobManager:
                 model._frame_stride = stride
                 model.output_fps = float(_src_fps) / stride
 
+            # A camera's stream has no end, so writing it to a file would
+            # grow that file until the disk is full.  The overlay itself
+            # still renders either way — it is what the live preview shows.
+            if hasattr(model, "write_annotated_video"):
+                model.write_annotated_video = not is_live_source
+
+            # Loading weights takes tens of seconds for the larger wrappers.
+            # Without this the viewer sits on a bare spinner for that whole
+            # time and then sees frames arrive — which reads as a batch run
+            # that finished, not a stream that was starting up.
+            LIVE_HUB.broadcast(job.id, {
+                "event": "status",
+                "job_id": job.id,
+                "model_key": model_key,
+                "message": f"Loading {model_key} weights — this can take up to a minute…",
+            })
+
             model.load()
             stage.status = "running"
             job.message = f"Live streaming {model_key} on {job.video_name}"
+            LIVE_HUB.broadcast(job.id, {
+                "event": "status",
+                "job_id": job.id,
+                "model_key": model_key,
+                "message": f"{model_key} ready — streaming {job.video_name}…",
+            })
             self._persist(job)
 
             def _resolve_camera_id() -> str:
@@ -905,16 +1011,45 @@ class JobManager:
 
             from pipeline.video_meta import source_fps
             v_fps = float(source_fps(job.video_path) or 30.0)
-            runner = PipelineRunner(models=[model], sample_every_n_frames=1)
+            # Frame skipping only makes sense against a source that produces
+            # frames on its own clock.  A camera does: fall behind it and the
+            # lag against reality grows for the rest of the shift, so the
+            # governor drops frames to hold the present.
+            #
+            # A FILE does not.  Playing one back is watching the model work,
+            # and skipping there just means seeing less of it: a six-second
+            # clip analysed at ~1 fps was being skipped ~24 frames at a time
+            # to "keep real time", so it finished in nine frames and looked
+            # like a result that appeared all at once rather than a stream.
+            # Files use the stride the operator picked and show every frame
+            # of it.
+            user_stride = max(1, int(job.sample_every_n_frames or 1))
+
+            # Detections are retained for a finite source so the run can
+            # export the same artifacts a batch run does.  For an endless
+            # camera they are consumed per frame by on_live_detections and
+            # dropped, because retaining them is a leak with no end.
+            runner = PipelineRunner(models=[model],
+                                    sample_every_n_frames=user_stride,
+                                    retain_detections=not is_live_source)
 
             t_wall_start = time.time()
             last_frame_wall_time = time.time()
             fps_measured = 0.0
             positives_count = 0
-            rolling_inf_times: list[float] = []
+            last_pacing_sleep = 0.0
+            governor = LiveStrideGovernor(v_fps) if is_live_source else None
+
+            # Bounded stand-ins for the retained detection list: _summarize
+            # only ever reduces that list to these two counters plus a total,
+            # and a counter keyed by label stays small however long the
+            # stream runs.
+            live_labels: Counter = Counter()
+            live_scoring: Counter = Counter()
 
             def on_live_detections(dets, frame=None, frame_index=0, timestamp_sec=0.0):
                 nonlocal last_frame_wall_time, fps_measured, positives_count
+                nonlocal last_pacing_sleep
                 call_start = time.time()
 
                 dt = call_start - last_frame_wall_time
@@ -966,6 +1101,12 @@ class JobManager:
                 stage.positives = positives_count
                 stage.detections += len(dets)
 
+                live_labels.update(d.label for d in dets)
+                live_scoring.update(
+                    d.extra.get("scoring") for d in dets
+                    if isinstance(d.extra, dict) and d.extra.get("scoring")
+                )
+
                 try:
                     is_calibrated = bool(
                         getattr(getattr(model, "_calib", None), "is_calibrated", False)
@@ -995,8 +1136,22 @@ class JobManager:
                     except Exception:
                         pass
 
-                if frame is not None:
+                # Prefer the model's OWN annotated frame — the exact image it
+                # just recorded to the annotated video.  Using it here is what
+                # makes the live view and the saved file the same picture
+                # rather than two renderings of the same detections: this
+                # model draws a heading-rotated triangle per person and a
+                # circle for anyone stationary, and re-deriving that from the
+                # detection boxes downstream produced plain rectangles with
+                # no direction in them at all.
+                #
+                # draw_frame stays as the fallback for wrappers that have no
+                # overlay of their own.
+                annotated = getattr(model, "latest_annotated_frame", None)
+                if annotated is None and frame is not None:
                     annotated = draw_frame(frame, dets)
+
+                if annotated is not None:
                     ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
                     jpeg_b64 = base64.b64encode(buf).decode("ascii") if ok else ""
                 else:
@@ -1025,21 +1180,35 @@ class JobManager:
                     "model_key": model_key,
                 })
 
-                # Pacing: pace to actual wall-clock playback
+                # Pacing: never run ahead of the video's own clock.  This
+                # only bites when the model is faster than real time, and it
+                # is what stops a light model on a long file from flashing
+                # past at whatever rate the CPU allows.
                 target_video_elapsed = timestamp_sec
                 actual_wall_elapsed = time.time() - t_wall_start
+                sleep_needed = 0.0
                 if actual_wall_elapsed < target_video_elapsed:
                     sleep_needed = target_video_elapsed - actual_wall_elapsed
                     time.sleep(sleep_needed)
 
-                # Adaptive frame-skip governor
-                step_cost = time.time() - call_start
-                rolling_inf_times.append(step_cost)
-                if len(rolling_inf_times) > 10:
-                    rolling_inf_times.pop(0)
-                avg_inf_cost = sum(rolling_inf_times) / len(rolling_inf_times)
-                adaptive_stride = max(1, math.ceil(v_fps * avg_inf_cost))
-                runner.sample_every_n_frames = adaptive_stride
+                # Adaptive frame-skip governor.  `dt` is the wall time since
+                # the previous frame completed and `last_pacing_sleep` is the
+                # sleep that sat inside it, so the difference is what this
+                # frame actually cost to produce.
+                #
+                # This used to measure `time.time() - call_start`, taken at
+                # the top of this callback: a window that contains the
+                # annotation and JPEG encode and the pacing sleep, and
+                # excludes model.predict() — which on crowd footage is well
+                # over 90% of the real cost.  The governor read ~50 ms for a
+                # frame that took ~1 s, chose a stride of 2 where ~24 was
+                # needed, and the preview fell further behind real time with
+                # every frame it processed.
+                if governor is not None:
+                    if frame_index > 0:
+                        governor.observe(dt, last_pacing_sleep)
+                    runner.sample_every_n_frames = governor.stride
+                last_pacing_sleep = sleep_needed
 
             def on_progress(done, total, n_dets):
                 stage.frames_done = done
@@ -1084,18 +1253,68 @@ class JobManager:
             self._persist(job)
             return
 
+        # A finite source leaves the same record a batch run does: summary
+        # from the full detection set, then JSON/CSV/report/annotated video.
+        # An endless one cannot, and falls back to the running totals.
+        if is_live_source:
+            self._summarize_live(stage, live_labels, live_scoring, model)
+        else:
+            job.message = f"Saving outputs for {model_key}…"
+            LIVE_HUB.broadcast(job.id, {
+                "event": "status",
+                "job_id": job.id,
+                "model_key": model_key,
+                "message": "Stream finished — writing annotated video and reports…",
+            })
+            try:
+                self._summarize(stage, detections, model)
+                self._export(job, stage, detections, model_key, model)
+            except Exception as exc:  # noqa: BLE001
+                # The stream itself succeeded and the viewer watched it. Losing
+                # the export is a real failure but not a reason to report the
+                # run as failed, so it is recorded and named rather than
+                # swallowed or escalated.
+                stage.export_error = f"{exc.__class__.__name__}: {exc}"
+                print(f"[jobs] WARN live export failed for {model_key}: {exc}")
+                traceback.print_exc()
+
         stage.status = "done"
         stage.progress = 1.0
         stage.finished_at = time.time()
-        self._summarize(stage, detections, model)
+        self._persist(job)
+
+        # Carries the artifact paths so the viewer can switch straight from
+        # the live canvas to the saved video without polling for them.
         LIVE_HUB.broadcast(job.id, {
             "event": "done",
             "job_id": job.id,
             "model_key": model_key,
             "status": "done",
+            "live_source": is_live_source,
+            "artifacts": {
+                "annotated": stage.annotated,
+                "log_json": stage.log_json,
+                "log_csv": stage.log_csv,
+                "summary": stage.log_summary,
+                "report_html": stage.report_html,
+            },
+            "export_error": stage.export_error,
         })
         self._persist(job)
 
+
+    @staticmethod
+    def _summarize_live(stage: Stage, labels: Counter, scoring: Counter, model=None):
+        """_summarize for the live path, which keeps counters, not detections.
+
+        stage.detections and stage.positives are already maintained
+        incrementally by the frame callback, so unlike _summarize this does
+        not recompute (and must not overwrite) them.
+        """
+        stage.label_counts = dict(labels)
+        stage.scoring_modes = dict(scoring)
+        if model is not None and getattr(model, "summary", None):
+            stage.summary = dict(model.summary)
 
     @staticmethod
     def _summarize(stage: Stage, detections: list, model=None):

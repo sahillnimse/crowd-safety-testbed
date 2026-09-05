@@ -293,22 +293,79 @@ def build_render_plan(detections: list[Detection], fps: float,
     return plan
 
 
+#: Above this many boxes in one frame, per-box text is dropped in favour of a
+#: legend.  A label plate is ~120x16 px; a crowd camera returns several hundred
+#: boxes, so the plates tile over each other and over the footage until the
+#: frame is a wall of unreadable text with the crowd somewhere underneath.  The
+#: colour already carries the label, and the legend says what each colour means.
+_MAX_PER_BOX_LABELS = 40
+
+#: Rows of legend to draw before collapsing the rest into a "+N more" line.
+_MAX_LEGEND_ROWS = 8
+
+
+def _draw_legend(frame, counts: "Counter") -> None:
+    """Colour key with per-label counts, top-left, over a dimmed panel."""
+    if not counts:
+        return
+
+    rows = counts.most_common(_MAX_LEGEND_ROWS)
+    hidden = len(counts) - len(rows)
+    lines = [(lbl, f"{lbl}  {n}", COLOR_MAP.get(lbl, DEFAULT_COLOR)) for lbl, n in rows]
+    if hidden > 0:
+        lines.append((None, f"+{hidden} more", (200, 200, 200)))
+
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
+    pad, swatch, line_h = 8, 10, 18
+    text_w = max(cv2.getTextSize(t, font, scale, thick)[0][0] for _, t, _ in lines)
+    box_w = pad + swatch + 6 + text_w + pad
+    box_h = pad + line_h * len(lines) + pad
+
+    # Dim the panel rather than filling it flat, so the footage stays visible
+    # underneath and the legend cannot hide what it is describing.
+    panel = frame[4:4 + box_h, 4:4 + box_w]
+    if panel.size:
+        cv2.addWeighted(panel, 0.25, panel * 0, 0.0, 0.0, dst=panel)
+
+    y = 4 + pad + 12
+    for _lbl, text, colour in lines:
+        cv2.rectangle(frame, (4 + pad, y - 9), (4 + pad + swatch, y - 1), colour, -1)
+        cv2.putText(frame, text, (4 + pad + swatch + 6, y), font, scale,
+                    (255, 255, 255), thick, cv2.LINE_AA)
+        y += line_h
+
+
 def draw_frame(frame, detections: list[Detection]):
     """Draws detections onto a single frame for live preview streaming.
 
     Unlike export_annotated_video(), this does not perform cross-frame smoothing
     or lookahead interpolation because it operates live on incoming frames.
+
+    Dense frames are drawn differently from sparse ones.  Labelling every box
+    works when there are a dozen; at the several hundred a crowd camera
+    returns it buries the footage under overlapping text and the operator can
+    see neither the labels nor the crowd.  Past _MAX_PER_BOX_LABELS the boxes
+    are drawn thin and unlabelled and a legend carries the same information
+    once, with counts.
     """
     if frame is None:
         return frame
     annotated = frame.copy()
     banner_slot = 0
 
+    boxed = [d for d in (detections or []) if d.bbox]
+    dense = len(boxed) > _MAX_PER_BOX_LABELS
+    box_thickness = 1 if dense else 2
+    label_counts = Counter(d.label for d in boxed)
+
     for d in (detections or []):
         color = COLOR_MAP.get(d.label, DEFAULT_COLOR)
         if d.bbox:
             x1, y1, x2, y2 = (int(round(v)) for v in d.bbox)
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, box_thickness)
+
+            if dense:
+                continue
 
             # Format label nicely with extra info if available
             text = f"{d.label} {d.confidence:.2f}"
@@ -330,6 +387,9 @@ def draw_frame(frame, detections: list[Detection]):
             (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.rectangle(annotated, (8, y - th - 2), (12 + tw, y + baseline), (0, 0, 0), -1)
             cv2.putText(annotated, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+
+    if dense and banner_slot == 0:
+        _draw_legend(annotated, label_counts)
 
     # Subtle live indicator
     h, w = annotated.shape[:2]

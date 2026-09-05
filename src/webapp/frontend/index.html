@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=3.7" />
+  <link rel="stylesheet" href="/styles.css?v=4.1" />
 </head>
 <body>
 
@@ -97,6 +97,14 @@
         <div>
           <div class="kpi-val" id="kpi-anpr">0</div>
           <div class="kpi-lbl">ANPR Captures</div>
+        </div>
+      </div>
+      <!-- Only present while a live job is streaming. -->
+      <div class="kpi-card live-now hidden" id="kpi-card-live">
+        <div class="kpi-icon"><span class="rail-live-dot"></span></div>
+        <div>
+          <div class="kpi-val" id="kpi-live-people">0</div>
+          <div class="kpi-lbl">Live People Count</div>
         </div>
       </div>
     </div>
@@ -434,10 +442,15 @@
       <div class="modal-head-title">
         <h3 id="modal-title">Classification & Analytical Details</h3>
       </div>
-      <button id="modal-close" class="link-btn" aria-label="Close details">✕ Close</button>
+      <div class="modal-head-actions">
+        <span class="live-fps-badge hidden" id="live-fps">FPS: --</span>
+        <button id="live-btn-stop" class="btn-live-stop hidden" title="Stop the running job">⏹ Stop</button>
+        <button id="modal-close" class="link-btn" aria-label="Close details">✕ Close</button>
+      </div>
     </div>
     <div class="modal-nav-tabs" id="modal-nav" role="tablist"
          aria-label="Result detail sections">
+      <button class="modal-tab-btn hidden" role="tab" aria-selected="false" data-mtab="live"><span class="rail-live-dot"></span> Live Stream</button>
       <button class="modal-tab-btn active" role="tab" aria-selected="true" data-mtab="overview">📊 Overview & Key Details</button>
       <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="timeline">⏱️ Detections Timeline</button>
       <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="video">🎥 Annotated Video</button>
@@ -513,57 +526,73 @@
   </div>
 </div>
 
-<!-- ============ LIVE PREVIEW MODAL OVERLAY ============ -->
-<div id="live-overlay" class="live-player-overlay hidden" role="dialog" aria-modal="true" aria-label="Live Detection Stream">
-  <div class="live-player-card">
-    <div class="live-player-head">
-      <div class="live-player-title-wrap">
-        <span class="live-pill"><span class="pulse-dot"></span> LIVE STREAM</span>
-        <h3 id="live-video-title">Live Preview</h3>
-        <span class="badge" id="live-model-badge">model</span>
+<!-- ============ LIVE STREAM STAGE ============================================
+     Parked here and moved into the detail modal's body when the Live Stream
+     tab is shown.  It is one persistent node rather than markup re-rendered
+     per tab because the canvas is driven by an open WebSocket: rebuilding it
+     on every tab switch would drop the stream the operator is watching.
+     ========================================================================= -->
+<div id="live-stage-holder" hidden>
+  <div id="live-stage" class="live-stage">
+    <aside class="live-metrics-rail" aria-label="Live detection metrics">
+      <div class="rail-head">
+        <span class="rail-live-dot" id="live-rail-dot"></span>
+        <span>Live Metrics</span>
       </div>
-      <div class="live-player-actions">
-        <span class="live-fps-badge" id="live-fps">FPS: --</span>
-        <button id="live-btn-stop" class="btn-live-stop" title="Stop Job">⏹ Stop</button>
-        <button id="live-btn-close" class="btn-live-close" title="Close Overlay">✕ Close</button>
-      </div>
-    </div>
 
-    <div class="live-player-body">
-      <div class="live-canvas-container">
-        <canvas id="live-canvas"></canvas>
-        <div id="live-status-overlay" class="live-status-overlay hidden">
-          <div class="live-status-spinner"></div>
-          <div id="live-status-msg">Starting live preview…</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="live-player-hud">
-      <div class="hud-item">
+      <button type="button" class="hud-item is-selected" data-metric="people"
+              aria-pressed="true" title="Show live trace for People Count">
         <div class="hud-val" id="live-kpi-people">0</div>
         <div class="hud-lbl">People Count</div>
-      </div>
-      <div class="hud-item">
+      </button>
+      <button type="button" class="hud-item" data-metric="positives"
+              aria-pressed="false" title="Show live trace for Positive Alerts">
         <div class="hud-val" id="live-kpi-events">0</div>
         <div class="hud-lbl">Positive Alerts</div>
-      </div>
-      <div class="hud-item">
+      </button>
+      <button type="button" class="hud-item" data-metric="crush"
+              aria-pressed="false" title="Show live trace for Crush Risk">
         <div class="hud-val" id="live-kpi-crush">0.00</div>
         <div class="hud-lbl">Crush Risk</div>
-      </div>
-      <div class="hud-item">
+      </button>
+      <button type="button" class="hud-item" data-metric="flow"
+              aria-pressed="false" title="Show live trace for Flow Rate">
         <div class="hud-val" id="live-kpi-flow">0.0</div>
         <div class="hud-lbl">Flow Rate (pax/min)</div>
-      </div>
-      <div class="hud-item">
+      </button>
+      <button type="button" class="hud-item" data-metric="time"
+              aria-pressed="false" title="Show live trace for Video Timestamp">
         <div class="hud-val" id="live-kpi-time">00:00</div>
         <div class="hud-lbl">Video Timestamp</div>
+      </button>
+
+      <div class="live-metric-detail" id="live-metric-detail">
+        <div class="metric-detail-head">
+          <span class="metric-detail-name" id="metric-detail-name">People Count</span>
+          <span class="metric-detail-live" id="metric-detail-live">
+            <span class="rail-live-dot"></span> detecting
+          </span>
+        </div>
+        <canvas id="metric-spark" class="metric-spark" width="240" height="64"></canvas>
+        <div class="metric-detail-stats">
+          <span>now <b id="metric-stat-now">–</b></span>
+          <span>min <b id="metric-stat-min">–</b></span>
+          <span>max <b id="metric-stat-max">–</b></span>
+          <span><b id="metric-stat-n">0</b> frames</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="live-canvas-container">
+      <canvas id="live-canvas"></canvas>
+      <div id="live-status-overlay" class="live-status-overlay hidden">
+        <div class="live-status-spinner"></div>
+        <div id="live-status-msg">Starting live preview…</div>
       </div>
     </div>
   </div>
 </div>
 
-<script src="/app.js?v=3.7"></script>
+<script src="/app.js?v=4.1"></script>
 </body>
 </html>

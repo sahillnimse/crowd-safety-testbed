@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "testbed",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import sys, runpy; sys.path.insert(0, 'src'); runpy.run_module('webapp', run_name='__main__')",
+        "--host", "127.0.0.1", "--port", "8000"
+      ],
+      "port": 8000
+    }
+  ]
+}

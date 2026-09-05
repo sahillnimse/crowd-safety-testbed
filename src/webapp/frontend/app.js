@@ -683,6 +683,7 @@ async function openHistoryDetailModal(videoName) {
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = '<div class="loading">Loading detailed detection payload…</div>';
   $('#modal').classList.remove('hidden');
+  setLiveChrome({ tabVisible: false, streaming: false });
 
   // Collect ALL annotated videos from every stage that has one
   const allAnnotatedVideos = group.stages
@@ -717,6 +718,7 @@ async function openJobDetailModal(jobId, modelKey) {
   $('#modal-title').textContent = `Job Details — ${jobId}`;
   $('#modal-body').innerHTML = '<div class="loading">Loading detections…</div>';
   $('#modal').classList.remove('hidden');
+  setLiveChrome({ tabVisible: false, streaming: false });
 
   try {
     const job = await api(`/api/jobs/${jobId}`);
@@ -767,6 +769,7 @@ async function openRouteSessionDetailModal(sessionName) {
   $('#modal-title').textContent = `Route Session Details — ${sessionName}`;
   $('#modal-body').innerHTML = '<div class="loading">Loading route metrics and camera telemetry…</div>';
   $('#modal').classList.remove('hidden');
+  setLiveChrome({ tabVisible: false, streaming: false });
 
   try {
     const session = await api(`/api/sessions/${encodeURIComponent(sessionName)}`);
@@ -892,6 +895,15 @@ function wireModelSelect(host, detail) {
   });
 }
 
+/* Move the live stage back to its holder before anything overwrites the
+   modal body.  The canvas is fed by an open WebSocket, so it has to survive
+   every tab switch — destroying it would drop the stream mid-run. */
+function parkLiveStage() {
+  const stage = document.getElementById('live-stage');
+  const holder = document.getElementById('live-stage-holder');
+  if (stage && holder && stage.parentElement !== holder) holder.appendChild(stage);
+}
+
 function renderModalTab(tabName) {
   state.activeModalTab = tabName;
   $$('#modal-nav .modal-tab-btn').forEach(btn => {
@@ -907,6 +919,20 @@ function renderModalTab(tabName) {
   const modalCard = $('#modal .modal-card');
   if (modalCard && tabName !== 'video') {
     modalCard.classList.remove('wide-modal');
+  }
+
+  parkLiveStage();
+
+  if (tabName === 'live') {
+    host.innerHTML = '';
+    const stage = document.getElementById('live-stage');
+    if (stage) {
+      host.appendChild(stage);
+      drawMetricSpark();
+    } else {
+      host.innerHTML = '<div class="empty">Live stream is not available for this run.</div>';
+    }
+    return;
   }
 
   if (detail.isRouteSession) {
@@ -1995,6 +2021,11 @@ function closeModal() {
   if (maxOverlay) maxOverlay.remove();
   const modalCard = document.querySelector('#modal .modal-card');
   if (modalCard) modalCard.classList.remove('wide-modal');
+  // The live stage lives in this modal's body while its tab is open; park
+  // it before the body is cleared or the canvas would be destroyed with it.
+  parkLiveStage();
+  if (liveState.ws || liveState.active) closeLivePlayer();
+  setLiveChrome({ tabVisible: false, streaming: false });
   $('#modal').classList.add('hidden');
   $('#modal-body').innerHTML = '';
   state.currentDetail = null;
@@ -2005,39 +2036,172 @@ let liveState = {
   ws: null,
   jobId: null,
   active: false,
+  selectedMetric: 'people',
+  history: null,
 };
+
+/* Metric definitions for the live rail.  `read` pulls the value out of a KPI
+   payload, `fmt` renders it for the tile, and `el` is the tile's value node —
+   one table so the tiles, the inspector chart and the tick animation all
+   agree on what a metric is. */
+const LIVE_METRICS = {
+  people:    { label: 'People Count',        el: '#live-kpi-people',
+               read: k => k.person_count,  fmt: v => String(Math.round(v)) },
+  positives: { label: 'Positive Alerts',     el: '#live-kpi-events',
+               read: k => k.positives,     fmt: v => String(Math.round(v)) },
+  crush:     { label: 'Crush Risk',          el: '#live-kpi-crush',
+               read: k => k.crush_risk,    fmt: v => Number(v).toFixed(2) },
+  flow:      { label: 'Flow Rate (pax/min)', el: '#live-kpi-flow',
+               read: k => k.flow_rate,     fmt: v => Number(v).toFixed(1) },
+  time:      { label: 'Video Timestamp',     el: '#live-kpi-time',
+               read: k => k.timestamp_sec, fmt: v => fmtClock(v) },
+};
+
+/* Frames of history kept per metric for the inspector chart.  Bounded: a
+   live camera runs for a shift, and an unbounded array here would grow for
+   as long as it does. */
+const LIVE_HISTORY_LEN = 240;
+
+function fmtClock(sec) {
+  const total = Math.max(0, Math.floor(Number(sec) || 0));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function resetLiveHistory() {
+  liveState.history = {};
+  Object.keys(LIVE_METRICS).forEach(k => { liveState.history[k] = []; });
+}
+
+function selectLiveMetric(key) {
+  if (!LIVE_METRICS[key]) return;
+  liveState.selectedMetric = key;
+  document.querySelectorAll('.live-metrics-rail .hud-item').forEach(btn => {
+    const on = btn.dataset.metric === key;
+    btn.classList.toggle('is-selected', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  const nameEl = $('#metric-detail-name');
+  if (nameEl) nameEl.textContent = LIVE_METRICS[key].label;
+  drawMetricSpark();
+}
+
+/* Live trace for the selected metric.  This is what makes "is it actually
+   detecting right now?" answerable: the line extends by one point per frame
+   the model returns, so a stalled pipeline shows a flat tail rather than a
+   number that merely looks plausible. */
+function drawMetricSpark() {
+  const canvas = $('#metric-spark');
+  if (!canvas || !liveState.history) return;
+  const key = liveState.selectedMetric;
+  const series = liveState.history[key] || [];
+  const metric = LIVE_METRICS[key];
+
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 240;
+  const cssH = canvas.clientHeight || 64;
+  if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const statNow = $('#metric-stat-now');
+  const statMin = $('#metric-stat-min');
+  const statMax = $('#metric-stat-max');
+  const statN = $('#metric-stat-n');
+  if (statN) statN.textContent = String(series.length);
+
+  if (!series.length) {
+    if (statNow) statNow.textContent = '–';
+    if (statMin) statMin.textContent = '–';
+    if (statMax) statMax.textContent = '–';
+    return;
+  }
+
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  if (statNow) statNow.textContent = metric.fmt(series[series.length - 1]);
+  if (statMin) statMin.textContent = metric.fmt(min);
+  if (statMax) statMax.textContent = metric.fmt(max);
+
+  // A flat series still needs a band to draw in, or every point lands on the
+  // same pixel row and the chart reads as broken rather than as steady.
+  const span = (max - min) || 1;
+  const pad = 4;
+  const plotW = cssW - pad * 2;
+  const plotH = cssH - pad * 2;
+  const xAt = i => pad + (series.length === 1 ? plotW : (i / (series.length - 1)) * plotW);
+  const yAt = v => pad + plotH - ((v - min) / span) * plotH;
+
+  const stroke = 'rgba(99, 102, 241, 0.95)';
+  ctx.beginPath();
+  series.forEach((v, i) => (i ? ctx.lineTo(xAt(i), yAt(v)) : ctx.moveTo(xAt(i), yAt(v))));
+  const fill = ctx.createLinearGradient(0, pad, 0, pad + plotH);
+  fill.addColorStop(0, 'rgba(99, 102, 241, 0.35)');
+  fill.addColorStop(1, 'rgba(99, 102, 241, 0.02)');
+  ctx.lineTo(xAt(series.length - 1), pad + plotH);
+  ctx.lineTo(xAt(0), pad + plotH);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+
+  ctx.beginPath();
+  series.forEach((v, i) => (i ? ctx.lineTo(xAt(i), yAt(v)) : ctx.moveTo(xAt(i), yAt(v))));
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // Leading point: the frame that just arrived.
+  const lx = xAt(series.length - 1);
+  const ly = yAt(series[series.length - 1]);
+  ctx.beginPath();
+  ctx.arc(lx, ly, 2.8, 0, Math.PI * 2);
+  ctx.fillStyle = '#22d3ee';
+  ctx.fill();
+}
 
 function updateLiveKPIs(kpis) {
   if (!kpis) return;
+  if (!liveState.history) resetLiveHistory();
 
-  const peopleEl = $('#live-kpi-people');
-  if (peopleEl && kpis.person_count !== undefined) {
-    peopleEl.textContent = kpis.person_count;
-  }
+  // One pass over the metric table: record history, paint the tile, and
+  // flash it when the number actually moved.
+  Object.entries(LIVE_METRICS).forEach(([key, metric]) => {
+    const raw = metric.read(kpis);
+    if (raw === undefined || raw === null) return;
 
-  const eventsEl = $('#live-kpi-events');
-  if (eventsEl && kpis.positives !== undefined) {
-    eventsEl.textContent = kpis.positives;
-  }
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return;
 
+    const series = liveState.history[key];
+    series.push(value);
+    if (series.length > LIVE_HISTORY_LEN) series.shift();
+
+    const el = $(metric.el);
+    if (!el) return;
+    const text = metric.fmt(value);
+    if (el.textContent !== text) {
+      el.textContent = text;
+      const tile = el.closest('.hud-item');
+      if (tile) {
+        tile.classList.remove('just-changed');
+        // Reflow so the animation restarts on consecutive changes.
+        void tile.offsetWidth;
+        tile.classList.add('just-changed');
+      }
+    }
+  });
+
+  // Crush risk keeps its severity colouring.
   const crushEl = $('#live-kpi-crush');
   if (crushEl && kpis.crush_risk !== undefined) {
     const risk = Number(kpis.crush_risk);
-    crushEl.textContent = risk.toFixed(2);
     crushEl.style.color = risk > 0.5 ? 'var(--bad, #f43f5e)' : (risk > 0.2 ? 'var(--warn, #f59e0b)' : 'var(--text, #f8fafc)');
-  }
-
-  const flowEl = $('#live-kpi-flow');
-  if (flowEl && kpis.flow_rate !== undefined) {
-    flowEl.textContent = Number(kpis.flow_rate).toFixed(1);
-  }
-
-  const timeEl = $('#live-kpi-time');
-  if (timeEl && kpis.timestamp_sec !== undefined) {
-    const totalSec = Math.floor(kpis.timestamp_sec);
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    timeEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
 
   const fpsEl = $('#live-fps');
@@ -2045,12 +2209,73 @@ function updateLiveKPIs(kpis) {
     fpsEl.textContent = `FPS: ${kpis.fps > 0 ? kpis.fps.toFixed(1) : '--'}`;
   }
 
-  // Also update sidebar / KPI bar live
+  drawMetricSpark();
+  updateDashboardLiveKPIs(kpis);
+}
+
+/* The dashboard KPI bar keeps counting while a live job streams, so the
+   numbers move whether or not the live modal is the thing on screen. */
+function updateDashboardLiveKPIs(kpis) {
   const mainEventsEl = $('#kpi-events');
   if (mainEventsEl && kpis.positives !== undefined) {
     const baseEvents = state.historyData.reduce((acc, g) => acc + (g.total_positives || 0), 0);
-    mainEventsEl.textContent = baseEvents + (kpis.positives || 0);
+    const text = String(baseEvents + (kpis.positives || 0));
+    if (mainEventsEl.textContent !== text) {
+      mainEventsEl.textContent = text;
+      flashKpiCard(mainEventsEl);
+    }
   }
+
+  const livePeopleEl = $('#kpi-live-people');
+  if (livePeopleEl && kpis.person_count !== undefined) {
+    const text = String(Math.round(kpis.person_count));
+    if (livePeopleEl.textContent !== text) {
+      livePeopleEl.textContent = text;
+      flashKpiCard(livePeopleEl);
+    }
+  }
+}
+
+function flashKpiCard(valEl) {
+  const card = valEl.closest('.kpi-card');
+  if (!card) return;
+  card.classList.remove('just-changed');
+  void card.offsetWidth;
+  card.classList.add('just-changed');
+}
+
+/* Show/hide the dashboard's live-only card and mark the KPI bar as live. */
+function setDashboardLiveState(active) {
+  const card = $('#kpi-card-live');
+  if (card) card.classList.toggle('hidden', !active);
+  const bar = document.querySelector('.kpi-bar');
+  if (bar) bar.classList.toggle('is-live', active);
+}
+
+/* Adds a "Replay saved video" action to the finished-stream overlay, or a
+   plain note when the source was a camera and no video was written. */
+function renderLiveReplayAction(annotatedPath) {
+  const overlay = $('#live-status-overlay');
+  if (!overlay) return;
+  overlay.querySelector('.live-replay-action')?.remove();
+
+  const wrap = document.createElement('div');
+  wrap.className = 'live-replay-action';
+
+  if (annotatedPath) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn-primary';
+    btn.textContent = '▶ Replay saved video';
+    btn.addEventListener('click', () => renderModalTab('video'));
+    wrap.appendChild(btn);
+  } else {
+    const note = document.createElement('div');
+    note.className = 'hint';
+    note.textContent = 'No annotated video for this source — a live camera has no end to record.';
+    wrap.appendChild(note);
+  }
+  overlay.appendChild(wrap);
 }
 
 function b64toBlob(b64Data, contentType = 'image/jpeg') {
@@ -2063,28 +2288,105 @@ function b64toBlob(b64Data, contentType = 'image/jpeg') {
   return new Blob([byteArray], { type: contentType });
 }
 
-function openLivePlayer(jobId, videoName, modelName) {
+/* Show or hide the live-only chrome: the Live Stream tab, the FPS badge and
+   the Stop button.  All three belong to a run that is happening now, and a
+   finished run should not keep offering to stop it. */
+function setLiveChrome({ tabVisible, streaming }) {
+  const tabBtn = document.querySelector('#modal-nav .modal-tab-btn[data-mtab="live"]');
+  if (tabBtn) tabBtn.classList.toggle('hidden', !tabVisible);
+  const fpsEl = $('#live-fps');
+  if (fpsEl) fpsEl.classList.toggle('hidden', !streaming);
+  const stopBtn = $('#live-btn-stop');
+  if (stopBtn) stopBtn.classList.toggle('hidden', !streaming);
+}
+
+/* Pull the job's stages and detections into the shape every detail tab
+   already reads, so a live run's Overview / Timeline / Video / Validation /
+   Raw JSON tabs are rendered by exactly the same code that renders a batch
+   run's.  Tolerant of missing artifacts: mid-run there are none yet. */
+async function loadLiveJobDetail(jobId, modelKey, videoName) {
+  let job = null;
+  try {
+    job = await api(`/api/jobs/${jobId}`);
+  } catch { /* job record not readable yet */ }
+
+  const stages = (job && job.stages) ? job.stages : [];
+  const stage = stages.find(st => st.model_key === modelKey)
+    || stages[0]
+    || { model_key: modelKey, model_label: modelKey };
+
+  let detections = { rows: [], total: 0 };
+  try {
+    detections = await api(`/api/jobs/${jobId}/detections/${stage.model_key}?limit=500`);
+  } catch { /* detections.json is only written when the run finishes */ }
+
+  const annotatedVideos = stages
+    .filter(st => st.annotated)
+    .map(st => ({ label: st.model_key, key: st.model_key, file: st.annotated }));
+
+  state.currentDetail = {
+    videoName: (job && job.video_name) ? job.video_name : (videoName || jobId),
+    jobId,
+    group: null,
+    primaryStage: stage,
+    allStages: stages.length ? stages : [stage],
+    activeTimelineModelKey: stage.model_key,
+    detections,
+    allAnnotatedVideos: annotatedVideos,
+    activeAnnotatedVideo: annotatedVideos.length ? annotatedVideos[0].file : null,
+    isLiveJob: true,
+  };
+  return state.currentDetail;
+}
+
+/* Re-read the job once the stream ends, so the tabs that were empty during
+   the run (annotated video, timeline, raw JSON) pick up the files the export
+   just wrote — without the operator having to close and reopen anything. */
+async function refreshLiveDetailAfterRun() {
+  if (!liveState.jobId) return;
+  const tab = state.activeModalTab || 'live';
+  try {
+    await loadLiveJobDetail(liveState.jobId, liveState.modelKey, liveState.videoName);
+    renderModalTab(tab);
+  } catch { /* leave the last-rendered view in place */ }
+}
+
+async function openLivePlayer(jobId, videoName, modelName, modelKey) {
   liveState.jobId = jobId;
   liveState.active = true;
+  liveState.videoName = videoName;
+  liveState.modelKey = modelKey || (modelName || '').split(',')[0].trim();
 
-  const overlay = $('#live-overlay');
-  if (!overlay) return;
-  overlay.classList.remove('hidden');
+  state.modalOpener = document.activeElement;
+  $('#modal-title').textContent = `Live Run — ${videoName || jobId}`;
+  $('#modal').classList.remove('hidden');
+  setLiveChrome({ tabVisible: true, streaming: true });
 
-  const titleEl = $('#live-video-title');
-  if (titleEl) titleEl.textContent = videoName || 'Live Video';
-  const badgeEl = $('#live-model-badge');
-  if (badgeEl) badgeEl.textContent = modelName || 'Live Model';
   const fpsEl = $('#live-fps');
   if (fpsEl) fpsEl.textContent = 'FPS: --';
 
-  // Reset live KPIs
+  // Reset live KPIs and the metric traces — a new run starts a new history,
+  // otherwise the inspector chart would splice two videos into one line.
+  const stageEl = document.querySelector('#live-stage');
+  if (stageEl) stageEl.classList.remove('is-idle');
+  resetLiveHistory();
+  setDashboardLiveState(true);
   updateLiveKPIs({ person_count: 0, positives: 0, crush_risk: 0, flow_rate: 0, timestamp_sec: 0, fps: 0 });
+  resetLiveHistory();
+  selectLiveMetric(liveState.selectedMetric || 'people');
+
+  // Show the stream immediately; the rest of the tabs fill in behind it.
+  state.currentDetail = state.currentDetail || {};
+  renderModalTab('live');
+  loadLiveJobDetail(jobId, liveState.modelKey, videoName)
+    .then(() => { if (state.activeModalTab === 'live') renderModalTab('live'); })
+    .catch(() => {});
 
   const statusOverlay = $('#live-status-overlay');
   const statusMsg = $('#live-status-msg');
   if (statusOverlay) {
     statusOverlay.classList.remove('hidden');
+    statusOverlay.querySelector('.live-replay-action')?.remove();
     const spinner = statusOverlay.querySelector('.live-status-spinner');
     if (spinner) spinner.style.display = 'block';
     if (statusMsg) statusMsg.textContent = 'Connecting live stream…';
@@ -2116,6 +2418,11 @@ function openLivePlayer(jobId, videoName, modelName) {
           if (statusMsg) {
             statusMsg.textContent = msg.message || 'Stream initialized…';
           }
+        } else if (msg.event === 'status') {
+          // Startup progress (weight loading) — keep the spinner up but say
+          // what is actually happening instead of a generic message.
+          if (statusOverlay) statusOverlay.classList.remove('hidden');
+          if (statusMsg && msg.message) statusMsg.textContent = msg.message;
         } else if (msg.event === 'frame') {
           if (statusOverlay && !statusOverlay.classList.contains('hidden')) {
             statusOverlay.classList.add('hidden');
@@ -2151,7 +2458,25 @@ function openLivePlayer(jobId, videoName, modelName) {
             const spinner = statusOverlay.querySelector('.live-status-spinner');
             if (spinner) spinner.style.display = 'none';
           }
-          if (statusMsg) statusMsg.textContent = msg.status === 'cancelled' ? 'Live stream cancelled.' : 'Live stream completed.';
+          if (statusMsg) {
+            statusMsg.textContent = msg.status === 'cancelled'
+              ? 'Live stream cancelled.'
+              : (msg.export_error
+                  ? `Stream finished, but saving outputs failed: ${msg.export_error}`
+                  : 'Live stream completed — outputs saved.');
+          }
+          // The stream cannot be rewound (it was never a video, just frames
+          // as they were computed), but the run wrote one — so offer that
+          // rather than leaving a frozen last frame as the only thing here.
+          renderLiveReplayAction(msg.artifacts && msg.artifacts.annotated);
+          const doneStage = document.querySelector('#live-stage');
+          if (doneStage) doneStage.classList.add('is-idle');
+          setDashboardLiveState(false);
+          // The run is over: keep the recorded stream viewable, but stop
+          // offering to stop a job that is no longer running.
+          setLiveChrome({ tabVisible: true, streaming: false });
+          liveState.active = false;
+          refreshLiveDetailAfterRun();
           refreshJobs();
         }
       } catch (e) {
@@ -2179,9 +2504,23 @@ function closeLivePlayer() {
     liveState.ws = null;
   }
   liveState.active = false;
-  const overlay = $('#live-overlay');
-  if (overlay) overlay.classList.add('hidden');
+  liveState.jobId = null;
+  setDashboardLiveState(false);
+  setLiveChrome({ tabVisible: false, streaming: false });
+  parkLiveStage();
   refreshJobs();
+}
+
+/* Clicking a metric tile opens its live trace in the inspector.  Delegated,
+   because the rail is in the modal markup and this binds once at startup. */
+function initLiveMetricRail() {
+  const rail = document.querySelector('.live-metrics-rail');
+  if (!rail) return;
+  rail.addEventListener('click', (ev) => {
+    const tile = ev.target.closest('.hud-item[data-metric]');
+    if (tile) selectLiveMetric(tile.dataset.metric);
+  });
+  window.addEventListener('resize', () => drawMetricSpark());
 }
 
 /* ------------------------------------------------------------------- run */
@@ -2218,7 +2557,8 @@ async function runJob() {
     refreshJobs();
 
     if (isLive && jobRes && jobRes.id) {
-      openLivePlayer(jobRes.id, jobRes.video_name || source, [...state.selected].join(', '));
+      openLivePlayer(jobRes.id, jobRes.video_name || source,
+                     [...state.selected].join(', '), [...state.selected][0]);
     }
   } catch (e) {
     err.textContent = e.message;
@@ -2526,13 +2866,9 @@ function wire() {
   $('#modal-close').addEventListener('click', closeModal);
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      if (liveState.active) {
-        closeLivePlayer();
-      } else {
-        closeModal();
-      }
-    }
+    // One modal now, live or not, so Escape means the same thing either way:
+    // closeModal tears down an active stream on its way out.
+    if (e.key === 'Escape') closeModal();
   });
 
   // Live preview controls wiring
@@ -2549,11 +2885,6 @@ function wire() {
         if (runBtn) runBtn.textContent = '▶ Run selected models';
       }
     });
-  }
-
-  const liveCloseBtn = $('#live-btn-close');
-  if (liveCloseBtn) {
-    liveCloseBtn.addEventListener('click', closeLivePlayer);
   }
 
   const liveStopBtn = $('#live-btn-stop');
@@ -4010,6 +4341,7 @@ function initRouteView() {
   wire();
   loadDevice();
   initRouteView();
+  initLiveMetricRail();
   await loadModels();
   loadVideos();
   refreshJobs();

@@ -4021,19 +4021,158 @@ pre.raw-json {
   color: #fff;
 }
 
-.live-player-body {
-  flex: 1;
-  position: relative;
+/* The live stream stage, hosted inside the detail modal's body on the
+   Live Stream tab. */
+.live-stage {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 12px;
   background: #020408;
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 420px;
+}
+
+.live-stage .live-canvas-container {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.live-stage #live-canvas {
+  max-height: 64vh;
+}
+
+.modal-head-actions {
   display: flex;
   align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  padding: 12px;
+  gap: 10px;
+}
+
+/* ---- Live metrics rail (left of the video) ---- */
+.live-metrics-rail {
+  flex: 0 0 232px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #94a3b8);
+  padding: 2px 2px 4px;
+}
+
+.rail-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bad, #f43f5e);
+  box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.7);
+  animation: railPulse 1.6s ease-out infinite;
+  flex-shrink: 0;
+}
+
+/* Stops pulsing once the stream ends, so a finished run does not keep
+   advertising itself as live. */
+.live-stage.is-idle .rail-live-dot {
+  background: var(--muted, #94a3b8);
+  animation: none;
+}
+
+@keyframes railPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.6); }
+  70%  { box-shadow: 0 0 0 7px rgba(244, 63, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); }
+}
+
+.live-metric-detail {
+  margin-top: 4px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 8px;
+}
+
+.metric-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.metric-detail-name {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text, #f8fafc);
+}
+
+.metric-detail-live {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bad, #f43f5e);
+}
+
+.live-stage.is-idle .metric-detail-live {
+  color: var(--muted, #94a3b8);
+}
+
+.metric-spark {
+  display: block;
+  width: 100%;
+  height: 64px;
+  border-radius: 6px;
+  background: rgba(2, 4, 8, 0.6);
+}
+
+.metric-detail-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 7px;
+  font-size: 10px;
+  color: var(--muted, #94a3b8);
+  font-weight: 600;
+}
+
+.metric-detail-stats b {
+  color: var(--text, #f8fafc);
+  font-family: var(--font-code, monospace);
+  font-weight: 800;
+}
+
+@media (max-width: 900px) {
+  .live-stage { flex-direction: column; align-items: stretch; }
+  .live-metrics-rail {
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow-x: auto;
+  }
+  .live-metrics-rail .hud-item { flex: 1 1 100px; }
+  .live-metric-detail { flex: 1 1 100%; }
 }
 
 .live-canvas-container {
   position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 100%;
   max-height: 100%;
   display: flex;
@@ -4087,12 +4226,43 @@ pre.raw-json {
 .hud-item {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: 6px 10px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 8px 10px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 8px;
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.hud-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.hud-item:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 2px;
+}
+
+.hud-item.is-selected {
+  background: rgba(99, 102, 241, 0.13);
+  border-color: rgba(99, 102, 241, 0.65);
+}
+
+/* Brief flash whenever a tile's number changes, so movement is visible
+   even on metrics that only tick occasionally. */
+.hud-item.just-changed .hud-val {
+  animation: hudTick 420ms ease-out;
+}
+
+@keyframes hudTick {
+  0%   { color: var(--accent-cyan, #22d3ee); transform: translateY(-2px); }
+  100% { color: var(--text, #f8fafc); transform: translateY(0); }
 }
 
 .hud-val {
@@ -4112,3 +4282,34 @@ pre.raw-json {
   letter-spacing: 0.04em;
 }
 
+
+/* ---- Live KPI card in the dashboard bar ------------------------------- */
+/* Present only while a live job is streaming, so the dashboard's own
+   numbers keep moving with the run even when the live modal is closed. */
+.kpi-card.live-now {
+  border-color: rgba(244, 63, 94, 0.45);
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.10), rgba(255, 255, 255, 0.02));
+}
+
+.kpi-card.live-now .kpi-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Brief highlight whenever a dashboard number changes during a live run. */
+.kpi-card.just-changed {
+  animation: kpiTick 460ms ease-out;
+}
+
+@keyframes kpiTick {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.45); }
+  100% { box-shadow: 0 0 0 8px rgba(34, 211, 238, 0); }
+}
+
+/* Action offered on the finished-stream overlay (replay the saved video). */
+.live-replay-action {
+  margin-top: 6px;
+  display: flex;
+  justify-content: center;
+}
