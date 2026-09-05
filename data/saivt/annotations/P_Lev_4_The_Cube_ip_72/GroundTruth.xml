@@ -1,0 +1,570 @@
+<qutcrowd-count-gt interval-scale="1500">
+	<frame id="0">
+		<ped x="480" y="210" />
+		<ped x="537" y="165" />
+		<ped x="587" y="127" />
+		<ped x="614" y="107" />
+		<ped x="634" y="101" />
+		<ped x="655" y="77" />
+		<ped x="685" y="70" />
+		<ped x="702" y="57" />
+		<ped x="723" y="47" />
+		<ped x="798" y="80" />
+		<ped x="840" y="69" />
+	</frame>
+	<frame id="1">
+		<ped x="471" y="215" />
+		<ped x="528" y="175" />
+		<ped x="567" y="136" />
+		<ped x="632" y="100" />
+		<ped x="678" y="68" />
+		<ped x="711" y="51" />
+		<ped x="723" y="43" />
+	</frame>
+	<frame id="2">
+		<ped x="90" y="109" />
+		<ped x="481" y="209" />
+		<ped x="521" y="177" />
+		<ped x="557" y="154" />
+		<ped x="594" y="129" />
+		<ped x="641" y="104" />
+		<ped x="680" y="79" />
+		<ped x="706" y="55" />
+		<ped x="722" y="47" />
+		<ped x="794" y="130" />
+	</frame>
+	<frame id="3">
+		<ped x="476" y="206" />
+		<ped x="518" y="170" />
+		<ped x="577" y="139" />
+		<ped x="623" y="113" />
+		<ped x="685" y="67" />
+		<ped x="700" y="85" />
+		<ped x="702" y="53" />
+		<ped x="723" y="43" />
+		<ped x="756" y="69" />
+		<ped x="783" y="55" />
+	</frame>
+	<frame id="4">
+		<ped x="480" y="203" />
+		<ped x="533" y="150" />
+		<ped x="590" y="123" />
+		<ped x="633" y="95" />
+		<ped x="665" y="83" />
+		<ped x="678" y="97" />
+		<ped x="692" y="75" />
+		<ped x="713" y="75" />
+		<ped x="724" y="62" />
+		<ped x="778" y="51" />
+		<ped x="801" y="65" />
+		<ped x="827" y="48" />
+	</frame>
+	<frame id="5">
+		<ped x="489" y="207" />
+		<ped x="529" y="176" />
+		<ped x="585" y="138" />
+		<ped x="654" y="84" />
+		<ped x="664" y="85" />
+		<ped x="683" y="69" />
+		<ped x="709" y="54" />
+		<ped x="763" y="89" />
+		<ped x="801" y="53" />
+		<ped x="836" y="56" />
+		<ped x="835" y="98" />
+	</frame>
+	<frame id="6">
+		<ped x="698" y="70" />
+		<ped x="690" y="65" />
+		<ped x="805" y="61" />
+		<ped x="822" y="47" />
+	</frame>
+	<frame id="7">
+		<ped x="840" y="57" />
+	</frame>
+	<frame id="8">
+		<ped x="692" y="67" />
+	</frame>
+	<frame id="9">
+		<ped x="707" y="100" />
+		<ped x="740" y="86" />
+	</frame>
+	<frame id="10">
+		<ped x="693" y="65" />
+		<ped x="775" y="71" />
+		<ped x="803" y="34" />
+		<ped x="822" y="34" />
+	</frame>
+	<frame id="11">
+		<ped x="761" y="22" />
+	</frame>
+	<frame id="13">
+		<ped x="699" y="64" />
+		<ped x="806" y="158" />
+		<ped x="393" y="467" />
+	</frame>
+	<frame id="16">
+		<ped x="520" y="173" />
+		<ped x="703" y="74" />
+		<ped x="756" y="233" />
+	</frame>
+	<frame id="23">
+		<ped x="772" y="204" />
+		<ped x="799" y="44" />
+		<ped x="843" y="49" />
+	</frame>
+	<frame id="24">
+		<ped x="808" y="44" />
+		<ped x="836" y="48" />
+	</frame>
+	<frame id="25">
+		<ped x="728" y="46" />
+		<ped x="811" y="46" />
+		<ped x="840" y="50" />
+	</frame>
+	<frame id="26">
+		<ped x="114" y="178" />
+		<ped x="660" y="128" />
+		<ped x="805" y="52" />
+		<ped x="831" y="50" />
+	</frame>
+	<frame id="27">
+		<ped x="812" y="47" />
+		<ped x="836" y="47" />
+	</frame>
+	<frame id="28">
+		<ped x="56" y="111" />
+		<ped x="732" y="33" />
+		<ped x="815" y="45" />
+		<ped x="838" y="46" />
+	</frame>
+	<frame id="29">
+		<ped x="819" y="52" />
+		<ped x="835" y="43" />
+	</frame>
+	<frame id="30">
+		<ped x="807" y="43" />
+		<ped x="837" y="45" />
+	</frame>
+	<frame id="31">
+		<ped x="740" y="65" />
+		<ped x="820" y="51" />
+		<ped x="831" y="44" />
+	</frame>
+	<frame id="32">
+		<ped x="794" y="45" />
+		<ped x="830" y="47" />
+	</frame>
+	<frame id="33">
+		<ped x="802" y="47" />
+		<ped x="832" y="47" />
+	</frame>
+	<frame id="34">
+		<ped x="750" y="77" />
+		<ped x="798" y="48" />
+		<ped x="823" y="48" />
+		<ped x="716" y="327" />
+	</frame>
+	<frame id="35">
+		<ped x="593" y="142" />
+		<ped x="662" y="89" />
+		<ped x="740" y="41" />
+		<ped x="784" y="29" />
+		<ped x="810" y="49" />
+		<ped x="827" y="49" />
+	</frame>
+	<frame id="36">
+		<ped x="806" y="55" />
+		<ped x="828" y="50" />
+		<ped x="767" y="67" />
+		<ped x="676" y="100" />
+		<ped x="765" y="238" />
+		<ped x="16" y="44" />
+	</frame>
+	<frame id="37">
+		<ped x="759" y="44" />
+		<ped x="820" y="49" />
+		<ped x="829" y="45" />
+	</frame>
+	<frame id="38">
+		<ped x="762" y="30" />
+		<ped x="828" y="50" />
+		<ped x="829" y="39" />
+	</frame>
+	<frame id="39">
+		<ped x="277" y="218" />
+		<ped x="820" y="54" />
+		<ped x="826" y="131" />
+		<ped x="827" y="48" />
+	</frame>
+	<frame id="40">
+		<ped x="18" y="194" />
+		<ped x="291" y="229" />
+		<ped x="810" y="57" />
+		<ped x="827" y="54" />
+		<ped x="850" y="59" />
+	</frame>
+	<frame id="41">
+		<ped x="817" y="59" />
+		<ped x="828" y="52" />
+		<ped x="852" y="60" />
+	</frame>
+	<frame id="42">
+		<ped x="790" y="148" />
+		<ped x="810" y="58" />
+		<ped x="822" y="52" />
+		<ped x="852" y="60" />
+	</frame>
+	<frame id="43">
+		<ped x="793" y="425" />
+		<ped x="729" y="58" />
+		<ped x="741" y="48" />
+		<ped x="756" y="57" />
+		<ped x="791" y="31" />
+		<ped x="819" y="56" />
+		<ped x="840" y="105" />
+	</frame>
+	<frame id="44">
+		<ped x="278" y="347" />
+		<ped x="655" y="417" />
+		<ped x="784" y="271" />
+		<ped x="812" y="70" />
+		<ped x="817" y="49" />
+		<ped x="850" y="61" />
+	</frame>
+	<frame id="45">
+		<ped x="280" y="220" />
+	</frame>
+	<frame id="46">
+		<ped x="834" y="31" />
+		<ped x="808" y="22" />
+	</frame>
+	<frame id="48">
+		<ped x="6" y="257" />
+		<ped x="30" y="172" />
+		<ped x="89" y="201" />
+		<ped x="248" y="206" />
+		<ped x="471" y="225" />
+	</frame>
+	<frame id="49">
+		<ped x="270" y="203" />
+	</frame>
+	<frame id="50">
+		<ped x="240" y="206" />
+		<ped x="709" y="82" />
+		<ped x="745" y="80" />
+		<ped x="726" y="61" />
+	</frame>
+	<frame id="51">
+		<ped x="237" y="183" />
+		<ped x="849" y="188" />
+		<ped x="678" y="101" />
+		<ped x="729" y="101" />
+		<ped x="773" y="71" />
+		<ped x="792" y="27" />
+		<ped x="852" y="72" />
+	</frame>
+	<frame id="52">
+		<ped x="531" y="181" />
+		<ped x="660" y="118" />
+		<ped x="678" y="93" />
+		<ped x="734" y="107" />
+		<ped x="750" y="76" />
+		<ped x="778" y="56" />
+		<ped x="836" y="78" />
+		<ped x="776" y="200" />
+	</frame>
+	<frame id="53">
+		<ped x="570" y="140" />
+		<ped x="658" y="127" />
+		<ped x="701" y="72" />
+	</frame>
+	<frame id="54">
+		<ped x="667" y="82" />
+		<ped x="709" y="84" />
+		<ped x="780" y="168" />
+		<ped x="761" y="57" />
+		<ped x="777" y="56" />
+		<ped x="794" y="47" />
+		<ped x="827" y="43" />
+	</frame>
+	<frame id="55">
+		<ped x="590" y="139" />
+		<ped x="622" y="125" />
+		<ped x="717" y="83" />
+		<ped x="743" y="60" />
+		<ped x="777" y="76" />
+		<ped x="795" y="74" />
+		<ped x="816" y="78" />
+		<ped x="832" y="72" />
+	</frame>
+	<frame id="56">
+		<ped x="251" y="279" />
+		<ped x="406" y="330" />
+		<ped x="500" y="209" />
+		<ped x="693" y="257" />
+		<ped x="849" y="173" />
+		<ped x="642" y="107" />
+		<ped x="692" y="70" />
+		<ped x="736" y="51" />
+		<ped x="826" y="56" />
+		<ped x="787" y="18" />
+	</frame>
+	<frame id="57">
+		<ped x="124" y="147" />
+		<ped x="153" y="161" />
+		<ped x="128" y="208" />
+		<ped x="218" y="187" />
+		<ped x="712" y="140" />
+		<ped x="780" y="71" />
+		<ped x="136" y="154" />
+	</frame>
+	<frame id="58">
+		<ped x="33" y="128" />
+		<ped x="69" y="124" />
+		<ped x="75" y="133" />
+		<ped x="91" y="140" />
+		<ped x="171" y="147" />
+	</frame>
+	<frame id="59">
+		<ped x="30" y="90" />
+		<ped x="51" y="95" />
+		<ped x="30" y="150" />
+		<ped x="7" y="143" />
+		<ped x="76" y="141" />
+		<ped x="706" y="57" />
+	</frame>
+	<frame id="60">
+		<ped x="47" y="96" />
+		<ped x="7" y="83" />
+	</frame>
+	<frame id="61">
+		<ped x="47" y="99" />
+		<ped x="16" y="77" />
+		<ped x="9" y="123" />
+		<ped x="557" y="175" />
+		<ped x="668" y="91" />
+		<ped x="846" y="57" />
+	</frame>
+	<frame id="62">
+		<ped x="19" y="60" />
+		<ped x="573" y="269" />
+		<ped x="629" y="208" />
+		<ped x="716" y="451" />
+		<ped x="712" y="330" />
+		<ped x="807" y="324" />
+		<ped x="798" y="30" />
+	</frame>
+	<frame id="63">
+		<ped x="763" y="60" />
+		<ped x="765" y="37" />
+	</frame>
+	<frame id="65">
+		<ped x="148" y="151" />
+		<ped x="707" y="55" />
+		<ped x="767" y="51" />
+		<ped x="851" y="90" />
+	</frame>
+	<frame id="66">
+		<ped x="104" y="170" />
+		<ped x="678" y="73" />
+		<ped x="811" y="93" />
+	</frame>
+	<frame id="67">
+		<ped x="61" y="120" />
+		<ped x="69" y="159" />
+		<ped x="161" y="148" />
+		<ped x="595" y="142" />
+	</frame>
+	<frame id="68">
+		<ped x="761" y="30" />
+		<ped x="732" y="28" />
+		<ped x="793" y="21" />
+		<ped x="826" y="17" />
+		<ped x="850" y="62" />
+	</frame>
+	<frame id="69">
+		<ped x="213" y="194" />
+		<ped x="681" y="75" />
+		<ped x="695" y="60" />
+	</frame>
+	<frame id="70">
+		<ped x="5" y="86" />
+		<ped x="20" y="91" />
+		<ped x="56" y="105" />
+		<ped x="95" y="140" />
+		<ped x="224" y="204" />
+		<ped x="477" y="212" />
+	</frame>
+	<frame id="71">
+		<ped x="3" y="93" />
+		<ped x="19" y="91" />
+		<ped x="70" y="114" />
+		<ped x="94" y="124" />
+		<ped x="218" y="177" />
+	</frame>
+	<frame id="72">
+		<ped x="25" y="141" />
+		<ped x="64" y="117" />
+		<ped x="84" y="122" />
+		<ped x="771" y="37" />
+	</frame>
+	<frame id="73">
+		<ped x="56" y="106" />
+		<ped x="73" y="134" />
+		<ped x="670" y="81" />
+		<ped x="748" y="121" />
+		<ped x="746" y="105" />
+		<ped x="796" y="127" />
+	</frame>
+	<frame id="74">
+		<ped x="665" y="139" />
+		<ped x="722" y="154" />
+		<ped x="796" y="121" />
+		<ped x="752" y="86" />
+	</frame>
+	<frame id="75">
+		<ped x="686" y="72" />
+		<ped x="528" y="173" />
+	</frame>
+	<frame id="76">
+		<ped x="566" y="149" />
+		<ped x="590" y="139" />
+	</frame>
+	<frame id="77">
+		<ped x="671" y="74" />
+		<ped x="701" y="59" />
+	</frame>
+	<frame id="78">
+		<ped x="539" y="166" />
+		<ped x="694" y="77" />
+		<ped x="696" y="63" />
+	</frame>
+	<frame id="79">
+		<ped x="681" y="70" />
+		<ped x="702" y="51" />
+		<ped x="778" y="49" />
+		<ped x="821" y="53" />
+		<ped x="843" y="78" />
+	</frame>
+	<frame id="80">
+		<ped x="574" y="153" />
+		<ped x="615" y="130" />
+		<ped x="653" y="120" />
+		<ped x="701" y="61" />
+		<ped x="723" y="78" />
+		<ped x="771" y="67" />
+		<ped x="795" y="76" />
+		<ped x="820" y="116" />
+		<ped x="849" y="76" />
+		<ped x="827" y="345" />
+	</frame>
+	<frame id="81">
+		<ped x="735" y="44" />
+		<ped x="763" y="29" />
+		<ped x="840" y="139" />
+	</frame>
+	<frame id="82">
+		<ped x="20" y="59" />
+		<ped x="10" y="89" />
+		<ped x="42" y="163" />
+	</frame>
+	<frame id="83">
+		<ped x="12" y="71" />
+		<ped x="8" y="86" />
+		<ped x="32" y="100" />
+		<ped x="63" y="118" />
+		<ped x="7" y="159" />
+		<ped x="42" y="284" />
+	</frame>
+	<frame id="84">
+		<ped x="34" y="157" />
+		<ped x="63" y="148" />
+		<ped x="128" y="114" />
+		<ped x="112" y="143" />
+		<ped x="63" y="199" />
+		<ped x="90" y="191" />
+		<ped x="123" y="212" />
+		<ped x="158" y="215" />
+		<ped x="241" y="206" />
+	</frame>
+	<frame id="86">
+		<ped x="773" y="163" />
+	</frame>
+	<frame id="88">
+		<ped x="823" y="25" />
+	</frame>
+	<frame id="89">
+		<ped x="841" y="79" />
+	</frame>
+	<frame id="93">
+		<ped x="111" y="156" />
+		<ped x="136" y="163" />
+	</frame>
+	<frame id="94">
+		<ped x="115" y="160" />
+		<ped x="140" y="169" />
+		<ped x="217" y="371" />
+		<ped x="330" y="234" />
+	</frame>
+	<frame id="95">
+		<ped x="703" y="68" />
+		<ped x="733" y="91" />
+	</frame>
+	<frame id="99">
+		<ped x="780" y="37" />
+		<ped x="806" y="29" />
+		<ped x="817" y="39" />
+		<ped x="845" y="39" />
+	</frame>
+	<frame id="101">
+		<ped x="6" y="80" />
+	</frame>
+	<frame id="106">
+		<ped x="83" y="204" />
+		<ped x="157" y="213" />
+		<ped x="145" y="171" />
+		<ped x="196" y="207" />
+	</frame>
+	<frame id="107">
+		<ped x="111" y="177" />
+		<ped x="139" y="159" />
+		<ped x="179" y="193" />
+	</frame>
+	<frame id="108">
+		<ped x="64" y="172" />
+		<ped x="103" y="126" />
+		<ped x="103" y="202" />
+		<ped x="160" y="189" />
+	</frame>
+	<frame id="110">
+		<ped x="526" y="198" />
+		<ped x="560" y="171" />
+		<ped x="583" y="215" />
+		<ped x="777" y="21" />
+		<ped x="805" y="25" />
+		<ped x="850" y="31" />
+	</frame>
+	<frame id="112">
+		<ped x="651" y="107" />
+		<ped x="705" y="76" />
+	</frame>
+	<frame id="113">
+		<ped x="812" y="31" />
+	</frame>
+	<frame id="114">
+		<ped x="36" y="114" />
+		<ped x="65" y="101" />
+	</frame>
+	<frame id="115">
+		<ped x="127" y="154" />
+		<ped x="726" y="29" />
+		<ped x="751" y="28" />
+		<ped x="766" y="30" />
+	</frame>
+	<frame id="117">
+		<ped x="848" y="120" />
+	</frame>
+	<frame id="118">
+		<ped x="804" y="28" />
+	</frame>
+</qutcrowd-count-gt>

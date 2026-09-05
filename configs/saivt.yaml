@@ -1,0 +1,13 @@
+# SAIVT-BuildingMonitoring dataset location.
+#
+# The ANNOTATIONS (440 KB) are vendored at data/saivt/annotations/ and always
+# available. The frames (724 MB) and videos (8 GB) are not — they are far too
+# large to keep in the repo, so point `root` at wherever you unpacked them.
+#
+# Override with the SAIVT_ROOT environment variable, which wins over this file.
+#
+# Layout expected under root/:
+#   <camera_id>/Frames/*.png        the 120 annotated stills
+#   <camera_id>/*.avi               the source video (not needed for scoring)
+saivt:
+  root: "C:/Users/sahil/Downloads/Projects/Ujwal/__CMS__/SAIVT-BuildingMonitoring-AnnotatedData/AnnotatedData"

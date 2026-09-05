@@ -1,0 +1,109 @@
+# Ingestion
+yt-dlp>=2024.1.1
+
+# Core CV / ML
+#
+# opencv-python, NOT opencv-python-headless.  Two scripts open a window —
+# calibrate_ground_plane.py and run_flow_analysis.py (--show) — and
+# on a headless build cv2.namedWindow raises
+#
+#     error: (-2:Unspecified error) The function is not implemented.
+#            Rebuild the library with Windows, GTK+ 2.x or Cocoa support
+#
+# which is fatal rather than degraded: calibrate_ground_plane.py is how a
+# camera gets its homography, so a headless install silently makes speed in
+# m/s and Helbing crowd pressure unreachable.
+#
+# The trap is that easyocr depends on opencv-python-headless, so a plain
+# `pip install -r requirements.txt` installs BOTH.  They unpack into the same
+# cv2/ directory and whichever lands last wins, so the working build can be
+# replaced by the headless one at any time with no error and no warning.  If
+# a GUI script starts failing, this is why:
+#
+#     pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python
+#     pip install opencv-python==5.0.0.93
+#
+# Check with:  python -c "import cv2; print(cv2.getBuildInformation())" | findstr GUI
+# It must say WIN32UI (or GTK/Cocoa), not NONE.
+opencv-python>=4.9.0
+numpy>=1.26.0
+
+# IMPORTANT — GPU users, read this before running `pip install -r requirements.txt`:
+# `pip install torch torchvision` from this file alone can silently install
+# CPU-only wheels depending on your pip/index config, and everything will
+# still "work" — just 10-50x slower with no error. On a machine with an
+# NVIDIA GPU, install torch FIRST and SEPARATELY from the CUDA index:
+#
+#   pip uninstall -y torch torchvision   # if already installed
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#   # (swap cu121 for your driver's CUDA version — check `nvidia-smi`)
+#
+# Then run: python -m pipeline.device   -> should report torch.cuda available: True
+# THEN install the rest of this file (pip will see torch is already satisfied).
+torch>=2.2.0
+torchvision>=0.17.0
+
+
+# Fall detection — additional pose backbones
+mediapipe>=0.10.9        # BlazePose (fall_mediapipe_pose)
+tensorflow>=2.15.0        # required by tensorflow-hub
+tensorflow-hub>=0.16.0    # MoveNet (fall_movenet)
+# AlphaPose (fall_alphapose_lstm) is not pip-installable — build from
+# https://github.com/MVIG-SJTU/AlphaPose and ensure it's on PYTHONPATH.
+# ST-GCN (fall_stgcn) and PoseC3D (fall_posec3d) prefer pyskl / mmaction2 —
+# both fall back to a minimal in-repo stand-in if unavailable, but install
+# for real accuracy: https://github.com/kennymckormick/pyskl
+# mmaction2 / mmcv / mmengine — SKIPPED PERMANENTLY on this setup.
+# mmcv requires compiling CUDA C++ extensions from source (no working
+# prebuilt wheel found for this torch/CUDA combo), which needs the full
+# NVIDIA CUDA Toolkit + MSVC Build Tools installed system-wide — a large,
+# heavyweight install not worth it for one model. fall_posec3d is
+# excluded from configs/test_videos.yaml as a result.
+# violence_mmaction_slowonly will hit the same wall if/when tested —
+# decide then whether it's worth revisiting this.
+
+# Video classification (violence/altercation)
+# pytorchvideo provides X3D / SlowFast / I3D model definitions
+pytorchvideo>=0.1.5
+# transformers provides VideoMAE
+transformers>=4.38.0
+# torchvision provides the C3D/TSM/I3D-fallback backbones (resnet50, r3d_18)
+torchvision>=0.17.0
+
+# Web UI (python -m webapp)
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9    # required by FastAPI for the video upload endpoint
+
+# Roboflow-hosted inference (roboflow_combined, roboflow_traffic)
+inference-sdk>=0.9.0
+
+# Traffic detection/counting
+deep-sort-realtime>=1.3.2
+
+# Umbrella detection
+
+# ANPR (number plates)
+easyocr>=1.7.2
+# DETR plate detector uses a timm backbone
+timm>=1.0.0
+
+# Utilities
+pyyaml>=6.0.1
+tqdm>=4.66.0
+pandas>=2.2.0
+filelock>=3.18.0
+
+# Dense optical flow crowd-safety module (models/crowd_flow/)
+# scipy: temporal autocorrelation for stop-and-go wave detection.
+#   crowd_metrics.py has a pure-numpy fallback so this is optional, but
+#   scipy.signal.correlate is faster on long buffers.
+scipy>=1.12.0
+# matplotlib: time-series PNG plots written by FlowVisualiser.save_timeseries_plots().
+#   Optional; a WARNING is logged and plots are skipped if absent.
+matplotlib>=3.8.0
+
+# Head-count / APGCC point detector (models/head_count/)
+# easydict: required by the vendored APGCC config loader
+#   (vendor/apgcc/config.py uses `from easydict import EasyDict as edict`).
+easydict>=1.10

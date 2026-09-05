@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crowd-safety-testbed"
+version = "0.1.0"
+description = "Crowd Safety & Video Analytics Model Testbed"
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Deliberately empty. Dependencies are installed from requirements.txt by
+# hand, NOT resolved by pip from this file.
+#
+# Wiring them up here (via dynamic = ["dependencies"]) is tempting and wrong
+# for this project: `pip install -e .` would then pull torch from the default
+# PyPI index, which silently installs CPU-only wheels. Everything still runs,
+# just 10-50x slower, with no error to explain it. requirements.txt documents
+# the correct order -- torch first, from the CUDA index -- and that sequencing
+# cannot be expressed as a dependency list.
+#
+# Install with:  pip install -r requirements.txt   (read its comments first)
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+

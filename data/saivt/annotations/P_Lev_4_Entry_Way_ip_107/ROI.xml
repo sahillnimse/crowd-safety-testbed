@@ -1,0 +1,10 @@
+<ROI num-points="8" image-width="768" image-height="576">
+	<point x="0" y="152" />
+	<point x="239" y="117" />
+	<point x="341" y="107" />
+	<point x="428" y="110" />
+	<point x="519" y="116" />
+	<point x="763" y="159" />
+	<point x="760" y="575" />
+	<point x="0" y="575" />
+</ROI>

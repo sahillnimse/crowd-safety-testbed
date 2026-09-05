@@ -1,0 +1,751 @@
+# crowd_flow.yaml — configuration for the dense optical flow crowd-safety module.
+#
+# Load with:
+#   from config_io import load_yaml
+#   cfg = load_yaml("configs/crowd_flow.yaml")["crowd_flow"]
+#
+# Use that helper, NOT a bare open() + yaml.safe_load.  This file is UTF-8 and
+# contains non-ASCII characters (arrows, box-drawing, superscripts, en dashes);
+# text-mode open() without encoding= picks the platform codec, which on Windows
+# is cp1252 and dies with "'charmap' codec can't decode byte 0x90".  config_io
+# fixes the encoding by construction so no call site can forget it.
+#
+# Pass the cfg dict to DenseFlowAnalyser(config=cfg, camera_id="ram_kund_approach").
+#
+# Per-camera calibration
+# ----------------------
+# Run scripts/calibrate_ground_plane.py on a still frame to generate the
+# homography block.  Without it, speed values are in px/frame and speed-based
+# alert thresholds (speed_low_ms, speed_high_ms) are DISABLED.  All other
+# metrics (divergence, curl, counterflow, turbulence) remain active.
+#
+# Zone polygons
+# -------------
+# Polygons are in image (pixel) coordinates.  Use the calibration helper's
+# output to verify they cover the right physical areas.  A quick check:
+# open a still frame in an image viewer that shows pixel coordinates (e.g.
+# GIMP → View → Show Pointer Coordinates) and click the corners of each zone.
+
+crowd_flow:
+
+  # ── Flow computation ────────────────────────────────────────────────────────
+  flow_backend:   "dis"      # "dis" | "farneback" | "raft"
+                             #
+                             # raft = torchvision RAFT on the GPU (official
+                             # weights, fetched on first use).  Added expecting
+                             # it to beat classical DIS; measured, it does not
+                             # for THIS application, so the default stands.
+                             #
+                             # Far-field pixels clearing the display floor on
+                             # the Nashik clip — i.e. "is the distant crowd
+                             # visible at all":
+                             #
+                             #   dis                     2.8%    56 ms/pair
+                             #   dis + far-field         8.2%    85 ms
+                             #   raft-large              0.0%   236 ms
+                             #   raft-large + far-field  1.4%   492 ms
+                             #
+                             # Not an integration fault: on a known translation
+                             # both recover the exact shift to within 0.1 px,
+                             # down to 0.4 px sub-pixel.  RAFT optimises a
+                             # globally smooth field — right for the driving
+                             # benchmarks it was trained on, wrong for a
+                             # hundred pedestrians each moving one pixel per
+                             # frame against a static street, which it smooths
+                             # into the background.
+                             #
+                             # Use raft on footage dominated by large coherent
+                             # motion (a carriageway, a moving camera).
+  raft_variant:   "large"    # "small" | "large".  small measured WORSE than
+                             # DIS on both synthetic and real footage, so it
+                             # is not a speed/accuracy trade — it is just
+                             # worse.  Only "large" is worth running.
+  dis_preset:     "medium"   # "ultrafast" | "fast" | "medium"
+                             # medium ≈ 4-8 ms on 320×180 at CPU; upgrade if
+                             # flow quality on oblique ghat cameras looks noisy.
+
+  # Measured with tests/validate_flow_routes.py --routes a --sweep on
+  # test_videos/Foregin Traffic.mp4 (1280x720 traffic camera), mean endpoint
+  # error against known synthetic warps:
+  #
+  #     target_px=640, DIS medium   0.193 px    127 ms/frame
+  #     target_px=480, DIS medium   0.228 px    105 ms/frame   <- default
+  #     target_px=320, DIS medium   0.326 px     92 ms/frame
+  #     target_px=320, Farneback    0.406 px
+  #     target_px=320, DIS fast     0.475 px
+  #
+  # 480 buys 30% lower error for 13% more time; 640 buys 41% for 37% more.
+  # Raise it if motion boundaries around vehicles look soft — the field is
+  # upsampled back to source, so a low compute resolution shows up as blurred
+  # edges around moving objects rather than as missing motion.  Re-run the
+  # sweep after changing footage: the ranking is source-dependent.
+  downsample_target_px: 480  # Longest side for flow computation.  Smaller =
+                             # faster but coarser; 320 is the recommended start.
+                             # The result is scaled back to source resolution.
+
+  # ── Far-field refinement ────────────────────────────────────────────────────
+  # A single compute resolution assumes the scene has a single scale, and
+  # perspective guarantees it does not.  At downsample_target_px = 480 a
+  # pedestrian near the camera spans a few hundred source pixels and one at the
+  # back of the same crowd spans a dozen — two or three at compute resolution,
+  # smaller than the patch DIS matches on.  The far field then returns motion
+  # interpolated from its surroundings instead of measured from the people
+  # who are actually there, which is why distant crowds and the far
+  # carriageway of a road read as static.
+  #
+  # This runs a second flow pass over the far field alone, at higher
+  # resolution, and feathers it into the base field.  Raising
+  # downsample_target_px for the whole frame achieves the same thing at
+  # quadratic cost, nearly all of it spent on the near field that was already
+  # resolved well enough.
+  far_field_refinement: true
+  far_field_roi:      [0.0, 0.0, 1.0, 0.45]
+                             # Normalised [x1, y1, x2, y2].  Default is the top
+                             # 45% of the frame, which is where the horizon sits
+                             # on a typical mounted camera.  Set it to match
+                             # YOUR camera: for a high mount looking down, the
+                             # far field is a narrow band near the top; for a
+                             # low mount it can be half the frame.  Getting this
+                             # wrong costs time, not correctness — the pass is
+                             # skipped when it would not be finer than the base.
+  far_field_target_px: 960   # Longest side of the ROI for the refinement pass.
+                             # Capped at the ROI's native size: asking for more
+                             # pixels than the source has just interpolates.
+  far_field_blend_px:  48    # Source-px feather between the two passes.
+                             # Divergence and curl are spatial derivatives, so a
+                             # hard seam differentiates into a line of fake
+                             # divergence — on the metric that drives crush
+                             # alerts.  Do not set this to 0.
+                             #
+                             # Measured on uniform translation, where the true
+                             # divergence is zero everywhere, as mean |div| in
+                             # the seam band over mean |div| elsewhere:
+                             #
+                             #    0 px  1.39x     48 px  1.07x
+                             #   24 px  1.20x     96 px  1.03x
+                             #
+                             # It flattens after 96 (160 px also gives 1.03x).
+                             # 48 is the knee: the residual is already far below
+                             # anything a threshold reacts to, and a wider
+                             # feather fades the refinement over more of the ROI
+                             # for no further benefit.
+
+  # ── Per-pixel validity ──────────────────────────────────────────────────────
+  # Dense optical flow returns a vector for EVERY pixel whether or not that
+  # pixel carried enough information to measure one.  Over a clear sky, a
+  # blank road surface or still water there is nothing to match, so the
+  # algorithm fills the region in from its neighbours: the result is smooth,
+  # confident and invented.  Nothing downstream can tell it from real motion,
+  # so it becomes divergence, turbulence and counterflow exactly as a moving
+  # crowd does.  This is why sky, tarmac and painted lane lines "move".
+  #
+  # Two derived tests decide, per pixel, whether the flow was MEASURED:
+  #
+  #   structure       The local structure tensor's smaller eigenvalue says how
+  #                   well the neighbourhood constrains flow.  Flat -> both
+  #                   components invented (sky, tarmac).  Edge-like -> the
+  #                   component ALONG the edge is invented, which is exactly
+  #                   why a painted lane line appears to slide along itself.
+  #   forward-back    A correct correspondence is invertible.  Following the
+  #                   flow forward and the backward flow back must return you
+  #                   to where you started (Sundaram et al. 2010).
+  #
+  # Neither threshold is hand-picked: image noise is estimated per frame
+  # (Immerkaer) and the structure requirement follows from it via the standard
+  # flow-uncertainty relation sigma_v ~ sigma_noise / sqrt(lambda_min).
+  validity_gating: true
+  fb_consistency:  true      # Costs a second flow computation (~2x). Turn off
+                             # for throughput; the structure gate alone still
+                             # removes most invented motion.
+  max_flow_error_px: 1.0     # Flow uncertainty tolerated before a pixel is
+                             # declared unmeasurable.  The ONE tunable here.
+                             #
+                             # Measured — motion retained on detected people
+                             # and vehicles vs. motion retained everywhere
+                             # else, as a fraction of the ungated field:
+                             #
+                             #                 Nashik crowd      Foreign traffic
+                             #   no gate     100% / 100%  3.9x   100% / 100% 14.5x
+                             #   1.0 px       98% /  50%  7.5x    90% /  63% 20.9x
+                             #   0.5 px       94% /  40%  9.1x    82% /  52% 22.8x
+                             #   0.25 px      74% /  24% 11.9x    70% /  35% 28.6x
+                             #
+                             # 1.0 is the knee: half the background removed for
+                             # a 2-10% signal cost.  Default favours keeping
+                             # real motion, because for a safety system a
+                             # missed crush is worse than a spurious reading.
+                             # Tighten to 0.5 if false motion still dominates.
+  structure_window: 7        # Box-filter window for the structure tensor, in
+                             # compute px.  Larger = smoother validity regions
+                             # but blurs the boundary between measurable and
+                             # unmeasurable.
+
+  temporal_smooth_alpha: 0.4 # EMA α for temporal smoothing (higher = faster
+                             # response, more noise).  0.4 at 30fps ≈ 2.5-frame
+                             # effective window.
+
+  # ── Global motion compensation ──────────────────────────────────────────────
+  global_motion_compensation: true
+                             # Subtract estimated camera-sway translation from
+                             # the flow field.  Essential for pole-mounted CCTV.
+  gmc_warn_threshold_px: 3.0 # Correction > this for > 5 s → WARNING log.
+                             # A large persistent correction = mount needs work.
+  gmc_max_correction_px: 8.0 # Source px/frame.  A correction larger than this
+                             # is rejected outright rather than applied: it is
+                             # not plausible camera sway, it is the estimator
+                             # locking onto moving objects (traffic, a dense
+                             # crowd) and reporting their motion as the
+                             # camera's.  Applying such an estimate injects a
+                             # uniform velocity into the static background and
+                             # destroys the field.  Rejected frames are logged
+                             # with gmc_method = "rejected".
+  gmc_min_improvement: 0.9   # A correction is applied only if it reduces the
+                             # field's MEDIAN magnitude to at most this
+                             # fraction of its previous value.  Compensation
+                             # exists to quiet the background; one that leaves
+                             # the field noisier is wrong however confident the
+                             # feature matcher was.  This is the guard that
+                             # catches a static camera: ORB will happily return
+                             # a sub-pixel shift with a 0.96 inlier ratio —
+                             # small, self-consistent, and pure noise, because
+                             # keypoints at the downsampled compute resolution
+                             # are not accurate to a quarter pixel.  Subtracting
+                             # it makes every pixel in a still scene appear to
+                             # move in the same direction.
+
+  # ── Detector integration ────────────────────────────────────────────────────
+  # Set these to your trained RTDetrV2ForObjectDetection folder paths.
+  # Searched by models/_weights.py; absolute paths also accepted.
+  # Leave empty ("") to disable that detector (a WARNING is logged).
+  vehicle_model_path:  ""   # e.g. "model_weights/crowd_vehicles"
+  umbrella_model_path: ""   # e.g. "model_weights/crowd_umbrella"
+
+  detector_stride:      5   # Run detectors every Nth flow frame.
+                            # Higher = faster but larger mask lag.
+  detector_conf_threshold: 0.35
+
+  # ── People overlay (boxes + one arrow per person) ────────────────────────────
+  # On 720p footage of a deep crowd the honest per-pixel answer is often "not
+  # measurable": a person 40 m away is a dozen pixels tall and moves a fraction
+  # of a pixel per frame, so after validity gating that region is correctly
+  # blank.  Truthful, but not useful to an operator.
+  #
+  # What IS recoverable at that resolution is where people are and roughly
+  # which way each is going: a detector recognises a person from their whole
+  # appearance rather than a sub-pixel brightness change, and averaging flow
+  # over a whole body turns many weak measurements into one usable vector.
+  #
+  # Measured on the Nashik clip, people drawn and how much the count changes
+  # between consecutive frames (i.e. visible flicker):
+  #
+  #   raw detection every frame          106.6 people   flicker 2.73
+  #   tracked, detect_every=5, confirm=2 109.5 people   flicker 1.57
+  #
+  # Same number of people, 42% less flicker, and the detector runs on one
+  # frame in five instead of every frame.
+  #
+  # Cost, measured end to end over 30 frames at 720p on a GTX 1650:
+  #   people_overlay: false   253 ms/frame mean
+  #   people_overlay: true    +449 ms/frame amortised at 3x3 / detect_every 5
+  #                           (729 ms on detector frames, 46 ms in between)
+  #
+  # The gap between mean and median is the point: 466 ms lands on the one
+  # frame in five that runs the detector, 16 ms on the four that carry boxes
+  # on the flow field, plus ~66 ms to draw ~130 boxes.  Raise
+  # people_detect_every to spread the spike further.
+  #
+  # ON by default as of the flow-overlay scoping fix.  Both translucent
+  # overlays (HSV flow tint and the metric heatmap) mask their colour to
+  # confirmed moving people's boxes when this is running — without a tracker
+  # they paint every above-floor apparent motion in the scene, including
+  # bystander sway and structure texture, which reads as colour spreading
+  # over ground and static areas.  TRADEOFFS of the global default (deliberate,
+  # not silent):
+  #   * CLI dense-flow runs pay the detector cost too — flip this off for
+  #     calibration/stride experiments where the overlays don't matter.
+  #   * First run on a fresh machine downloads the RT-DETRv2 person weights
+  #     from HuggingFace Hub; with no network the detector load fails and the
+  #     job fails loudly rather than silently degrading.
+  #   * Annotated videos gain person boxes + arrows — a visual change to
+  #     every dense_flow output.
+  people_overlay: true
+  people_conf_threshold: 0.20
+                             # Deliberately below a detector's usual operating
+                             # point.  A confidence threshold is a per-frame
+                             # decision with no memory; requiring a track to be
+                             # seen `people_confirm_frames` times across frames
+                             # is a stronger test, so recall is bought at the
+                             # detector and precision recovered at the tracker.
+  people_detect_every: 5     # Detector every Nth frame.  Boxes are carried by
+                             # the flow field in between, so raising this
+                             # costs recall, not smoothness.  Measured at
+                             # steady state on the Nashik clip with 3x3/0.20:
+                             #
+                             #    every 5    329 people   1.7% flicker   449 ms/f
+                             #    every 10   260 people   2.1% flicker    92 ms/f
+                             #
+                             # 5 is the default because recall was the problem;
+                             # 10 is 4.9x cheaper for 21% fewer people and is
+                             # the right choice if throughput matters more.
+  people_tile_grid: [3, 3]   # The processor resizes to 640x640, so a 720p
+                             # frame is halved before the model sees it and a
+                             # distant person arrives at ~10 px.
+                             #
+                             # Measured on the Nashik mid-distance band, which
+                             # is where people were visibly being missed:
+                             #
+                             #   2x2 @ 0.30    33 people in band   104 in frame
+                             #   3x3 @ 0.20   108 people in band   230 in frame
+                             #   4x4 @ 0.15   175 people in band   384 in frame
+                             #
+                             # 3x3 @ 0.20 is the default: it triples recall in
+                             # that band with boxes that land on actual people.
+                             # 4x4 @ 0.15 finds more still, at visibly more
+                             # clutter on railings and building fixtures.
+  people_confirm_frames: 2   # Detector sightings before a person is drawn.
+                             # 1 draws ~20% more but includes single-frame
+                             # detections with no corroboration.
+  people_max_age: 30         # Frames a track survives unseen.  THE anti-
+                             # flicker control: it carries a person through
+                             # the frames where the detector loses them.
+  people_box_smoothing: 0.45 # EMA on box coordinates and velocity.  Box
+                             # corners jitter a few px on a stationary person;
+                             # that jitter is what reads as flicker.
+  people_draw_arrows: true
+
+  stopped_speed_px:    1.5   # Speed (px per SOURCE frame) below which a tracked
+                             # person counts as STOPPED.  This is the split that
+                             # decides what the two translucent overlays paint:
+                             # a MOVING person's box gates where the HSV flow
+                             # tint and the metric heatmap may appear at all,
+                             # while a confirmed STOPPED person gets a flat grey
+                             # marker instead — divergence measured about someone
+                             # standing still is differentiated noise, and must
+                             # not borrow the compression red's meaning.
+                             #
+                             # Same unit and default as the rest of the codebase's
+                             # stopped convention (CrowdMotionMonitor's
+                             # stationary_speed_px, DM-Count's stopped_speed).
+                             # Raise it if slow shuffling in a dense queue is
+                             # painting colour you would rather read as stopped;
+                             # lower it if genuinely walking people are greying
+                             # out.  Exactly AT the threshold counts as moving.
+                             #
+                             # Only has an effect while people_overlay is true.
+
+  # ── Crowd density and pressure ──────────────────────────────────────────────
+  # Everything else in this module comes from the flow field alone and knows
+  # only how the crowd is MOVING.  Crowd pressure needs to know how many people
+  # are there:
+  #
+  #     P = rho * Var(v)      (Helbing et al.)
+  #
+  # It is the most externally validated crush predictor available, and unlike
+  # every other threshold in this file its trigger points are not tuned here:
+  # 0.02 s^-2 is the onset of crowd turbulence and 0.04 s^-2 the onset of
+  # stampede conditions, established from video of the 2006 Hajj disaster.
+  #
+  # Off by default because it runs a person detector, which is the one thing
+  # this module otherwise never does.  Enabling it changes the cost profile of
+  # a run and should be a decision rather than a surprise.
+  #
+  # REQUIRES A CALIBRATED CAMERA to be useful.  Without a homography there is
+  # no m^2, so density comes out in persons per 1000 px^2 and the pressure
+  # thresholds are refused for that camera — exactly as the speed thresholds
+  # already are.  Run scripts/calibrate_ground_plane.py first.
+  density_enabled: false
+  density_source: "boxes"    # "boxes" | "heads"
+                             #
+                             # boxes: the shared RT-DETRv2 person detector.
+                             #   Nothing to train, but it counts BODIES, so it
+                             #   degrades exactly where density matters most —
+                             #   at the back of a crowd bodies are almost
+                             #   entirely occluded and boxes merge.
+                             #
+                             # heads: models/head_count, a density-map counter
+                             #   trained on point labels from YOUR footage.
+                             #   Heads stay visible where bodies do not, and
+                             #   the count is an integral over a density map
+                             #   rather than a number of successful detections,
+                             #   so it does not collapse when individuals stop
+                             #   being separable.  This is the better source.
+                             #
+                             #   NOTE: the labelling and training scripts this
+                             #   used to point at (extract_patches.py,
+                             #   annotate_heads.py, train_head_count.py) have
+                             #   all been removed from the repo, so there is no
+                             #   in-tree path to producing your own checkpoint
+                             #   any more.  What ships and works is the
+                             #   pretrained APGCC weight at
+                             #   src/models/head_count/weights/ — point
+                             #   density_head_weights at that, or train
+                             #   externally against the APGCC point format.
+  density_head_weights: ""   # Checkpoint for density_source: "heads".  With
+                             # this empty the head model runs on a randomly
+                             # initialised density head and every count it
+                             # produces is arbitrary — it warns loudly rather
+                             # than quietly returning a plausible number.
+  density_person_height_m: 1.65
+                             # Assumed standing stature, used to find the
+                             # ground point under a detected head.  A head is
+                             # NOT a ground contact: mapping one straight
+                             # through a ground-plane homography places that
+                             # person a stature further from the camera, which
+                             # at the back of a crowd is several cells, in the
+                             # direction that inflates density where it is
+                             # already highest.  Only used by the "heads"
+                             # source; boxes already have a foot edge.
+  density_stride:  5         # Detector every Nth frame.  Density is a property
+                             # of where the crowd IS, which changes over
+                             # seconds; the fast half of the product, Var(v),
+                             # is recomputed every frame regardless.
+  density_conf_threshold: 0.35
+  density_tile_grid: [2, 2]  # Detector tiling.  The processor resizes its
+                             # input to 640x640, so a 720p frame is halved
+                             # before the model sees anything and a distant
+                             # pedestrian arrives at ~10 px.  Measured on this
+                             # project's Nashik clip: 35 people full-frame, 96
+                             # at 2x2, 109 at 3x3, 145 at 4x4 — for 3.5x, 6.5x
+                             # and 10.7x the compute.  2x2 is the knee.  Set
+                             # null to disable; an undercount here propagates
+                             # straight into an underestimate of pressure, and
+                             # underestimating this particular metric is the
+                             # failure mode that matters.
+  density_smoothing: 0.5     # EMA on per-cell counts.  A detector flips a
+                             # person between two cells at a boundary, and
+                             # density is not meant to be a per-frame signal.
+
+  # ── Metrics ─────────────────────────────────────────────────────────────────
+  grid_cell_px:   16        # Grid cell size at source resolution.  Smaller
+                            # cells → finer spatial resolution but noisier per-
+                            # cell estimates.  16 px is a good starting point.
+                            # Divergence and curl are reported PER CELL (the
+                            # velocity difference accumulated across one cell
+                            # width), so changing this rescales those metrics
+                            # and their thresholds proportionally.
+  min_magnitude:  0.8       # Source px/frame below which a cell is treated as
+                            # static and excluded from zone aggregates.  This
+                            # is in SOURCE pixels, so it must clear the noise
+                            # floor after the compute-resolution field has been
+                            # scaled up (a factor of 4 at 320-px compute on a
+                            # 1280-px source).  Too low and every cell counts
+                            # as active, which makes the zone means meaningless.
+  stop_go_lag_frames: [5, 10, 15]  # Temporal lags for stop-go autocorrelation.
+
+  # ── Visualisation ───────────────────────────────────────────────────────────
+  # Both translucent overlays use a PER-PIXEL alpha: the values below are the
+  # opacity at full scale, and regions with no motion / no divergence are left
+  # untouched.  A uniform alpha tints the whole frame — including everything
+  # that is perfectly still — and the result is a washed-out image in which
+  # the moving subjects are no easier to see than in the raw video.
+  flow_overlay_alpha:  0.85 # HSV flow overlay opacity at the reference speed.
+  flow_min_alpha:      0.5  # Opacity for motion that only just clears the
+                            # display floor.  The ramp runs between this and
+                            # flow_overlay_alpha rather than from zero.
+                            #
+                            # Colour now encodes DIRECTION only — saturation and
+                            # value are held at full.  Magnitude used to be
+                            # encoded in the HSV value as well as the alpha,
+                            # which faded slow and distant traffic twice over
+                            # (dim colour, then transparent) and left the far
+                            # carriageway looking static.  Opacity carries
+                            # speed; hue carries direction; neither doubles up.
+  heatmap_alpha:       0.55 # Divergence heatmap opacity at ±div_scale
+
+  heatmap_metric: "divergence"
+                             # Which per-cell field the heatmap paints.  One of:
+                             #
+                             #   divergence            signed; red = compression
+                             #                         (crush risk), blue =
+                             #                         expansion.  The default,
+                             #                         and the only one whose
+                             #                         colour has a SIGN.
+                             #   counterflow           1 - coherence: how much
+                             #                         the cell disagrees with
+                             #                         itself about direction.
+                             #   turbulence / variance within-cell velocity
+                             #                         variance (the two names
+                             #                         select the same field).
+                             #   entropy               alias of counterflow.
+                             #   oscillation_symmetry  back-and-forth surging.
+                             #
+                             # Affects DISPLAY only — every metric is computed
+                             # and logged to the CSV regardless of this setting,
+                             # and alerts are unaffected.  An unrecognised value
+                             # silently falls back to divergence.
+  arrow_step_px:       32   # Sparse arrow grid step in pixels.  At 20 px an HD
+                            # frame carries ~2300 arrows, which reads as texture
+                            # rather than as direction.
+  auto_scale_overlay:  true # Scale the flow overlay to each frame's own 95th-
+                            # percentile magnitude instead of to a fixed
+                            # constant.  Pedestrian flow at 30 fps runs about
+                            # 1-3 px/frame; vehicle traffic runs 10-30.  No one
+                            # constant serves both, and against a too-large
+                            # reference a crowd renders at a few percent
+                            # opacity — technically present, visually absent.
+                            # Set false to compare absolute speeds across runs.
+  max_magnitude_px:    20.0 # Reference magnitude for HSV value/opacity scaling.
+                            # A fixed reference when auto_scale_overlay is off;
+                            # a floor (÷8) on the automatic one when it is on.
+  min_draw_magnitude_px: 0.4 # Absolute source px/frame floor for drawing.
+  background_floor_factor: 3.0
+                            # The display floor is also required to be this
+                            # multiple of the frame's MEDIAN magnitude — a
+                            # robust estimate of "what not moving looks like"
+                            # on this frame, since most of a fixed camera's
+                            # view is background.  A fixed absolute threshold
+                            # cannot serve every source: dense-flow noise
+                            # scales with bitrate, texture and lighting, so a
+                            # value tuned on clean footage covers noisy
+                            # footage in arrows.  Display only — metrics and
+                            # alerts are unaffected.  Raise it for a cleaner
+                            # overlay, lower it to see slower movement.
+  div_scale:           2.0  # ±div_scale mapped to full red/blue in heatmap.
+                            # Same per-cell units as divergence_critical below.
+
+  # ── Output ──────────────────────────────────────────────────────────────────
+  output_csv:              true   # Write per-frame metrics to CSV on finalize()
+  output_parquet:          false  # Parquet output (requires pyarrow)
+  output_annotated_video:  true   # Write annotated video (via run_flow_analysis.py)
+  output_timeseries_plots: true   # Write per-zone PNG plots on finalize()
+
+  # ── Robustness thresholds ───────────────────────────────────────────────────
+  # See flow_field.py docstring for a precise description of each heuristic.
+  rain_mag_threshold:          8.0   # px/frame mean magnitude above which to suspect rain
+  lowlight_gradient_threshold: 12.0  # mean gradient below which to flag low light
+  brightness_jump_threshold:   15.0  # Shift in the frame's MEAN GREY LEVEL above
+                                     # which the flow update is suppressed (a
+                                     # floodlight switching, a cloud crossing).
+                                     # Not the mean absolute frame difference:
+                                     # that grows with scene motion, so on a busy
+                                     # or low-frame-rate camera it suppresses a
+                                     # large fraction of good frames and freezes
+                                     # the field at its last value.
+  min_flow_reliability:        0.35  # Fraction of the inter-frame difference the
+                                     # computed flow must explain (measured by
+                                     # warping the previous frame with the flow).
+                                     # Below this the two frames are almost
+                                     # certainly not temporally adjacent — a
+                                     # scene cut, a time-lapsed export, or a
+                                     # compilation reel — and optical flow is
+                                     # undefined on them.  Such frames are
+                                     # FLAGGED (discontinuity_flag in the CSV,
+                                     # SCENE-CUT? in the video banner), not
+                                     # suppressed: a source that is discontinuous
+                                     # throughout would otherwise freeze the
+                                     # field and hide the problem entirely.
+
+  # ── Cameras ─────────────────────────────────────────────────────────────────
+  #
+  # Zone polygons may be given in absolute pixels OR as fractions of the frame
+  # (every value between 0 and 1).  Fractional polygons are scaled to the real
+  # frame size at run time and are the safer choice: a pixel polygon authored
+  # against one resolution covers the wrong part of the scene on any other,
+  # producing plausible-looking numbers for the wrong region.  A pixel polygon
+  # that does not fit the frame is logged as a WARNING at the first frame.
+  cameras:
+
+    # Resolution-independent default, used by the web UI and by any source
+    # whose geometry has not been surveyed.  Covers the whole frame as a
+    # single zone so the module produces usable output on arbitrary footage
+    # without per-camera calibration.
+    # Zones may declare what moves through them:
+    #
+    #   zone_type: pedestrian | vehicle | mixed     (default: pedestrian)
+    #
+    # This selects the motion floor and the density ceiling, both of which
+    # are scale-dependent and cannot have one correct global value:
+    #
+    #                    motion floor      max density
+    #   pedestrian        0.5 px/frame      12  /m²
+    #   vehicle           3.0 px/frame      0.3 /m²
+    #   mixed             0.8 px/frame      12  /m²
+    #
+    # Pedestrians move 1-2 px/frame and vehicles 10-50.  A single floor of
+    # 0.8 sits inside the pedestrian signal (discarding people who are
+    # genuinely walking) and far below the vehicle signal (admitting noisy
+    # background cells, which drags the zone mean down and reads as
+    # congestion).  Override per zone with `min_magnitude:` when you have
+    # measured the scene.
+    default:
+      # Where this camera's far field sits in the frame.  Overrides the global
+      # far_field_roi; omit it and the global value applies.
+      #
+      # This band was measured, not guessed.  Profiling mean flow magnitude by
+      # image row on "Nashik Crowd.mp4" shows the top third is sky and rooftops
+      # (near-zero motion), the crowd recedes into the distance across the
+      # middle, and the near crowd and vehicles fill the bottom.  So the
+      # distant *people* — the ones too small for the base pass to resolve —
+      # are in the middle band, not at the top of the frame.
+      #
+      # Measured effect on far-field pixels clearing the display floor:
+      #   refinement off ................. 3.1%
+      #   generic ROI (top 45%) .......... 3.1%   (refines the sky)
+      #   this ROI ....................... 8.3%
+      #
+      # To find it for a new camera: profile mean flow magnitude by row, or
+      # simply look at the frame and mark where people stop being individually
+      # distinguishable.
+      far_field_roi: [0.0, 0.30, 1.0, 0.75]
+      zones:
+        - name: "full_frame"
+          polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+          thresholds:
+            # speed_low_ms omitted: meaningless without a homography, and
+            # disabled anyway for uncalibrated cameras.
+            divergence_critical:  -1.5
+            counterflow_critical: 0.25
+            turbulence_critical:  0.60
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+
+    # CCTV1: Calibrated from 59 annotated person boxes via fit_from_boxes
+    CCTV1:
+      perspective_map:
+        aw: -0.03501
+        bw: 0.30135
+        cw: -17.3452
+        ah: -0.05571
+        bh: 0.78890
+        ch: -50.5206
+        image_width: 768
+        image_height: 576
+        person_height_m: 1.70
+        source: "fit_from_boxes"
+        fit_rmse_px: 14.6
+        n_fit_samples: 59
+      zones:
+        - name: "full_frame"
+          polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+          thresholds:
+            speed_low_ms:         0.4
+            divergence_critical:  -1.5
+            counterflow_critical: 0.20
+            turbulence_critical:  0.50
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+
+    # CCTV2: Calibrated from 54 annotated person boxes via fit_from_boxes
+    CCTV2:
+      perspective_map:
+        aw: -0.02490
+        bw: 0.28205
+        cw: 27.5723
+        ah: 0.00781
+        bh: 0.60494
+        ch: 58.8671
+        image_width: 856
+        image_height: 480
+        person_height_m: 1.70
+        source: "fit_from_boxes"
+        fit_rmse_px: 18.5
+        n_fit_samples: 54
+      zones:
+        - name: "full_frame"
+          polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+          thresholds:
+            speed_low_ms:         0.4
+            divergence_critical:  -1.5
+            counterflow_critical: 0.20
+            turbulence_critical:  0.50
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+
+    ram_kund_approach:
+      # calibrated: false until you run scripts/calibrate_ground_plane.py
+      # homography:
+      #   image_points:
+      #     - [x1, y1]    # pixel coordinates (click in GIMP / cv2 window)
+      #     - [x2, y2]
+      #     - [x3, y3]
+      #     - [x4, y4]
+      #   world_points_m:
+      #     - [X1, Y1]    # ground-plane metres (measure on-site)
+      #     - [X2, Y2]
+      #     - [X3, Y3]
+      #     - [X4, Y4]
+      zones:
+        - name: "ghat_approach"
+          # Replace with actual polygon from your camera view.
+          # These are illustrative placeholder values (640×480 frame assumed).
+          polygon: [[0, 240], [640, 240], [640, 480], [0, 480]]
+          thresholds:
+            speed_low_ms:         0.4    # m/s; DISABLED if uncalibrated
+            divergence_critical:  -1.5   # negative = compression → risk
+            counterflow_critical: 0.20   # fraction of cells opposing dominant dir
+            turbulence_critical:  0.50   # Helbing turbulence index
+            min_duration_sec:     2.0    # alert must persist this long
+            hysteresis_frac:      0.20   # prevents single-frame oscillation
+
+        - name: "water_steps"
+          polygon: [[160, 360], [480, 360], [480, 480], [160, 480]]
+          thresholds:
+            speed_low_ms:         0.2    # lower threshold near the water's edge
+            divergence_critical:  -2.0   # tighter for the highest-risk zone
+            counterflow_critical: 0.15
+            turbulence_critical:  0.40
+            min_duration_sec:     1.5
+            hysteresis_frac:      0.20
+
+    kushavarta_kund_approach:
+      # homography: (add after calibration)
+      zones:
+        - name: "kund_approach"
+          polygon: [[0, 0], [1920, 0], [1920, 1080], [0, 1080]]
+          thresholds:
+            speed_low_ms:         0.35
+            divergence_critical:  -1.8
+            counterflow_critical: 0.18
+            turbulence_critical:  0.48
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+
+    ram_kund_bridge:
+      zones:
+        - name: "bridge_deck"
+          # Bridge: narrower zone, tighter divergence threshold
+          polygon: [[300, 0], [980, 0], [980, 1080], [300, 1080]]
+          thresholds:
+            speed_low_ms:         0.3
+            divergence_critical:  -1.2   # bridges compress faster than open ghats
+            counterflow_critical: 0.15   # entry/exit separation is mandatory here
+            turbulence_critical:  0.45
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20
+        - name: "bridge_ramp_entry"
+          polygon: [[0, 0], [300, 0], [300, 1080], [0, 1080]]
+          thresholds:
+            divergence_critical: -1.0
+            counterflow_critical: 0.12
+            turbulence_critical:  0.40
+            min_duration_sec:     1.5
+            hysteresis_frac:      0.20
+
+    procession_route_north:
+      zones:
+        - name: "procession_corridor"
+          polygon: [[0, 200], [1920, 200], [1920, 880], [0, 880]]
+          thresholds:
+            speed_low_ms:         0.5    # procession route: higher expected speed
+            divergence_critical:  -2.0
+            counterflow_critical: 0.25   # processions push against incoming devotees
+            turbulence_critical:  0.55
+            min_duration_sec:     3.0
+            hysteresis_frac:      0.25
+
+    crowd_ralley:
+      homography:
+        # NOT YET CALIBRATED — run scripts/calibrate_ground_plane.py with
+        # real distinct world-point estimates and paste its output here.
+        image_points: []
+        world_points_m: []
+      zones:
+        - name: "full_frame"
+          polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+          thresholds:
+            speed_low_ms:         0.4
+            divergence_critical:  -1.5
+            counterflow_critical: 0.20
+            turbulence_critical:  0.50
+            min_duration_sec:     2.0
+            hysteresis_frac:      0.20

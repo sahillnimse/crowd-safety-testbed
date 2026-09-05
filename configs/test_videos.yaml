@@ -1,0 +1,58 @@
+# ground_truth entries (used by scripts/compare_models.py) should be a list
+# of {start_sec, end_sec} windows marking when the target event actually
+# occurs in the video, e.g.:
+#   ground_truth:
+#     - {start_sec: 42.0, end_sec: 47.5}
+#     - {start_sec: 118.0, end_sec: 121.0}
+videos:
+  - url: "https://youtu.be/chzr4s3rWCM?si=5jNH0qtQip4nGosd"
+    category: fall_and_crowd_crush_test
+    models:
+      # Fall detection (3)
+      - fall_mediapipe_pose
+      - fall_movenet
+      - fall_optical_flow
+      # Crowd-crush / dense flow (3)
+      - optical_flow_crush
+      - dense_flow
+      - crowd_motion_monitor
+    ground_truth: []
+
+  - url: "https://youtu.be/pG4HqTGkHPg?si=tBniURkEF0k_qFPx"
+    category: violence_altercation_test
+    models:
+      # Violence / altercation detection (8)
+      - roboflow_combined
+      - violence_x3d
+      - violence_slowfast
+      - violence_videomae
+      - violence_i3d
+      - violence_c3d
+      - violence_tsm
+      - violence_mmaction_slowonly
+    ground_truth: []
+
+  - url: "https://youtu.be/cJatWBDNabE"
+    category: traffic_and_anpr_test
+    models:
+      # Traffic monitoring (3)
+      - rtdetrv2_traffic
+      - roboflow_traffic
+      - mog2_parked
+      # ANPR / Number plate detection (4)
+      - anpr
+      - indian_anpr
+      - rapid_ocr
+      - rtdetrv2_anpr
+    ground_truth: []
+
+  - url: "https://youtu.be/sample_umbrella_crowd"
+    category: umbrella_and_crowd_test
+    models:
+      # Umbrella detection (4)
+      - umbrella_ssd
+      - umbrella_rfdetr
+      - umbrella_rtdetrv2
+      - umbrella_trained
+    ground_truth: []
+

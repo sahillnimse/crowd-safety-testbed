@@ -1,0 +1,52 @@
+# topology.chain.example.yaml — Example linear chain topology for cross-camera fusion.
+#
+# GEOMETRY:
+# Linear corridor route progression:
+#
+#   CCTV1 (Approach Path) ──25s──► CCTV2 (Intermediate Choke) ──30s──► CCTV3 (Terminal Ghat)
+#
+# CONSERVATION DYNAMICS:
+# - CCTV2 is intermediate: it conserves people in the corridor between CCTV1 and CCTV2.
+#   Inflow = CCTV1 (at t - 25s); Outflow = CCTV2 (at t).
+# - CCTV3 is terminal: it conserves people in the corridor between CCTV2 and CCTV3.
+#   Inflow = CCTV2 (at t - 30s); Outflow = CCTV3 (at t).
+#
+# SINGLE SOURCE OF TRUTH:
+# Travel times must be surveyed on-site (timed by walking the route at baseline crowd pace).
+# Corridor capacities reflect surveyed narrowest physical choke points.
+#
+# To use this topology:
+#   Copy to configs/topology.yaml, or pass directly to CameraTopology("configs/topology.chain.example.yaml").
+
+staleness_threshold_sec: 5.0
+fusion_tick_sec: 1.0
+density_threshold: 2.5
+
+cameras:
+  # Optional per-camera field:
+  #   holding_capacity_pax: float (optional physical holding capacity in pax; falls back to corridor_capacity_pax_min when omitted)
+  CCTV1:
+    name: "Approach Path"
+    corridor_capacity_pax_min: 400.0
+    position: {x: 120, y: 220}
+    clock_offset_sec: 0.0
+
+  CCTV2:
+    name: "Intermediate Choke"
+    corridor_capacity_pax_min: 350.0
+    position: {x: 360, y: 220}
+    clock_offset_sec: 0.0
+
+  CCTV3:
+    name: "Terminal Ghat"
+    corridor_capacity_pax_min: 300.0
+    position: {x: 600, y: 220}
+    clock_offset_sec: 0.0
+
+edges:
+  - from: CCTV1
+    to: CCTV2
+    travel_time_sec: 25.0
+  - from: CCTV2
+    to: CCTV3
+    travel_time_sec: 30.0

@@ -1,0 +1,165 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.uv/
+
+# Testing & Coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Model weights & Checkpoints (large binaries — manage via scripts/download_models.py)
+weights/
+model_weights/
+ML Models/
+Recommended_Models/
+Senior_Recommended_Models/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.bin
+*.safetensors
+*.ckpt
+*.h5
+*.task
+*.tflite
+*.engine
+*.caffemodel
+*.pb
+*.weights
+*.param
+*.blob
+*.ncnn*
+*.mlmodel
+
+# HuggingFace Hub cache (auto-downloaded on first run — do not commit)
+.cache/
+
+# Ingested media, outputs & experiment logs
+test_videos/
+outputs/
+scratch/
+runs/
+wandb/
+tensorboard/
+*.tfevents.*
+*.log
+
+# Run artefacts written by the pipeline / web UI
+# (CSVs and JSONs inside outputs/ are already excluded above via outputs/,
+#  but these patterns catch any that leak into the repo root or sub-dirs.)
+detections.json
+annotated.mp4
+*_annotated.mp4
+*_crowd_motion_monitor.mp4
+*_dense_flow_annotated.mp4
+*.parquet
+
+# Data directories (raw footage, datasets — large, not for git)
+data/
+datasets/
+
+# Zip / archive artifacts dropped in the repo root during development
+*.zip
+*.tar.gz
+*.tar.bz2
+*.7z
+*.rar
+
+# Environment / Secret variables & keys
+.env
+.env.*
+!.env.example
+*.key
+*api_key*
+*secret*
+*credential*
+secrets.json
+credentials.json
+replacements.txt
+*.pem
+*.crt
+*.pfx
+*.p12
+
+# yt-dlp session cookies (contain live auth tokens - never commit)
+cookies.txt
+cookies.txt.txt
+*.cookies
+
+# uv / pip caches
+.uv_cache/
+pip-wheel-metadata/
+pip-log.txt
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ── SAIVT ground truth ──────────────────────────────────────────────────────
+# `data/` above ignores everything, but the SAIVT ANNOTATIONS (484 KB) must be
+# committed: they are this project's only ground truth, and scoring has to work
+# on a fresh clone. Git cannot re-include a path through an excluded directory,
+# so each level is un-excluded in turn.
+#
+# The imagery is NOT committed - frames are 724 MB and videos 8 GB. Point
+# configs/saivt.yaml (saivt.root) or $SAIVT_ROOT at where you unpacked them.
+!data/
+data/*
+!data/saivt/
+data/saivt/*
+!data/saivt/annotations/
+!data/saivt/annotations/**
+data/saivt/annotations/**/Frames/
+data/saivt/annotations/**/*.avi
+
+# Route Builder output. Machine-generated, per-deployment, and it TAKES
+# PRECEDENCE over the hand-authored configs/topology.yaml (see
+# CameraTopology.__init__). Committing it makes every clone silently run
+# whoever last clicked "Save route" instead of the surveyed baseline.
+configs/topology.generated.yaml

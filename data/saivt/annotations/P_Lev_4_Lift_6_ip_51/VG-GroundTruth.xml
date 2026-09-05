@@ -1,0 +1,53 @@
+<qutcrowd-flow-gt both-directions="0">
+	<ROI num-points="4" image-width="856" image-height="480">
+		<point x="54" y="260" />
+		<point x="140" y="163" />
+		<point x="149" y="209" />
+		<point x="72" y="324" />
+	</ROI>
+	<doi>180</doi>
+	<ped frame="1677" x="113" y="220" direction="0" />
+	<ped frame="4138" x="124" y="208" direction="1" />
+	<ped frame="4170" x="126" y="209" direction="1" />
+	<ped frame="4208" x="115" y="226" direction="0" />
+	<ped frame="17125" x="134" y="212" direction="1" />
+	<ped frame="17160" x="128" y="201" direction="1" />
+	<ped frame="17160" x="106" y="239" direction="0" />
+	<ped frame="21556" x="119" y="219" direction="0" />
+	<ped frame="21562" x="121" y="225" direction="0" />
+	<ped frame="30139" x="124" y="232" direction="1" />
+	<ped frame="51672" x="126" y="220" direction="1" />
+	<ped frame="51819" x="118" y="242" direction="0" />
+	<ped frame="53863" x="125" y="230" direction="1" />
+	<ped frame="53878" x="118" y="221" direction="1" />
+	<ped frame="55655" x="108" y="230" direction="0" />
+	<ped frame="59810" x="120" y="211" direction="1" />
+	<ped frame="61006" x="123" y="228" direction="1" />
+	<ped frame="61806" x="120" y="227" direction="0" />
+	<ped frame="68041" x="93" y="244" direction="0" />
+	<ped frame="69759" x="121" y="211" direction="1" />
+	<ped frame="78402" x="118" y="219" direction="0" />
+	<ped frame="85001" x="104" y="235" direction="0" />
+	<ped frame="86936" x="106" y="233" direction="1" />
+	<ped frame="91338" x="117" y="242" direction="1" />
+	<ped frame="94721" x="100" y="237" direction="0" />
+	<ped frame="94721" x="114" y="241" direction="0" />
+	<ped frame="94745" x="130" y="207" direction="0" />
+	<ped frame="94788" x="112" y="232" direction="0" />
+	<ped frame="101724" x="105" y="235" direction="1" />
+	<ped frame="101749" x="112" y="219" direction="0" />
+	<ped frame="106387" x="104" y="217" direction="1" />
+	<ped frame="111174" x="113" y="241" direction="0" />
+	<ped frame="114644" x="108" y="233" direction="1" />
+	<ped frame="120395" x="103" y="245" direction="1" />
+	<ped frame="120395" x="113" y="215" direction="1" />
+	<ped frame="123453" x="96" y="233" direction="0" />
+	<ped frame="128724" x="93" y="234" direction="0" />
+	<ped frame="132408" x="120" y="209" direction="0" />
+	<ped frame="134624" x="116" y="250" direction="0" />
+	<ped frame="151752" x="100" y="244" direction="0" />
+	<ped frame="151752" x="118" y="223" direction="0" />
+	<ped frame="155942" x="116" y="220" direction="0" />
+	<ped frame="159161" x="122" y="211" direction="0" />
+	<ped frame="177345" x="103" y="230" direction="1" />
+</qutcrowd-flow-gt>

@@ -1,0 +1,42 @@
+# topology.yaml — Camera network topology for Simhastha Kumbh Mela 2027 cross-camera fusion.
+#
+# SINGLE SOURCE OF TRUTH:
+# Camera relationships, positions, capacities, and travel times are manually configured
+# based on physical site measurements and calibration — NOT inferred.
+#
+# Load with:
+#   from config_io import load_yaml
+#   cfg = load_yaml("configs/topology.yaml")
+
+staleness_threshold_sec: 5.0   # Reject cross-camera fusion if a camera update is older than this
+fusion_tick_sec: 1.0           # Fusion reasoning cycle interval (seconds)
+density_threshold: 2.5         # Density threshold (pax/m² or normalised) for CRUSH_RISK_RISING rule
+
+cameras:
+  # Optional per-camera field:
+  #   holding_capacity_pax: float (optional physical holding capacity in pax; falls back to corridor_capacity_pax_min when omitted)
+  CCTV1:
+    name: "Gate A"
+    corridor_capacity_pax_min: 400.0
+    position: {x: 120, y: 120}
+    clock_offset_sec: 0.0
+
+  CCTV2:
+    name: "Gate B"
+    corridor_capacity_pax_min: 350.0
+    position: {x: 120, y: 340}
+    clock_offset_sec: 0.0
+
+  CCTV3:
+    name: "Merge Point"
+    corridor_capacity_pax_min: 500.0
+    position: {x: 520, y: 230}
+    clock_offset_sec: 0.0
+
+edges:
+  - from: CCTV1
+    to: CCTV3
+    travel_time_sec: 25.0
+  - from: CCTV2
+    to: CCTV3
+    travel_time_sec: 20.0

@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <meta name="description" content="Computer-vision test harness for crowd safety: dense optical flow, fall, violence, traffic, ANPR and umbrella detection." />
+  <title>Crowd Safety Testbed — AI Analytics Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=3.7" />
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ LEFT SIDEBAR: model selection ============ -->
+  <aside class="sidebar" aria-label="Model selection">
+    <div class="sidebar-head">
+      <h1>Crowd Safety<span>Testbed</span></h1>
+      <div id="device-badge" class="device-badge" role="status" aria-live="polite">detecting device…</div>
+    </div>
+
+    <!-- MAIN VIEW SWITCHER IN SIDEBAR -->
+    <nav class="sidebar-nav" aria-label="Main Navigation">
+      <button class="nav-tab-btn active" data-view="pipeline" type="button">
+        <span class="nav-icon">🎛️</span>
+        <div class="nav-label-wrap">
+          <span class="nav-title">Pipeline Dashboard</span>
+          <span class="nav-sub">Single-camera detectors</span>
+        </div>
+      </button>
+      <button class="nav-tab-btn" data-view="route" type="button">
+        <span class="nav-icon">🗺️</span>
+        <div class="nav-label-wrap">
+          <span class="nav-title">Route View</span>
+          <span class="nav-sub">Multi-cam fusion</span>
+        </div>
+        <span class="nav-badge">NEW</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-actions" role="group" aria-label="Bulk model selection">
+      <button class="link-btn" data-select="all">Select all</button>
+      <button class="link-btn" data-select="none">Clear</button>
+      <button class="link-btn" data-select="ready">Runnable only</button>
+    </div>
+
+    <div class="sidebar-search">
+      <label class="sr-only" for="model-search">Search models</label>
+      <input type="search" id="model-search" placeholder="Search models…"
+             autocomplete="off" aria-controls="model-list" />
+    </div>
+
+    <div id="model-list" class="model-list" role="group"
+         aria-label="Available models" aria-busy="true">
+      <div class="loading">Loading models…</div>
+    </div>
+
+    <div class="sidebar-foot">
+      <span id="selected-count" role="status" aria-live="polite">0 selected</span>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN PANEL ============ -->
+  <main class="main">
+
+    <!-- KPI STATS SUMMARY BAR (Always visible) -->
+    <div class="kpi-bar">
+      <div class="kpi-card">
+        <div class="kpi-icon">⚙️</div>
+        <div>
+          <div class="kpi-val" id="kpi-device">CPU</div>
+          <div class="kpi-lbl">Hardware Device</div>
+        </div>
+      </div>
+      <div class="kpi-card history">
+        <div class="kpi-icon">📹</div>
+        <div>
+          <div class="kpi-val" id="kpi-runs">0</div>
+          <div class="kpi-lbl">Saved Outputs</div>
+        </div>
+      </div>
+      <div class="kpi-card events">
+        <div class="kpi-icon">🚨</div>
+        <div>
+          <div class="kpi-val" id="kpi-events">0</div>
+          <div class="kpi-lbl">Positive Alerts</div>
+        </div>
+      </div>
+      <div class="kpi-card anpr">
+        <div class="kpi-icon">🚘</div>
+        <div>
+          <div class="kpi-val" id="kpi-anpr">0</div>
+          <div class="kpi-lbl">ANPR Captures</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOP NAVIGATION: PIPELINE vs ROUTE VIEW -->
+    <div class="view-nav-bar" role="tablist" aria-label="Dashboard Views">
+      <button class="view-nav-btn active" data-view="pipeline" role="tab" aria-selected="true">
+        <span class="icon">🎛️</span> Single Camera Pipeline
+      </button>
+      <button class="view-nav-btn" data-view="route" role="tab" aria-selected="false">
+        <span class="icon">🗺️</span> Route View <span class="badge">Multi-Cam Topology</span>
+      </button>
+    </div>
+
+    <!-- ============ PIPELINE VIEW CONTAINER ============ -->
+    <div id="pipeline-view-container">
+
+      <section class="panel">
+        <h2>1 · Source video</h2>
+
+        <div class="tabs" id="source-tabs">
+          <button class="tab active" data-tab="url">YouTube URL</button>
+          <button class="tab" data-tab="local">Already downloaded</button>
+          <button class="tab" data-tab="upload">Upload file</button>
+        </div>
+
+        <div class="tab-body" data-body="url">
+          <input id="video-url" type="text" placeholder="https://www.youtube.com/watch?v=…" />
+          <p class="hint">Downloaded once into <code>test_videos/</code> and cached by video ID.</p>
+        </div>
+
+        <div class="tab-body hidden" data-body="local">
+          <select id="video-select"><option>Loading…</option></select>
+          <p class="hint">No download — runs straight off the local file.</p>
+        </div>
+
+        <div class="tab-body hidden" data-body="upload">
+          <label class="sr-only" for="video-file">Upload a video file</label>
+          <input id="video-file" type="file" accept="video/*" />
+          <p class="hint" id="upload-status">Saved into <code>test_videos/</code>.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>2 · Execution Settings</h2>
+        <div class="settings">
+          <label>
+            <span>Frame sampling</span>
+            <select id="stride">
+              <option value="1">Every frame — slowest, full resolution</option>
+              <option value="3">Every 3rd frame</option>
+              <option value="5" selected>Every 5th frame — balanced</option>
+              <option value="10">Every 10th frame</option>
+              <option value="20">Every 20th frame — quick smoke test</option>
+            </select>
+          </label>
+          <label>
+            <span>Device</span>
+            <select id="device">
+              <option value="">Auto-detect</option>
+              <option value="cuda">Force CUDA (fail if absent)</option>
+              <option value="cpu">Force CPU</option>
+            </select>
+          </label>
+          <label class="threshold-setting">
+            <span>Confidence threshold
+              <em>— applies to every selected model</em></span>
+            <div class="threshold-control">
+              <input type="range" id="threshold" min="0.05" max="0.95"
+                     step="0.05" value="0.35"
+                     aria-label="Confidence threshold for all selected models" />
+              <output id="threshold-value" for="threshold" aria-live="polite">0.35</output>
+            </div>
+            <small class="hint">
+              Lower catches more and reports more false positives; higher is
+              stricter. One value keeps models comparable — tuning each
+              separately makes a benchmark measure nothing.
+            </small>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="export-video" checked />
+            <span>Write annotated video <em>(slower, large files)</em></span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="live-mode" />
+            <span>Live preview mode <em>(stream detection live to canvas player)</em></span>
+          </label>
+          <div id="live-mode-note" class="hint hidden" style="color: var(--accent-cyan); font-size: 12px; margin-top: -4px;">
+            ⚡ <strong>Live Mode:</strong> Runs at real wall-clock playback speed and streams detections directly to your browser.
+          </div>
+        </div>
+
+        <div class="run-row">
+          <button id="run-btn" class="primary">▶ Run selected models</button>
+          <button id="clear-outputs" class="danger-ghost">Delete all outputs</button>
+          <span id="run-error" class="run-error" role="status" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>3 · Live Runs <span class="subtle">— active & recent session jobs</span></h2>
+          <div class="head-actions">
+            <button id="clear-finished-jobs" class="link-btn danger-link" title="Clear all finished jobs from this list" style="margin-right: 8px;">🗑️ Clear Finished</button>
+            <button id="refresh-jobs" class="link-btn">Refresh</button>
+          </div>
+        </div>
+        <div id="jobs" aria-live="polite"><div class="empty">No runs yet. Select models above and click Run.</div></div>
+      </section>
+
+      <section class="panel" id="flow-validation-panel">
+        <div class="panel-head">
+          <h2>Dense Flow Validation
+            <span class="subtle">— how wrong is the flow field?</span></h2>
+          <div class="head-actions">
+            <button id="run-validation" class="link-btn">Run validation</button>
+            <span class="sep">·</span>
+            <button id="delete-validation" class="link-btn danger-link">Delete output</button>
+            <span class="sep">·</span>
+            <button id="refresh-validation" class="link-btn">Refresh</button>
+          </div>
+        </div>
+        <p class="hint validation-intro">
+          Three annotation-free routes, each manufacturing ground truth a
+          different way so that each covers the others' blind spots. They
+          measure the <em>velocity field</em> — not whether its derived metrics
+          predict crush risk. Passing is necessary, never sufficient.
+        </p>
+        <div id="flow-validation">
+          <div class="empty">No validation run yet. Pick a video above and click
+            Run validation.</div>
+        </div>
+      </section>
+
+      <section class="panel" id="anpr-panel">
+        <div class="panel-head">
+          <h2>ANPR Captures <span class="subtle">— vehicles and plate reads</span></h2>
+          <div class="head-actions">
+            <button id="delete-anpr-all" class="link-btn danger-link">Delete all</button>
+            <span class="sep">·</span>
+            <button id="refresh-anpr" class="link-btn">Refresh</button>
+          </div>
+        </div>
+        <div id="anpr"><div class="empty">No ANPR runs yet.</div></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>4 · Saved Results & Analysis <span class="subtle">— outputs on disk</span></h2>
+          <div class="filter-bar">
+            <input type="text" id="history-search" placeholder="Filter outputs..." />
+            <button id="delete-history-all" class="link-btn danger-link">Delete all</button>
+            <span class="sep">·</span>
+            <button id="refresh-history" class="link-btn">Refresh</button>
+          </div>
+        </div>
+        <p class="hint">Interactive model classification cards. Click any card to inspect full details, detections timeline, video, or JSON payloads.</p>
+        <div id="history" class="cards-grid"><div class="empty">Nothing in outputs/ yet.</div></div>
+      </section>
+
+    </div>
+
+    <!-- ============ ROUTE VIEW CONTAINER ============ -->
+    <div id="route-view-container" class="hidden">
+
+      <!-- ZONE 0: SUBMIT ROUTE SESSION -->
+      <section class="panel route-session-submit-panel">
+        <div class="panel-head">
+          <div>
+            <h2>📍 Run Route Session <span class="subtle">— Multi-Camera Fused Analysis</span></h2>
+            <p class="hint">Relate sequential videos of the same crowd moving through route cameras (e.g. Gate A → Gate B → Merge Point) into one unified report with all 10 crowd safety metrics.</p>
+          </div>
+          <div class="head-actions">
+            <button id="btn-reset-session-panel" class="link-btn" type="button" style="font-size: 11.5px; color: var(--muted); margin-right: 8px;" title="Reset Camera Corridors &amp; Video Assignment to initial state (Cam 1 &amp; Cam 2 empty)">🔄 Reset to Initial</button>
+            <button id="btn-configure-route" class="link-btn" type="button" style="font-weight: 700; color: var(--accent-light);">⚙️ Configure Route</button>
+          </div>
+        </div>
+
+        <div class="session-form-grid">
+          <div class="session-form-field">
+            <label for="session-name-input">Route Session Name</label>
+            <input type="text" id="session-name-input" placeholder="e.g. Kumbh_Main_Route_A" />
+          </div>
+          <div class="session-form-field">
+            <label for="session-model-select">Analysis Model</label>
+            <select id="session-model-select">
+              <option value="crowd_motion_monitor" selected>Crowd Motion Monitor (10 Metrics, Streams &amp; Crush Risk)</option>
+              <option value="dense_flow">Dense Flow Analyser (Velocity Field &amp; Compression)</option>
+              <option value="dm_count_crowd">DM-Count Head Density &amp; Movement</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="session-camera-slots-title">
+          <span>Camera Corridors &amp; Video Assignment</span>
+          <span class="subtle">Select or upload a video for each camera location along the route. Check "Relate in Session" to link.</span>
+        </div>
+
+        <div id="session-camera-slots" class="session-camera-slots">
+          <div class="loading">Loading camera topology slots…</div>
+        </div>
+
+        <div class="session-actions-bar">
+          <button id="btn-run-route-session" class="btn-primary" type="button">
+            <span>▶</span> Run Multi-Camera Route Session
+          </button>
+          <div id="session-submit-status" class="session-status-text"></div>
+        </div>
+      </section>
+
+      <!-- ZONE 1: ROUTE GRAPH -->
+      <section class="panel route-graph-panel">
+        <div class="panel-head">
+          <div>
+            <h2>1 · Route Topology Graph <span class="subtle">— Site Corridors & Travel Times</span></h2>
+            <p class="hint">Live cross-camera flow telemetry. Color indicates current risk tier. Edges display travel time and combined inflow / capacity.</p>
+          </div>
+          <div class="head-actions">
+            <span id="route-ws-status" class="status-pill connected">🟢 Live Stream</span>
+            <button id="refresh-topology" class="link-btn">Refresh</button>
+          </div>
+        </div>
+
+        <div class="route-graph-workspace">
+          <div class="route-svg-wrapper">
+            <svg id="route-svg-canvas" viewBox="0 0 700 460" preserveAspectRatio="xMidYMid meet">
+              <defs>
+                <marker id="arrow-neutral" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M 0 1 L 10 5 L 0 9 z" fill="#64748b" />
+                </marker>
+                <marker id="arrow-warn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b" />
+                </marker>
+                <marker id="arrow-bad" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M 0 1 L 10 5 L 0 9 z" fill="#f43f5e" />
+                </marker>
+              </defs>
+              <g id="route-edges-layer"></g>
+              <g id="route-nodes-layer"></g>
+            </svg>
+          </div>
+
+          <!-- Interactive Edge Breakout Side Panel -->
+          <div id="edge-breakout-panel" class="edge-breakout-panel hidden">
+            <div class="breakout-head">
+              <h4 id="breakout-title">Corridor Flow Breakout</h4>
+              <button id="close-breakout" class="link-btn">✕</button>
+            </div>
+            <div id="breakout-body" class="breakout-body"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ZONE 2: ROUTE SESSIONS & FUSED REPORTS -->
+      <section class="panel route-sessions-panel">
+        <div class="panel-head">
+          <div>
+            <h2>2 · Route Sessions &amp; Fused Reports <span class="subtle">— Isolated Multi-Camera Runs</span></h2>
+            <p class="hint">Completed route sessions with unified 10-metric aggregate reports and transit continuity analyses.</p>
+          </div>
+          <div class="head-actions">
+            <button id="refresh-sessions-btn" class="link-btn" type="button">Refresh Sessions</button>
+          </div>
+        </div>
+        <div id="route-sessions-list" class="route-sessions-grid">
+          <div class="empty">No route sessions created yet. Use the form above to launch a multi-camera session.</div>
+        </div>
+      </section>
+
+      <!-- ZONE 3: ACTIVE FUSION ALERTS -->
+      <section class="panel fusion-alerts-panel">
+        <div class="panel-head">
+          <div>
+            <h2>3 · Active Cross-Camera Alerts <span class="subtle">— Bottlenecks & Inflow Surges</span></h2>
+            <p class="hint">Cross-camera predictive alerts correlated via calibrated travel times. All alerts carry explicit source attribution.</p>
+          </div>
+          <div class="head-actions">
+            <span id="fusion-alert-count-badge" class="count-badge">0 active</span>
+          </div>
+        </div>
+        <div id="fusion-alerts-table-container">
+          <table class="fusion-table">
+            <thead>
+              <tr>
+                <th>Time (UTC)</th>
+                <th>Alert Level</th>
+                <th>Target Camera</th>
+                <th>Contributing Source(s)</th>
+                <th>Lead Time</th>
+                <th>Predictive Detail</th>
+              </tr>
+            </thead>
+            <tbody id="fusion-alerts-body">
+              <tr><td colspan="6" class="empty">No active cross-camera alerts. Corridor flow is currently within safe limits.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ZONE 4: PER-CAMERA SPARKLINE STRIP -->
+      <section class="panel camera-sparklines-panel">
+        <div class="panel-head">
+          <div>
+            <h2>4 · Per-Camera Flow Verification Strip <span class="subtle">— Recent Density & Flow Trends</span></h2>
+            <p class="hint">Visually verify surge propagation across upstream and downstream cameras over time.</p>
+          </div>
+        </div>
+        <div id="camera-sparklines-grid" class="sparklines-grid">
+          <div class="empty">Loading time-series sparklines…</div>
+        </div>
+      </section>
+
+      <!-- FIXED LEGEND & SITE DISCLOSURE -->
+      <div class="route-legend-bar">
+        <div class="legend-items">
+          <div class="legend-item"><span class="legend-dot dot-ok"></span> Safe (&lt; 70% capacity)</div>
+          <div class="legend-item"><span class="legend-dot dot-warn"></span> Warning (70–100% capacity)</div>
+          <div class="legend-item"><span class="legend-dot dot-bad"></span> Critical / Bottleneck (&gt; 100% capacity)</div>
+        </div>
+        <div class="legend-disclosure">
+          ⚠️ <strong>Site Disclosure:</strong> Camera connections, positions, and travel times are manually configured for this site — not inferred by AI. Aggregate flow rates are correlated without tracking individual identities.
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+</div>
+
+<!-- DETAILED CLASSIFICATION & ANALYTICAL INSPECTOR MODAL -->
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true"
+     aria-labelledby="modal-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-head-title">
+        <h3 id="modal-title">Classification & Analytical Details</h3>
+      </div>
+      <button id="modal-close" class="link-btn" aria-label="Close details">✕ Close</button>
+    </div>
+    <div class="modal-nav-tabs" id="modal-nav" role="tablist"
+         aria-label="Result detail sections">
+      <button class="modal-tab-btn active" role="tab" aria-selected="true" data-mtab="overview">📊 Overview & Key Details</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="timeline">⏱️ Detections Timeline</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="video">🎥 Annotated Video</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="validation">✅ Validation (3 routes)</button>
+      <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="raw">💻 Raw JSON Payload</button>
+    </div>
+    <div id="modal-body" class="modal-body" role="tabpanel" tabindex="0"></div>
+  </div>
+</div>
+
+<!-- CONFIGURE ROUTE MODAL -->
+<div id="route-builder-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="route-builder-title">
+  <div class="modal-card" style="max-width: 960px;">
+    <div class="modal-head">
+      <div class="modal-head-title">
+        <h3 id="route-builder-title">⚙️ Configure Route Topology</h3>
+      </div>
+      <button id="route-builder-close" class="link-btn" type="button" aria-label="Close route configuration">✕ Close</button>
+    </div>
+    <div class="modal-body" style="display: flex; flex-direction: column; gap: 20px;">
+      
+      <!-- Top Settings: Default Corridor Capacity -->
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 16px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);">
+        <div>
+          <div style="font-weight: 700; font-size: 13.5px; color: var(--text);">Default Corridor Capacity</div>
+          <div style="font-size: 12px; color: var(--muted);">Fallback capacity in pax/min applied when a camera does not specify an override.</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <input type="number" id="rb-default-capacity" value="400" min="50" step="10" style="width: 110px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-code); font-weight: 700; text-align: right;" />
+          <span style="font-size: 12px; color: var(--muted);">pax/min</span>
+        </div>
+      </div>
+
+      <!-- Cameras Section -->
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <div>
+            <h4 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--text);">1. Route Cameras</h4>
+            <span style="font-size: 12px; color: var(--muted);">Define camera nodes along this route with corridor &amp; holding capacities (minimum 2 cameras required).</span>
+          </div>
+          <button id="rb-add-camera-btn" class="link-btn" type="button" style="font-weight: 700; color: var(--accent-light);">+ Add Camera</button>
+        </div>
+        <div id="rb-cameras-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+      </div>
+
+      <!-- Corridors / Edges Section -->
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <div>
+            <h4 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--text);">2. Corridors & Travel Times</h4>
+            <span style="font-size: 12px; color: var(--muted);">Connect cameras with directed corridors and surveyed travel durations.</span>
+          </div>
+          <button id="rb-add-edge-btn" class="link-btn" type="button" style="font-weight: 700; color: var(--accent-light);">+ Add Corridor</button>
+        </div>
+        <div id="rb-edges-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+      </div>
+
+      <!-- Modal Feedback / Error Banner -->
+      <div id="rb-error-banner" class="hidden" style="padding: 10px 14px; border-radius: var(--radius-sm); background: var(--bad-bg); border: 1px solid var(--bad-border); color: var(--bad); font-size: 13px; font-weight: 600;"></div>
+
+      <!-- Actions Bar -->
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border);">
+        <button id="rb-reset-baseline-btn" class="link-btn danger-link" type="button">🔄 Reset to Baseline (topology.yaml)</button>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button id="rb-cancel-btn" class="link-btn" type="button">Cancel</button>
+          <button id="rb-apply-btn" class="btn-primary" type="button">
+            <span>✓</span> Apply Route
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ============ LIVE PREVIEW MODAL OVERLAY ============ -->
+<div id="live-overlay" class="live-player-overlay hidden" role="dialog" aria-modal="true" aria-label="Live Detection Stream">
+  <div class="live-player-card">
+    <div class="live-player-head">
+      <div class="live-player-title-wrap">
+        <span class="live-pill"><span class="pulse-dot"></span> LIVE STREAM</span>
+        <h3 id="live-video-title">Live Preview</h3>
+        <span class="badge" id="live-model-badge">model</span>
+      </div>
+      <div class="live-player-actions">
+        <span class="live-fps-badge" id="live-fps">FPS: --</span>
+        <button id="live-btn-stop" class="btn-live-stop" title="Stop Job">⏹ Stop</button>
+        <button id="live-btn-close" class="btn-live-close" title="Close Overlay">✕ Close</button>
+      </div>
+    </div>
+
+    <div class="live-player-body">
+      <div class="live-canvas-container">
+        <canvas id="live-canvas"></canvas>
+        <div id="live-status-overlay" class="live-status-overlay hidden">
+          <div class="live-status-spinner"></div>
+          <div id="live-status-msg">Starting live preview…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="live-player-hud">
+      <div class="hud-item">
+        <div class="hud-val" id="live-kpi-people">0</div>
+        <div class="hud-lbl">People Count</div>
+      </div>
+      <div class="hud-item">
+        <div class="hud-val" id="live-kpi-events">0</div>
+        <div class="hud-lbl">Positive Alerts</div>
+      </div>
+      <div class="hud-item">
+        <div class="hud-val" id="live-kpi-crush">0.00</div>
+        <div class="hud-lbl">Crush Risk</div>
+      </div>
+      <div class="hud-item">
+        <div class="hud-val" id="live-kpi-flow">0.0</div>
+        <div class="hud-lbl">Flow Rate (pax/min)</div>
+      </div>
+      <div class="hud-item">
+        <div class="hud-val" id="live-kpi-time">00:00</div>
+        <div class="hud-lbl">Video Timestamp</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js?v=3.7"></script>
+</body>
+</html>
