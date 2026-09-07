@@ -80,8 +80,15 @@ def main():
     import uvicorn
     print(f"\n  Crowd Safety Testbed  ->  http://{args.host}:{args.port}\n")
     print(f"  Logs: {os.path.join(_PROJECT_ROOT, 'outputs', 'logs', 'webapp.log')}\n")
-    uvicorn.run("webapp.app:app", host=args.host, port=args.port,
-                reload=args.reload, log_level="info")
+    uvicorn.run(
+        "webapp.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        reload_dirs=[_SRC_DIR] if args.reload else None,
+        reload_excludes=["outputs/*", "*.log", "*.tmp"] if args.reload else None,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":

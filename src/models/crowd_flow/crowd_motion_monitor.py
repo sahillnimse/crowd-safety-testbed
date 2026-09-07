@@ -137,6 +137,15 @@ _APGCC_HEAD_FRAC = 0.22
 # stationary, density, alerts — inherited the duplication.
 _APGCC_MIN_SEPARATION_FRAC = 0.32
 
+# Below roughly half a pixel of displacement between the two frames of a pair,
+# dense optical flow returns near-zero regardless of what actually moved: the
+# signal is under the algorithm's resolution.  Measured on this footage,
+# sampling every frame put the median displacement at 0.02 px and reported 52%
+# of the crowd as stationary; sampling every 5th put it at 0.37 px and reported
+# 22%.  The crowd was the same.  This is the line under which the motion
+# numbers describe the sampling rather than the scene.
+_FLOW_RESOLUTION_FLOOR_PX = 0.5
+
 # An APGCC point is considered "already claimed" by RT-DETRv2 if it falls
 # inside an RT-DETRv2 box, expanded by this fraction on every side — a point
 # exactly on a box edge is still that person, not a second one standing
@@ -196,12 +205,12 @@ class CrowdMotionMonitor(BaseModelWrapper):
         device: Optional[str] = None,
         output_dir: str = "outputs/annotated",
         video_name: str = "run",
-        stationary_speed_px: float = 1.5,
+        stationary_speed_px: float = 0.3,
         stationary_frames: int = 10,
         resume_moving_frames: int = 3,
         motion_noise_floor_ratio: float = 0.35,
         crush_divergence_threshold: float = -1.0,
-        crush_max_speed_px: float = 6.0,
+        crush_max_speed_px: float = 1.2,
         counterflow_angle_threshold_deg: float = 120.0,
         counterflow_score_threshold: float = 0.30,
         overlay_mode: str = "markers",
@@ -240,6 +249,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
         # jobs.py sets these after construction for any flow_pair model.
         self._fps: float = 25.0
         self._frame_stride: int = 1
+        #: Index of the previous frame this model saw, used to measure
+        #: the true gap between a flow pair.
+        self._last_frame_index: Optional[int] = None
         self.output_fps: Optional[float] = None
 
         # Whether to stream annotated frames to an MP4 on disk.
@@ -326,6 +338,10 @@ class CrowdMotionMonitor(BaseModelWrapper):
         # regression in the fusion/NMS path shows up as a number instead of
         # as an operator noticing two triangles on someone.
         self._frame_duplicate_rate: list[float] = []
+        #: 80th-percentile RAW (un-normalised) per-pair displacement per
+        #: used to tell 'the crowd was still' from 'the sampling was
+        #: too fine for the flow field to see it move'.
+        self._frame_raw_disp_p80: list[float] = []
         self._frame_pressure: list[float] = []         # density * variance
         self._frame_mean_speed: list[float] = []       # px/frame, for stop-go
         self._frame_mean_vec: list[tuple[float, float]] = []   # for oscillation
@@ -431,6 +447,18 @@ class CrowdMotionMonitor(BaseModelWrapper):
             raise RuntimeError("CrowdMotionMonitor.load() must be called before predict().")
 
         prev_frame, curr_frame = frame_pair
+
+        # How many SOURCE frames separate the pair we were handed.
+        # Derived from the frame indices rather than read off a
+        # configured stride, so it stays correct when the live governor
+        # changes the stride mid-run, and for any caller that never set
+        # one.
+        if self._last_frame_index is None:
+            pair_gap = max(1, int(self._frame_stride))
+        else:
+            pair_gap = max(1, int(frame_index - self._last_frame_index))
+        self._last_frame_index = frame_index
+        frame_raw_disp: list[float] = []
 
         # 1. Dense optical flow (Farneback, full frame, CPU).
         prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
@@ -557,7 +585,20 @@ class CrowdMotionMonitor(BaseModelWrapper):
             else:
                 vx, vy = 0.0, 0.0
 
-            speed = math.hypot(vx, vy)
+            # Per SOURCE frame, not per processed frame pair.
+            #
+            # The flow field measures displacement between the two
+            # frames handed to this call, and those are `pair_gap`
+            # source frames apart.  Dividing by the gap makes the unit
+            # independent of the sampling setting -- without it the
+            # SAME crowd measured 0.02 px/frame at stride 1 and 0.37 at
+            # stride 5, so changing 'Frame sampling' in the UI silently
+            # reclassified 76% of people as stationary instead of 22%,
+            # and took stream splits, crush risk, counterflow and flow
+            # rate with it.
+            raw_disp = math.hypot(vx, vy)
+            frame_raw_disp.append(raw_disp)
+            speed = raw_disp / pair_gap
 
             if tid not in self._speed_history:
                 self._speed_history[tid] = deque(maxlen=self.stationary_frames)
@@ -835,6 +876,28 @@ class CrowdMotionMonitor(BaseModelWrapper):
         frame_cf_rate = frame_cf_count / max(1, len(detections))
         self._frame_counterflow_counts.append((frame_index, timestamp_sec, frame_cf_count, frame_cf_rate))
 
+        # Dense optical flow cannot resolve displacement below roughly half a
+        # pixel; under that it returns near-zero and every track reads as
+        # stationary.  Whether the footage was sampled finely enough to measure
+        # motion at all is a property of the RUN, and an operator reading
+        # "52% stationary" deserves to know when that figure is really "the
+        # sampling was too fine to tell".
+        if frame_raw_disp:
+            # The 80th percentile, NOT the median.
+            #
+            # A median over every track conflates two very different states:
+            # "the flow field cannot resolve motion at this sampling" and "most
+            # of this crowd is genuinely standing still".  In a dense gathering
+            # the second is common and correct, and a median-based warning
+            # would fire on it constantly.
+            #
+            # The question that actually distinguishes them is whether the
+            # FASTEST people register: if even the top fifth of tracks are
+            # below the floor, nothing in the scene is measurable.  If they are
+            # well above it, the flow field is working and a low median is a
+            # real observation about the crowd.
+            self._frame_raw_disp_p80.append(float(np.percentile(frame_raw_disp, 80)))
+
         self._record_frame_metrics(track_records, curr_frame.shape[:2], timestamp_sec)
 
         # 8. Video overlay rendering.  Always runs: this frame is both what
@@ -1077,6 +1140,17 @@ class CrowdMotionMonitor(BaseModelWrapper):
             # (see src/evaluation/counting.py).
             "duplicate_box_rate_pct": _stat(self._frame_duplicate_rate,
                                             lambda v: np.mean(v) * 100.0, 1),
+            # Was the footage sampled finely enough to MEASURE motion?
+            # Dense flow bottoms out below ~0.5 px of displacement, so on a
+            # pair that close together every track reads as stationary
+            # regardless of what the crowd did.  When this is high the
+            # stationary/moving split, the stream assignment and crush risk
+            # are all reporting the sampling rate, not the crowd -- raise the
+            # frame stride until it falls.
+            "motion_below_flow_floor_pct": _stat(
+                self._frame_raw_disp_p80,
+                lambda v: float(np.mean(np.asarray(v) < _FLOW_RESOLUTION_FLOOR_PX)) * 100.0, 1),
+            "p80_pair_displacement_px": _stat(self._frame_raw_disp_p80, np.median, 3),
             "peak_duplicate_box_rate_pct": (
                 round(float(max(self._frame_duplicate_rate)) * 100.0, 1)
                 if self._frame_duplicate_rate else 0.0

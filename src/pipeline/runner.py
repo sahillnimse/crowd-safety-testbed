@@ -66,6 +66,60 @@ class SourceStatus:
                     f"STOPPED - this location is NOT covered.")
         return f"cancelled after {self.frames_read} frames"
 
+@dataclass
+class ModelHealth:
+    """How a single model FARED across the run, as distinct from whether the
+    run finished.
+
+    ``SourceStatus`` exists because "the camera died" and "the footage ended"
+    were indistinguishable.  This is the same hazard one layer up: a model
+    that raises on every frame contributes zero detections, and zero
+    detections is reported identically to "watched carefully, found nothing".
+    In a control room the second reads as "this location is clear".
+
+    The run loop already counted these failures, but only printed them, so
+    nothing downstream could tell a clean pass from a model that never ran.
+    """
+    model_name: str
+    frames_attempted: int = 0
+    frames_failed: int = 0
+    sample_error: str = ""
+
+    @property
+    def failure_rate(self) -> float:
+        if not self.frames_attempted:
+            return 0.0
+        return self.frames_failed / self.frames_attempted
+
+    @property
+    def ok(self) -> bool:
+        """True only if the model produced a result for every frame it saw."""
+        return self.frames_failed == 0
+
+    @property
+    def dead(self) -> bool:
+        """The model failed on effectively everything: its output is not a
+        measurement of anything and must not be reported as one."""
+        return self.frames_attempted > 0 and self.failure_rate >= _MODEL_DEAD_RATE
+
+    def describe(self) -> str:
+        if self.ok:
+            return f"{self.model_name}: ran on all {self.frames_attempted} frames"
+        pct = 100.0 * self.failure_rate
+        lead = ("PRODUCED NO MEASUREMENT" if self.dead
+                else "INCOMPLETE — gaps in coverage")
+        return (f"{self.model_name}: {lead}. Failed on {self.frames_failed} of "
+                f"{self.frames_attempted} frames ({pct:.0f}%). "
+                f"First error: {self.sample_error}")
+
+
+# At or above this share of failed frames a model is treated as having
+# produced no measurement at all, rather than a partial one. Not 1.0: a model
+# that fails on all but a handful of frames has not measured the footage
+# either, and reporting its few surviving detections as the answer is the
+# same false assurance in a quieter voice.
+_MODEL_DEAD_RATE = 0.99
+
 # Per model, stop printing the same failure after this many occurrences. A
 # model that is broken at load time fails on every single frame; unthrottled
 # that buries the run in thousands of identical lines and leaves a
@@ -176,6 +230,10 @@ class PipelineRunner:
         # camera that died mid-shift reported "All models completed."
         self.source_status = SourceStatus(is_stream=is_stream,
                                           expected_frames=total_frames)
+        # Per-model outcome, published so a caller can tell "found nothing"
+        # from "never ran". See the ModelHealth docstring.
+        self.model_health = {m.name: ModelHealth(model_name=m.name)
+                             for m in self.models}
 
         _accepts_frame = False
         if on_detections is not None:
@@ -215,11 +273,21 @@ class PipelineRunner:
                 frame_dets: list[Detection] = []
 
                 for model in self.models:
+                    health = self.model_health.get(model.name)
+                    # Counted only where the model is actually invoked. The
+                    # flow_pair warm-up below returns [] without calling the
+                    # model at all, and scoring that as a successful attempt
+                    # reported a model that had never loaded as 97% failed
+                    # rather than 100% -- just under the threshold that says
+                    # its output is not a measurement.
+                    invoked = False
                     try:
                         if model.consumption_type == "frame":
+                            invoked = True
                             dets = model.predict(frame, frame_index, timestamp_sec)
 
                         elif model.consumption_type == "clip":
+                            invoked = True
                             dets = self._run_clip_model(
                                 model, sampled_index, frame_index, timestamp_sec
                             )
@@ -241,6 +309,7 @@ class PipelineRunner:
                             if prev_sampled is None:
                                 dets = []
                             else:
+                                invoked = True
                                 dets = model.predict(
                                     (prev_sampled, frame), frame_index, timestamp_sec
                                 )
@@ -252,8 +321,15 @@ class PipelineRunner:
                         else:
                             n_detections += len(dets)
                         frame_dets.extend(dets)
+                        if health is not None and invoked:
+                            health.frames_attempted += 1
 
                     except Exception as e:
+                        if health is not None:
+                            health.frames_attempted += 1
+                            health.frames_failed += 1
+                            if not health.sample_error:
+                                health.sample_error = f"{e.__class__.__name__}: {e}"
                         self._report_error(model, frame_index, e, error_counts)
 
                 if on_detections is not None:
@@ -307,6 +383,9 @@ class PipelineRunner:
                     print(f"[WARN] {model.name}.finalize() failed: {e}")
 
         self._summarize_errors(error_counts)
+        for health in self.model_health.values():
+            if not health.ok:
+                print(f"\n[runner] !! {health.describe()}")
         return all_detections
 
     TRUNCATION_TOLERANCE = _TRUNCATION_TOLERANCE

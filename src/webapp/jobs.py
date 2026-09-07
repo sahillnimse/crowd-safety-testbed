@@ -259,6 +259,9 @@ class Stage:
     # would mean the run itself did.
     live_source: bool = False
     export_error: Optional[str] = None
+    #: Set when the MODEL failed on some or all frames -- distinct from
+    #: `source_detail`, which is about the footage rather than the analysis.
+    model_health: Optional[str] = None
 
     def to_dict(self) -> dict:
         elapsed = None
@@ -288,6 +291,7 @@ class Stage:
             "frames_read": self.frames_read,
             "live_source": self.live_source,
             "export_error": self.export_error,
+            "model_health": self.model_health,
         }
 
 
@@ -898,6 +902,12 @@ class JobManager:
             stage.finished_at = time.time()
             return
 
+        self._apply_model_health(stage, runner, model_key)
+        if stage.status == "failed":
+            stage.finished_at = time.time()
+            self._persist(job)
+            return
+
         self._summarize(stage, detections, model)
         self._export(job, stage, detections, model_key, model)
 
@@ -1311,6 +1321,8 @@ class JobManager:
         # A finite source leaves the same record a batch run does: summary
         # from the full detection set, then JSON/CSV/report/annotated video.
         # An endless one cannot, and falls back to the running totals.
+        self._apply_model_health(stage, runner, model_key)
+
         if is_live_source:
             self._summarize_live(stage, live_labels, live_scoring, model)
         else:
@@ -1369,6 +1381,27 @@ class JobManager:
         })
         self._persist(job)
 
+
+    @staticmethod
+    def _apply_model_health(stage: Stage, runner, model_key: str) -> None:
+        """Record whether the MODEL ran, not just whether the run finished.
+
+        Without this a model that raised on every frame produced a stage with
+        status "done", zero detections and a full summary of zeros -- which an
+        operator reads as "watched, nothing happening" rather than "never
+        watched". Same class of false assurance the SourceStatus checks above
+        exist to prevent, one layer up.
+        """
+        health = getattr(runner, "model_health", {}).get(model_key)
+        if health is None or health.ok:
+            return
+
+        stage.model_health = health.describe()
+        stage.degraded = True
+        if health.dead:
+            # Not a result with caveats -- no result at all.
+            stage.status = "failed"
+            stage.error = health.describe()
 
     @staticmethod
     def _summarize_live(stage: Stage, labels: Counter, scoring: Counter, model=None):

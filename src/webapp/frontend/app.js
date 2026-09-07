@@ -909,6 +909,22 @@ function parkLiveStage() {
    "monitored and clear" when the truth is "stopped watching". */
 function renderSourceIntegrityBanner(stage) {
   if (!stage) return '';
+
+  // The model failing is a different fault from the footage failing, and the
+  // more dangerous of the two to show as an ordinary result: zero detections
+  // from a model that never ran looks exactly like zero detections from a
+  // quiet scene.
+  if (stage.model_health) {
+    return `
+      <div class="source-integrity is-bad">
+        <span class="source-integrity-icon">⚠</span>
+        <div>
+          <strong>Model did not complete — these numbers are not a measurement</strong>
+          <div>${esc(stage.model_health)}</div>
+        </div>
+      </div>`;
+  }
+
   const outcome = stage.source_outcome || 'completed';
   if (outcome === 'completed' && !stage.degraded) return '';
   const cancelled = outcome === 'cancelled';
