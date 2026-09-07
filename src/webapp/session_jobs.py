@@ -436,7 +436,8 @@ class SessionManager:
                 out_video_path = os.path.join(cam_state.run_dir, "annotated.mp4")
                 own_video = getattr(model, "annotated_video_path", None)
                 if own_video and os.path.exists(own_video):
-                    shutil.copyfile(own_video, out_video_path)
+                    if os.path.abspath(own_video) != os.path.abspath(out_video_path):
+                        shutil.move(own_video, out_video_path)
                 else:
                     try:
                         export_annotated_video(src, det_list, out_video_path)
