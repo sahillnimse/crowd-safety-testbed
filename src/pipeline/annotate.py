@@ -64,10 +64,17 @@ COLOR_MAP = {
     "crowd_pressure_critical":    (90, 0, 150),    # dark purple — stampede range
     "vehicle_in_ped_zone_warning": (0, 180, 0),    # green — vehicle alert
     # CrowdMotionMonitor per-person tracking labels.
-    "person_stopped":             (0, 0, 255),     # red - stationary
-    "person_crush_zone":          (0, 0, 180),     # dark red - crush zone
-    "person_moving_stream_a":     (255, 100, 0),   # blue - stream a
-    "person_moving_stream_b":     (0, 200, 100),   # green - stream b
+    # These MUST match CrowdMotionMonitor's own marker colours
+    # (_COLOUR_STOPPED / _COLOUR_CRUSH / _COLOUR_RIGHT / _COLOUR_LEFT).  The
+    # model renders the live preview and the saved video itself, and this map
+    # colours the fallback renderer and the legend -- so a disagreement means
+    # the same label is one colour on the video and another in the key.
+    # stream_a and stream_b were swapped here, and crush was dark red where
+    # the model draws orange.
+    "person_stopped":             (0, 40, 220),    # red - stationary
+    "person_crush_zone":          (0, 140, 255),   # orange - crush zone
+    "person_moving_stream_a":     (140, 200, 0),   # teal-green - stream a
+    "person_moving_stream_b":     (220, 80, 0),    # electric blue - stream b
     "person_moving":              (0, 255, 0),     # bright green - moving
     # DMCountCrowdMonitor: per-head rows and rule-based alerts
     # (models/dm_count/alerts.py). Alert labels follow the same

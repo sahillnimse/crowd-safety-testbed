@@ -108,11 +108,34 @@ _FB_FLAGS      = 0
 # Divergence grid for crush-risk: cell size in pixels.
 _DIV_CELL_PX = 32
 
-# APGCC has no box, only a point. This is the synthetic box half-size (px)
-# built around each surviving point, used for IoU tracking and drawing —
-# small enough not to falsely overlap a neighbouring RT-DETRv2 box, big
-# enough for the tracker's IoU match to hold across a few frames.
+# APGCC has no box, only a point. This is the FALLBACK synthetic box
+# half-size (px), used only when there are too few RT-DETRv2 boxes in the
+# frame to estimate how large a person is at a given image row.
+#
+# A single fixed size is wrong nearly everywhere in a perspective view: in
+# this footage RT-DETRv2 person heights run 17 px at the back of the shot to
+# 153 px at the front, so a 24 px box is several times too big for a distant
+# head — big enough to overlap the neighbouring head's box and be counted
+# twice — and far too small for someone near the camera.  When boxes are
+# available the size is derived per row instead; see _row_scale_fn.
 _APGCC_SYNTH_HALF_BOX_PX = 12
+
+# Synthetic box side as a fraction of the estimated PERSON HEIGHT at that
+# image row.  A head is roughly a seventh of a standing body; this is
+# deliberately larger so the tracker's IoU match survives a few frames of
+# jitter, while still being small enough that two genuinely separate people
+# do not share a box.
+_APGCC_HEAD_FRAC = 0.22
+
+# Two APGCC head points closer together than this fraction of the estimated
+# person height at that row are treated as ONE person.
+#
+# Without this rule APGCC points were deduplicated against RT-DETRv2 and
+# never against each other, so a cluster of points on a single body produced
+# a synthetic box each: measured on this footage, 53% of APGCC boxes overlapped
+# another APGCC box, and every count downstream — people, stream A/B,
+# stationary, density, alerts — inherited the duplication.
+_APGCC_MIN_SEPARATION_FRAC = 0.32
 
 # An APGCC point is considered "already claimed" by RT-DETRv2 if it falls
 # inside an RT-DETRv2 box, expanded by this fraction on every side — a point
@@ -185,7 +208,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
         heatmap_metric: str = "divergence",
         confirm_frames: int = 3,
         detect_every: int = 5,
-        detect_tile_grid: Optional[tuple] = (2, 2),
+        detect_tile_grid: Optional[tuple] = (3, 3),
         detect_conf_threshold: float = 0.28,
         apgcc_weights: Optional[str] = None,
         apgcc_score_threshold: float = 0.5,
@@ -296,6 +319,13 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._divergence_records: list[float] = []
         self._frame_density: list[float] = []          # persons / megapixel
         self._frame_person_count: list[int] = []       # raw count per frame
+        # Self-consistency: the share of this frame's boxes that sit almost
+        # entirely inside another one.  Two boxes on one body is an internal
+        # contradiction, so it is measurable on unlabelled footage -- unlike
+        # absolute accuracy, which needs annotations.  Reported per run so a
+        # regression in the fusion/NMS path shows up as a number instead of
+        # as an operator noticing two triangles on someone.
+        self._frame_duplicate_rate: list[float] = []
         self._frame_pressure: list[float] = []         # density * variance
         self._frame_mean_speed: list[float] = []       # px/frame, for stop-go
         self._frame_mean_vec: list[tuple[float, float]] = []   # for oscillation
@@ -415,11 +445,20 @@ class CrowdMotionMonitor(BaseModelWrapper):
         div_grid = self._compute_divergence_grid(flow)  # shape (n_rows, n_cols)
 
         # 3. Person detection (runs every detect_every frames; boxes carried on others).
-        # tile_grid=(2,2) runs 5 overlapping crops so small/distant people in the
-        # upper crowd region are detected — the full-frame pass alone resizes a
-        # 1280×720 source to 640×640 which halves a 20 px person to ~10 px,
-        # below what the model resolves.  detect_conf_threshold is intentionally
-        # lower than the shared default (0.35) because distant people score lower.
+        # tile_grid=(3,3) runs 10 overlapping crops so small/distant people in
+        # the upper crowd region are detected — the full-frame pass alone
+        # resizes a 1280×720 source to 640×640, which halves a 20 px person to
+        # ~10 px, below what the model resolves.  detect_conf_threshold is
+        # intentionally lower than the shared default (0.35) because distant
+        # people score lower.
+        #
+        # 3x3 rather than 2x2: measured on this footage, a 2x2 grid returned
+        # ZERO detections in the top 40% of the frame — the dense far-field
+        # band was entirely invisible to it — while 3x3 returned ~34 per frame
+        # for the same threshold.  It costs ~270 ms more per detect call, which
+        # amortises to ~54 ms/frame at detect_every=5.  4x4 was tried and is
+        # worse in both respects: the crops distort badly against the square
+        # input and far-field recall collapses again.
         if frame_index % self.detect_every == 0:
             self._last_boxes = self._detector.detect(
                 curr_frame,
@@ -902,6 +941,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
         density = (n / megapixels) if megapixels > 0 else 0.0
         self._frame_density.append(density)
         self._frame_person_count.append(n)
+        self._frame_duplicate_rate.append(
+            self._duplicate_rate([tr["box"] for tr in track_records])
+        )
 
         if n == 0:
             self._frame_mean_speed.append(0.0)
@@ -1026,6 +1068,19 @@ class CrowdMotionMonitor(BaseModelWrapper):
             "peak_density": density_peak,
             "avg_person_count": _stat(self._frame_person_count, np.mean, 1),
             "peak_person_count": int(max(self._frame_person_count)) if self._frame_person_count else 0,
+            # Self-consistency check on the counting path.  Near zero means
+            # each body was claimed once; a rise means the detector/APGCC
+            # fusion started double-counting, and EVERY count in this summary
+            # -- person count, stream split, stationary, density, pressure --
+            # is inflated by roughly that share.  Measurable without any
+            # ground truth; absolute accuracy still needs annotated frames
+            # (see src/evaluation/counting.py).
+            "duplicate_box_rate_pct": _stat(self._frame_duplicate_rate,
+                                            lambda v: np.mean(v) * 100.0, 1),
+            "peak_duplicate_box_rate_pct": (
+                round(float(max(self._frame_duplicate_rate)) * 100.0, 1)
+                if self._frame_duplicate_rate else 0.0
+            ),
             # 2. Velocity field -- avg_speed_px_frame already exists above;
             #    peak is added here so the card can show both.
             "peak_speed_px_frame": _stat(self._frame_mean_speed, np.max, 2),
@@ -1230,8 +1285,9 @@ class CrowdMotionMonitor(BaseModelWrapper):
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────
 
-    @staticmethod
+    @classmethod
     def _apgcc_points_to_boxes(
+        cls,
         points: np.ndarray,
         rtdetr_boxes: list[list[float]],
         frame_shape: tuple[int, int],
@@ -1250,6 +1306,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
         h, w = frame_shape
         pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        scale_at = cls._row_scale_fn(rtdetr_boxes, h)
 
         # Point-in-any-expanded-box as one broadcast.  This runs on EVERY
         # frame (the re-filter pass below the call site), so at crowd scale
@@ -1270,14 +1327,119 @@ class CrowdMotionMonitor(BaseModelWrapper):
             claimed = np.zeros(len(pts), dtype=bool)
 
         free = pts[~claimed]
-        half = _APGCC_SYNTH_HALF_BOX_PX
-        x1 = np.maximum(0.0, free[:, 0] - half)
-        y1 = np.maximum(0.0, free[:, 1] - half)
-        x2 = np.minimum(float(w), free[:, 0] + half)
-        y2 = np.minimum(float(h), free[:, 1] + half)
+        if len(free) == 0:
+            return []
+
+        # Suppress APGCC points that land on a person another APGCC point has
+        # already claimed.  Until this existed the only dedup was against
+        # RT-DETRv2, so several points on one body each became their own box
+        # and their own triangle -- the "same person, two triangles" case.
+        #
+        # Nearest-first (largest y = closest to camera) so that where two
+        # points contend, the one whose scale is most reliable survives.
+        order = np.argsort(-free[:, 1], kind="stable")
+        ordered = free[order]
+        person_h = scale_at(ordered[:, 1])
+        min_sep = np.maximum(4.0, person_h * _APGCC_MIN_SEPARATION_FRAC)
+
+        kept_idx: list[int] = []
+        for i in range(len(ordered)):
+            if kept_idx:
+                kept = ordered[kept_idx]
+                d = np.hypot(kept[:, 0] - ordered[i, 0], kept[:, 1] - ordered[i, 1])
+                # Compare against the LARGER of the two separations so a
+                # near-camera person cannot be split by a distant point's
+                # tighter threshold.
+                if np.any(d < np.maximum(min_sep[kept_idx], min_sep[i])):
+                    continue
+            kept_idx.append(i)
+
+        survivors = ordered[kept_idx]
+        # Box side follows the estimated person height at that row, so a head
+        # at the back of the shot gets a small box and one at the front a
+        # large one, instead of every head getting the same 24 px square.
+        half = np.maximum(3.0, scale_at(survivors[:, 1]) * _APGCC_HEAD_FRAC * 0.5)
+
+        x1 = np.maximum(0.0, survivors[:, 0] - half)
+        y1 = np.maximum(0.0, survivors[:, 1] - half)
+        x2 = np.minimum(float(w), survivors[:, 0] + half)
+        y2 = np.minimum(float(h), survivors[:, 1] + half)
         keep = (x2 > x1) & (y2 > y1)
 
         return np.stack([x1, y1, x2, y2], axis=1)[keep].tolist()
+
+    @staticmethod
+    def _duplicate_rate(boxes) -> float:
+        """Share of boxes largely contained inside another box, 0..1.
+
+        Intersection-over-minimum rather than IoU, because the duplicate that
+        matters here is a small box inside a big one (a head box on a body
+        already detected, or a tile-split half-body) and IoU scores that pair
+        low enough to look clean.
+        """
+        b = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
+        n = len(b)
+        if n < 2:
+            return 0.0
+
+        ix1 = np.maximum(b[:, None, 0], b[None, :, 0])
+        iy1 = np.maximum(b[:, None, 1], b[None, :, 1])
+        ix2 = np.minimum(b[:, None, 2], b[None, :, 2])
+        iy2 = np.minimum(b[:, None, 3], b[None, :, 3])
+        inter = np.maximum(0.0, ix2 - ix1) * np.maximum(0.0, iy2 - iy1)
+
+        area = np.maximum(0.0, b[:, 2] - b[:, 0]) * np.maximum(0.0, b[:, 3] - b[:, 1])
+        min_area = np.minimum(area[:, None], area[None, :])
+        iom = np.where(min_area > 0, inter / np.where(min_area > 0, min_area, 1.0), 0.0)
+        np.fill_diagonal(iom, 0.0)
+        return float((iom.max(axis=1) >= 0.70).mean())
+
+    @staticmethod
+    def _row_scale_fn(rtdetr_boxes, frame_h: int):
+        """Estimate person height in pixels as a function of image row.
+
+        In a ground-plane camera view a standing person's height falls off
+        roughly linearly with how high up the image their feet are, so the
+        RT-DETRv2 boxes already present in THIS frame are a free perspective
+        calibration: fit height against box-centre row and read off the scale
+        anywhere.  No homography needed, and it adapts per camera without
+        configuration.
+
+        Falls back to the median box height, and then to a fixed size, when
+        there are too few boxes to fit anything trustworthy.
+        """
+        default = float(2 * _APGCC_SYNTH_HALF_BOX_PX)
+        b = np.asarray(rtdetr_boxes, dtype=np.float64).reshape(-1, 4)
+        if len(b) == 0:
+            return lambda ys: np.full(np.shape(ys), default, dtype=np.float64)
+
+        heights = b[:, 3] - b[:, 1]
+        centres = (b[:, 1] + b[:, 3]) * 0.5
+        median_h = float(np.median(heights))
+
+        if len(b) < 8:
+            return lambda ys: np.full(np.shape(ys), median_h, dtype=np.float64)
+
+        # Least squares on the middle 90% of heights: a couple of absurd
+        # boxes (a merged pair, a sliver) would otherwise tilt the whole line.
+        lo, hi = np.percentile(heights, [5, 95])
+        m = (heights >= lo) & (heights <= hi)
+        if m.sum() < 8:
+            return lambda ys: np.full(np.shape(ys), median_h, dtype=np.float64)
+
+        slope, intercept = np.polyfit(centres[m], heights[m], 1)
+
+        # Never extrapolate to nonsense: clamp to the range actually observed,
+        # widened a little, so a row outside the fitted span degrades to the
+        # nearest sane value rather than to zero or a negative height.
+        lo_h = max(4.0, float(heights[m].min()) * 0.6)
+        hi_h = float(heights[m].max()) * 1.6
+
+        def _scale(ys):
+            ys = np.asarray(ys, dtype=np.float64)
+            return np.clip(slope * ys + intercept, lo_h, hi_h)
+
+        return _scale
 
     @staticmethod
     def _infer_direction_streams(track_records: list[dict]) -> list[tuple[float, float]]:

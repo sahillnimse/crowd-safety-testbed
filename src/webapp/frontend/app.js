@@ -904,6 +904,40 @@ function parkLiveStage() {
   if (stage && holder && stage.parentElement !== holder) holder.appendChild(stage);
 }
 
+/* A run whose source died is not a completed run, and the overview is where
+   that has to be impossible to miss: "done" on a truncated pass reads as
+   "monitored and clear" when the truth is "stopped watching". */
+function renderSourceIntegrityBanner(stage) {
+  if (!stage) return '';
+  const outcome = stage.source_outcome || 'completed';
+  if (outcome === 'completed' && !stage.degraded) return '';
+  const cancelled = outcome === 'cancelled';
+  return `
+    <div class="source-integrity ${cancelled ? 'is-warn' : 'is-bad'}">
+      <span class="source-integrity-icon">${cancelled ? '⏸' : '⚠'}</span>
+      <div>
+        <strong>${cancelled ? 'Run cancelled' : 'Incomplete coverage'}</strong>
+        <div>${esc(stage.source_detail || outcome.replace(/_/g, ' '))}</div>
+      </div>
+    </div>`;
+}
+
+/* Provenance: what produced these numbers. Without it a result is a set of
+   figures with no way to tell what they were measured over. */
+function renderRunProvenance(stage, detail) {
+  if (!stage) return '';
+  const facts = [
+    stage.model_label || stage.model_key ? { label: 'Model', value: stage.model_label || stage.model_key } : null,
+    stage.elapsed_sec != null ? { label: 'Duration', value: fmtDuration(stage.elapsed_sec) } : null,
+    stage.frames_read ? { label: 'Source frames', value: Number(stage.frames_read).toLocaleString() } : null,
+    detail && detail.videoName ? { label: 'Video', value: detail.videoName } : null,
+  ].filter(Boolean);
+  if (!facts.length) return '';
+  return `<div class="run-provenance">${facts.map(f =>
+    `<span class="run-fact"><span class="run-fact-label">${esc(f.label)}</span><b>${esc(String(f.value))}</b></span>`
+  ).join('')}</div>`;
+}
+
 function renderModalTab(tabName) {
   state.activeModalTab = tabName;
   $$('#modal-nav .modal-tab-btn').forEach(btn => {
@@ -922,6 +956,10 @@ function renderModalTab(tabName) {
   }
 
   parkLiveStage();
+
+  // The stream tab is a monitoring view and takes the whole card; the text
+  // tabs keep the narrower measure that keeps them readable.
+  if (modalCard) modalCard.classList.toggle('live-modal', tabName === 'live');
 
   if (tabName === 'live') {
     host.innerHTML = '';
@@ -1136,21 +1174,45 @@ ${metricCards}
       ? Object.entries(s.label_counts).map(([k, v]) => `<span class="plate-badge u-mr-1">${esc(k)}: ${v}</span>`).join(' ')
       : 'None';
 
+    // Header cards must carry three DIFFERENT facts.  These used to be
+    // "Positive Alert Events" and "Total Output Rows" side by side, which on
+    // any model whose every label is an event (crowd_motion_monitor) printed
+    // the same number twice under two names and read like a coincidence
+    // rather than a definition.  The share makes the relationship explicit.
+    const totalRows = d.total || (s.detections || 0);
+    const alertShare = totalRows > 0
+      ? `${((totalPositives / totalRows) * 100).toFixed(totalPositives === totalRows ? 0 : 1)}% of detections`
+      : 'no detections';
+    const trackCount = (sum && sum.total_tracks != null) ? sum.total_tracks : null;
+
+    const thirdCard = trackCount != null
+      ? `<div class="detail-metric-card">
+           <div class="val">${Number(trackCount).toLocaleString()}</div>
+           <div class="lbl">Tracked Identities</div>
+           <div class="sub">${sum.stable_tracks_pct != null ? `${sum.stable_tracks_pct}% stable` : 'unique tracks'}</div>
+         </div>`
+      : `<div class="detail-metric-card">
+           <div class="val">${maxConf > 0 ? `${(maxConf * 100).toFixed(1)}%` : '—'}</div>
+           <div class="lbl">Peak Confidence</div>
+           <div class="sub">highest-scoring detection</div>
+         </div>`;
+
     host.innerHTML = `
       ${stageModelSelectHtml(detail, tabName, s)}
+      ${renderSourceIntegrityBanner(s)}
+      ${renderRunProvenance(s, detail)}
       <div class="detail-overview-grid">
         <div class="detail-metric-card">
-          <div class="val ${totalPositives > 0 ? 'highlight' : ''}">${totalPositives}</div>
-          <div class="lbl">Positive Alert Events</div>
+          <div class="val">${Number(totalRows).toLocaleString()}</div>
+          <div class="lbl">Detections</div>
+          <div class="sub">rows written to the log</div>
         </div>
         <div class="detail-metric-card">
-          <div class="val">${d.total || (s.detections || 0)}</div>
-          <div class="lbl">Total Output Rows</div>
+          <div class="val ${totalPositives > 0 ? 'highlight' : ''}">${Number(totalPositives).toLocaleString()}</div>
+          <div class="lbl">Alert Events</div>
+          <div class="sub">${alertShare}</div>
         </div>
-        <div class="detail-metric-card">
-          <div class="val">${maxConf > 0 ? `${(maxConf * 100).toFixed(1)}%` : '—'}</div>
-          <div class="lbl">Peak Confidence Score</div>
-        </div>
+        ${thirdCard}
       </div>
 
       ${analyticsHtml}
@@ -2020,7 +2082,7 @@ function closeModal() {
   const maxOverlay = document.querySelector('.video-maximize-overlay');
   if (maxOverlay) maxOverlay.remove();
   const modalCard = document.querySelector('#modal .modal-card');
-  if (modalCard) modalCard.classList.remove('wide-modal');
+  if (modalCard) modalCard.classList.remove('wide-modal', 'live-modal');
   // The live stage lives in this modal's body while its tab is open; park
   // it before the body is cleared or the canvas would be destroyed with it.
   parkLiveStage();
@@ -2038,7 +2100,138 @@ let liveState = {
   active: false,
   selectedMetric: 'people',
   history: null,
+  recorded: [],
+  recordedBytes: 0,
+  recordTruncated: false,
+  replaying: false,
+  replayTimer: null,
 };
+
+/* Frames kept for replay.  Each is the JPEG the server already sent, held as
+   a Blob rather than its base64 text (a third smaller) alongside the KPIs
+   that arrived with it, so a replay reproduces the numbers as well as the
+   picture.
+   
+   Bounded two ways, because a camera run has no end: past either limit the
+   oldest frames are dropped and the buffer becomes a rolling window over the
+   recent past.  The replay control says so rather than implying it holds the
+   whole run. */
+const LIVE_RECORD_MAX_FRAMES = 900;
+const LIVE_RECORD_MAX_BYTES = 192 * 1024 * 1024;
+
+function resetLiveRecording() {
+  stopLiveReplay();
+  liveState.recorded = [];
+  liveState.recordedBytes = 0;
+  liveState.recordTruncated = false;
+}
+
+function recordLiveFrame(blob, kpis, ts) {
+  liveState.recorded.push({ blob, kpis, ts: Number(ts) || 0 });
+  liveState.recordedBytes += blob.size;
+  while (liveState.recorded.length > LIVE_RECORD_MAX_FRAMES
+         || liveState.recordedBytes > LIVE_RECORD_MAX_BYTES) {
+    const dropped = liveState.recorded.shift();
+    if (!dropped) break;
+    liveState.recordedBytes -= dropped.blob.size;
+    liveState.recordTruncated = true;
+  }
+}
+
+async function drawLiveFrameBlob(blob) {
+  const canvas = $('#live-canvas');
+  if (!canvas) return;
+  try {
+    const bitmap = await createImageBitmap(blob);
+    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+    }
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    bitmap.close();
+  } catch { /* frame dropped; the next one repaints */ }
+}
+
+/* Replay the recorded stream on the same canvas, driving the same metric
+   rail and traces, WITHOUT re-running the model: these are the frames the
+   model already produced.  Paced by each frame's own video timestamp, so it
+   plays at the speed of the footage rather than the speed the model happened
+   to manage while computing it. */
+function startLiveReplay() {
+  if (!liveState.recorded.length) return;
+  stopLiveReplay();
+
+  liveState.replaying = true;
+  setRunStatePill('replay');
+  const stage = document.getElementById('live-stage');
+  if (stage) stage.classList.add('is-replay');
+  const overlay = $('#live-status-overlay');
+  if (overlay) overlay.classList.add('hidden');
+  setLiveReplayIndicator(true);
+
+  // A replay starts the traces over, so the rail animates from the beginning
+  // exactly as it did live.
+  resetLiveHistory();
+
+  const frames = liveState.recorded;
+  let i = 0;
+
+  const step = () => {
+    if (!liveState.replaying || i >= frames.length) {
+      finishLiveReplay();
+      return;
+    }
+    const f = frames[i];
+    drawLiveFrameBlob(f.blob);
+    if (f.kpis) updateLiveKPIs(f.kpis);
+
+    const next = frames[i + 1];
+    // Clamped: a large stride makes the raw gap long enough to look frozen,
+    // and a zero gap would flash the whole run past in one paint.
+    const gapSec = next ? Math.max(0, next.ts - f.ts) : 0;
+    const delayMs = Math.min(2000, Math.max(40, gapSec * 1000));
+    i += 1;
+    liveState.replayTimer = window.setTimeout(step, delayMs);
+  };
+  step();
+}
+
+function stopLiveReplay() {
+  if (liveState.replayTimer) {
+    clearTimeout(liveState.replayTimer);
+    liveState.replayTimer = null;
+  }
+  liveState.replaying = false;
+  const stage = document.getElementById('live-stage');
+  if (stage) stage.classList.remove('is-replay');
+  setLiveReplayIndicator(false);
+}
+
+function finishLiveReplay() {
+  stopLiveReplay();
+  setRunStatePill('done');
+  const overlay = $('#live-status-overlay');
+  const msg = $('#live-status-msg');
+  if (msg) msg.textContent = 'Replay finished.';
+  if (overlay) overlay.classList.remove('hidden');
+}
+
+/* Never let a replay masquerade as live detection: the rail's indicator says
+   which of the two the numbers are coming from. */
+function setLiveReplayIndicator(on) {
+  setMetricIndicator(on ? 'replay' : (liveState.active ? 'detecting' : 'idle'));
+}
+
+/* The rail's indicator names where the numbers are coming from right now.
+   Leaving it on "detecting" after a run has ended would assert that a
+   stopped pipeline is still watching the crowd. */
+function setMetricIndicator(mode) {
+  const el = $('#metric-detail-live');
+  if (!el) return;
+  const label = el.querySelector('.metric-detail-live-text');
+  if (label) label.textContent = mode;
+  el.classList.toggle('is-idle-indicator', mode === 'idle');
+}
 
 /* Metric definitions for the live rail.  `read` pulls the value out of a KPI
    payload, `fmt` renders it for the tile, and `el` is the tile's value node —
@@ -2055,6 +2248,21 @@ const LIVE_METRICS = {
                read: k => k.flow_rate,     fmt: v => Number(v).toFixed(1) },
   time:      { label: 'Video Timestamp',     el: '#live-kpi-time',
                read: k => k.timestamp_sec, fmt: v => fmtClock(v) },
+
+  /* Crowd composition — the same four states the markers on the footage are
+     coloured by, plus the two continuous measures. */
+  velocity:  { label: 'Mean Velocity (px/frame)', el: '#live-kpi-velocity',
+               read: k => k.velocity_px_frame, fmt: v => Number(v).toFixed(2) },
+  density:   { label: 'Density (per megapixel)',  el: '#live-kpi-density',
+               read: k => k.density,          fmt: v => Number(v).toFixed(1) },
+  stream_a:  { label: 'Stream A (rightward)',     el: '#live-kpi-stream-a',
+               read: k => k.stream_a,         fmt: v => String(Math.round(v)) },
+  stream_b:  { label: 'Stream B (toward camera)', el: '#live-kpi-stream-b',
+               read: k => k.stream_b,         fmt: v => String(Math.round(v)) },
+  crush_zone:{ label: 'Crush Zone (people)',      el: '#live-kpi-crush-zone',
+               read: k => k.crush_zone,       fmt: v => String(Math.round(v)) },
+  stationary:{ label: 'Stationary (people)',      el: '#live-kpi-stationary',
+               read: k => k.stationary,       fmt: v => String(Math.round(v)) },
 };
 
 /* Frames of history kept per metric for the inspector chart.  Bounded: a
@@ -2077,6 +2285,7 @@ function resetLiveHistory() {
 function selectLiveMetric(key) {
   if (!LIVE_METRICS[key]) return;
   liveState.selectedMetric = key;
+  // Both rails drive the same inspector, so selection clears across both.
   document.querySelectorAll('.live-metrics-rail .hud-item').forEach(btn => {
     const on = btn.dataset.metric === key;
     btn.classList.toggle('is-selected', on);
@@ -2197,6 +2406,11 @@ function updateLiveKPIs(kpis) {
     }
   });
 
+  // A crush-zone count above zero is the one figure here that has to be
+  // noticed without being looked for.
+  const czTile = $('#live-kpi-crush-zone')?.closest('.hud-item');
+  if (czTile) czTile.classList.toggle('is-active', Number(kpis.crush_zone || 0) > 0);
+
   // Crush risk keeps its severity colouring.
   const crushEl = $('#live-kpi-crush');
   if (crushEl && kpis.crush_risk !== undefined) {
@@ -2210,7 +2424,9 @@ function updateLiveKPIs(kpis) {
   }
 
   drawMetricSpark();
-  updateDashboardLiveKPIs(kpis);
+  // A replay is re-showing numbers the dashboard already counted once;
+  // feeding them back would double-count the run.
+  if (!liveState.replaying) updateDashboardLiveKPIs(kpis);
 }
 
 /* The dashboard KPI bar keeps counting while a live job streams, so the
@@ -2262,17 +2478,32 @@ function renderLiveReplayAction(annotatedPath) {
   const wrap = document.createElement('div');
   wrap.className = 'live-replay-action';
 
-  if (annotatedPath) {
+  if (liveState.recorded.length) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'btn-primary';
-    btn.textContent = '▶ Replay saved video';
+    btn.textContent = '▶ Replay live run';
+    btn.addEventListener('click', startLiveReplay);
+    wrap.appendChild(btn);
+
+    const note = document.createElement('div');
+    note.className = 'hint live-replay-note';
+    note.textContent = liveState.recordTruncated
+      ? `Replays the last ${liveState.recorded.length} streamed frames — nothing is recomputed.`
+      : `Replays all ${liveState.recorded.length} streamed frames — nothing is recomputed.`;
+    wrap.appendChild(note);
+  } else if (annotatedPath) {
+    // Nothing buffered (a reopened run, say), but the file exists.
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn-primary';
+    btn.textContent = '▶ Open saved video';
     btn.addEventListener('click', () => renderModalTab('video'));
     wrap.appendChild(btn);
   } else {
     const note = document.createElement('div');
     note.className = 'hint';
-    note.textContent = 'No annotated video for this source — a live camera has no end to record.';
+    note.textContent = 'Nothing recorded for this run.';
     wrap.appendChild(note);
   }
   overlay.appendChild(wrap);
@@ -2291,6 +2522,94 @@ function b64toBlob(b64Data, contentType = 'image/jpeg') {
 /* Show or hide the live-only chrome: the Live Stream tab, the FPS badge and
    the Stop button.  All three belong to a run that is happening now, and a
    finished run should not keep offering to stop it. */
+/* Seconds -> a duration a person reads at a glance ("4m 12s", "38s"). */
+function fmtDuration(sec) {
+  const n = Math.max(0, Math.round(Number(sec) || 0));
+  if (n < 60) return `${n}s`;
+  const m = Math.floor(n / 60);
+  const rem = n % 60;
+  if (m < 60) return rem ? `${m}m ${rem}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function setRunStatePill(state) {
+  const pill = $('#live-state-pill');
+  const text = $('#live-state-text');
+  if (!pill || !text) return;
+  pill.classList.toggle('hidden', !state);
+  if (!state) return;
+  pill.classList.toggle('is-replay', state === 'replay');
+  pill.classList.toggle('is-done', state === 'done');
+  text.textContent = state === 'replay' ? 'Replay'
+    : state === 'done' ? 'Finished' : 'Live';
+}
+
+function renderRunFacts(facts) {
+  const host = $('#run-bar-facts');
+  if (!host) return;
+  host.innerHTML = facts
+    .filter(Boolean)
+    .map(f => `<span class="run-fact${f.tone ? ' is-' + f.tone : ''}">`
+      + `<span class="run-fact-label">${esc(f.label)}</span><b>${esc(String(f.value))}</b></span>`)
+    .join('');
+}
+
+function setRunProgress(fraction, { done = false } = {}) {
+  const bar = $('#run-bar');
+  const fill = $('#run-bar-fill');
+  const track = document.querySelector('.run-bar-track');
+  if (!bar || !fill) return;
+  bar.classList.remove('hidden');
+  bar.classList.toggle('is-done', done);
+  const pct = Math.max(0, Math.min(100, (Number(fraction) || 0) * 100));
+  fill.style.width = `${pct}%`;
+  if (track) track.setAttribute('aria-valuenow', String(Math.round(pct)));
+}
+
+function hideRunBar() {
+  const bar = $('#run-bar');
+  if (bar) bar.classList.add('hidden');
+}
+
+/* Progress facts while a run streams: where it is in the footage, how fast,
+   and how much longer. */
+function updateLiveRunBar(msg) {
+  const total = msg.source_frames_total || 0;
+  setRunProgress(msg.progress || 0);
+  renderRunFacts([
+    total
+      ? { label: 'Frame', value: `${msg.source_frame ?? 0} / ${total}` }
+      : { label: 'Frame', value: `${msg.source_frame ?? 0}` },
+    { label: 'Analysed', value: `${msg.processed_frames ?? 0} frames` },
+    { label: 'Stride', value: `every ${msg.stride ?? 1}` },
+    { label: 'Elapsed', value: fmtDuration(msg.elapsed_sec) },
+    msg.eta_sec != null ? { label: 'Remaining', value: `~${fmtDuration(msg.eta_sec)}` } : null,
+  ]);
+}
+
+/* After the run: the provenance an operator needs to trust the numbers --
+   what was processed, how much of the source it covered, and whether the
+   source survived the run. */
+function renderRunSummaryBar(msg, stage) {
+  setRunProgress(1, { done: true });
+  const outcome = msg.source_outcome || (stage && stage.source_outcome) || 'completed';
+  const clean = outcome === 'completed';
+  renderRunFacts([
+    { label: 'Status', value: clean ? 'Completed' : outcome.replace(/_/g, ' '),
+      tone: clean ? null : 'bad' },
+    { label: 'Duration', value: fmtDuration(msg.elapsed_sec) },
+    // "Analysed" is frames the model actually saw; "covered" is how much of
+    // the source those frames span. Reporting the second as the first would
+    // claim 144 frames of analysis for a run that did 23.
+    { label: 'Analysed', value: `${Number(msg.processed_frames || 0).toLocaleString()} frames` },
+    { label: 'Covered', value: `${msg.source_frames_read ?? 0} of ${msg.source_frames_total ?? '?'} source frames` },
+    { label: 'Detections', value: Number(msg.detections || 0).toLocaleString() },
+    msg.export_error ? { label: 'Outputs', value: 'save failed', tone: 'bad' }
+      : { label: 'Outputs', value: msg.live_source ? 'not saved (camera)' : 'saved' },
+  ]);
+}
+
 function setLiveChrome({ tabVisible, streaming }) {
   const tabBtn = document.querySelector('#modal-nav .modal-tab-btn[data-mtab="live"]');
   if (tabBtn) tabBtn.classList.toggle('hidden', !tabVisible);
@@ -2361,6 +2680,9 @@ async function openLivePlayer(jobId, videoName, modelName, modelKey) {
   $('#modal-title').textContent = `Live Run — ${videoName || jobId}`;
   $('#modal').classList.remove('hidden');
   setLiveChrome({ tabVisible: true, streaming: true });
+  setRunStatePill('live');
+  setRunProgress(0);
+  renderRunFacts([{ label: 'Status', value: 'starting…' }]);
 
   const fpsEl = $('#live-fps');
   if (fpsEl) fpsEl.textContent = 'FPS: --';
@@ -2370,6 +2692,7 @@ async function openLivePlayer(jobId, videoName, modelName, modelKey) {
   const stageEl = document.querySelector('#live-stage');
   if (stageEl) stageEl.classList.remove('is-idle');
   resetLiveHistory();
+  resetLiveRecording();
   setDashboardLiveState(true);
   updateLiveKPIs({ person_count: 0, positives: 0, crush_risk: 0, flow_rate: 0, timestamp_sec: 0, fps: 0 });
   resetLiveHistory();
@@ -2430,20 +2753,14 @@ async function openLivePlayer(jobId, videoName, modelName, modelKey) {
           if (msg.kpis) {
             updateLiveKPIs(msg.kpis);
           }
+          updateLiveRunBar(msg);
+          setRunStatePill('live');
           if (msg.jpeg_b64) {
             const blob = b64toBlob(msg.jpeg_b64, 'image/jpeg');
-            createImageBitmap(blob).then((bitmap) => {
-              const canvas = $('#live-canvas');
-              if (canvas) {
-                if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-                  canvas.width = bitmap.width;
-                  canvas.height = bitmap.height;
-                }
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(bitmap, 0, 0);
-              }
-              bitmap.close();
-            }).catch(() => {});
+            // Kept so the run can be replayed on this canvas afterwards
+            // without asking the model to compute any of it again.
+            recordLiveFrame(blob, msg.kpis, msg.ts);
+            drawLiveFrameBlob(blob);
           }
         } else if (msg.event === 'error') {
           if (statusOverlay) {
@@ -2471,6 +2788,9 @@ async function openLivePlayer(jobId, videoName, modelName, modelKey) {
           renderLiveReplayAction(msg.artifacts && msg.artifacts.annotated);
           const doneStage = document.querySelector('#live-stage');
           if (doneStage) doneStage.classList.add('is-idle');
+          renderRunSummaryBar(msg, state.currentDetail && state.currentDetail.primaryStage);
+          setRunStatePill(msg.status === 'cancelled' ? null : 'done');
+          setMetricIndicator('idle');
           setDashboardLiveState(false);
           // The run is over: keep the recorded stream viewable, but stop
           // offering to stop a job that is no longer running.
@@ -2505,8 +2825,15 @@ function closeLivePlayer() {
   }
   liveState.active = false;
   liveState.jobId = null;
+  // Free the replay buffer with the player.  It holds up to ~192 MB of JPEG
+  // blobs, and the Live Stream tab is not reachable once the player is
+  // closed (reopening a finished run goes through the ordinary job detail
+  // view), so holding them would be retention with nothing able to use it.
+  resetLiveRecording();
   setDashboardLiveState(false);
   setLiveChrome({ tabVisible: false, streaming: false });
+  setRunStatePill(null);
+  hideRunBar();
   parkLiveStage();
   refreshJobs();
 }
@@ -2514,11 +2841,13 @@ function closeLivePlayer() {
 /* Clicking a metric tile opens its live trace in the inspector.  Delegated,
    because the rail is in the modal markup and this binds once at startup. */
 function initLiveMetricRail() {
-  const rail = document.querySelector('.live-metrics-rail');
-  if (!rail) return;
-  rail.addEventListener('click', (ev) => {
-    const tile = ev.target.closest('.hud-item[data-metric]');
-    if (tile) selectLiveMetric(tile.dataset.metric);
+  const rails = document.querySelectorAll('.live-metrics-rail');
+  if (!rails.length) return;
+  rails.forEach(rail => {
+    rail.addEventListener('click', (ev) => {
+      const tile = ev.target.closest('.hud-item[data-metric]');
+      if (tile) selectLiveMetric(tile.dataset.metric);
+    });
   });
   window.addEventListener('resize', () => drawMetricSpark());
 }

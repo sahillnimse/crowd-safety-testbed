@@ -34,13 +34,27 @@ def print_gpu_report() -> None:
     print("=" * 60)
 
 
+#: Values that all mean "pick for me".  Callers reach this function from the
+#: web API, the route-session API and several CLI scripts, and each had its
+#: own idea of how to spell "unset" -- ``/api/jobs`` normalised "" to None
+#: before calling, ``/api/sessions`` did not, so the same Auto-detect choice
+#: in the UI worked on one path and raised ValueError on the other.
+#: Normalising here fixes every caller at once instead of one at a time.
+_AUTO_DEVICE_ALIASES = frozenset({"", "auto", "default", "none"})
+
+
 def resolve_device(requested: str | None = None) -> str:
+    if isinstance(requested, str) and requested.strip().lower() in _AUTO_DEVICE_ALIASES:
+        requested = None
+
     if requested is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         if device == "cpu":
             print("[device] No GPU detected — running on CPU. "
                   "Run `python -m pipeline.device` for a diagnostic report.")
         return device
+
+    requested = requested.strip().lower()
 
     if requested == "cpu":
         return "cpu"
@@ -62,7 +76,10 @@ def resolve_device(requested: str | None = None) -> str:
             )
         return requested
 
-    raise ValueError(f"Unrecognized device: {requested!r}")
+    raise ValueError(
+        f"Unrecognized device: {requested!r}. Expected 'cpu', 'cuda', "
+        f"'cuda:N', or one of {sorted(_AUTO_DEVICE_ALIASES)} to auto-detect."
+    )
 
 
 def require_gpu() -> None:

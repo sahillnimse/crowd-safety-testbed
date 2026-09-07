@@ -861,7 +861,10 @@ def create_route_session(req: RouteSessionIn):
             ],
             models=req.models,
             sample_every_n_frames=req.sample_every_n_frames,
-            device=req.device,
+            # `or None` to match /api/jobs: the UI's Auto-detect option posts
+            # an empty string, and only one of these two endpoints used to
+            # turn that back into "auto".
+            device=req.device or None,
             export_video=req.export_video,
             threshold=req.threshold,
         )

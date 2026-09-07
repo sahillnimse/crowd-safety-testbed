@@ -1578,6 +1578,21 @@ table.stages td.num.zero {
   position: relative;
 }
 
+/* Watching a live run is a monitoring task, not a reading task: the footage
+   is the content and it should have the room. The text tabs keep the narrow
+   measure that makes them readable. */
+.modal-card.live-modal {
+  max-width: min(1720px, 96vw);
+  height: 92vh;
+  max-height: 92vh;
+}
+
+.modal-card.live-modal .modal-body {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+
 .modal-head {
   padding: 18px 24px;
   border-bottom: 1px solid var(--border);
@@ -4027,11 +4042,12 @@ pre.raw-json {
   display: flex;
   align-items: stretch;
   justify-content: flex-start;
-  gap: 12px;
+  gap: 14px;
   background: #020408;
-  border-radius: 10px;
-  padding: 12px;
+  padding: 14px;
   min-height: 420px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .live-stage .live-canvas-container {
@@ -4040,7 +4056,18 @@ pre.raw-json {
 }
 
 .live-stage #live-canvas {
-  max-height: 64vh;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* The canvas is sized by its intrinsic bitmap, so the container has to be
+   the thing that bounds it — otherwise a 1280x720 frame forces the modal
+   wider than the viewport. */
+.live-stage .live-canvas-container {
+  overflow: hidden;
 }
 
 .modal-head-actions {
@@ -4051,7 +4078,7 @@ pre.raw-json {
 
 /* ---- Live metrics rail (left of the video) ---- */
 .live-metrics-rail {
-  flex: 0 0 232px;
+  flex: 0 0 250px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -4136,7 +4163,7 @@ pre.raw-json {
 .metric-spark {
   display: block;
   width: 100%;
-  height: 64px;
+  height: 92px;
   border-radius: 6px;
   background: rgba(2, 4, 8, 0.6);
 }
@@ -4254,23 +4281,53 @@ pre.raw-json {
   border-color: rgba(99, 102, 241, 0.65);
 }
 
-/* Brief flash whenever a tile's number changes, so movement is visible
-   even on metrics that only tick occasionally. */
+/* Brief flash whenever a tile's number changes, so movement is visible even
+   on metrics that only tick occasionally.
+   
+   Deliberately animates position and a backdrop rather than the text colour:
+   the composition tiles carry their own marker colour, and animating `color`
+   drove every one of them through white on each update, so a stream count
+   ticking once a second strobed against the footage it is describing. */
 .hud-item.just-changed .hud-val {
   animation: hudTick 420ms ease-out;
 }
 
+.hud-item.just-changed {
+  animation: hudTickBg 420ms ease-out;
+}
+
 @keyframes hudTick {
-  0%   { color: var(--accent-cyan, #22d3ee); transform: translateY(-2px); }
-  100% { color: var(--text, #f8fafc); transform: translateY(0); }
+  0%   { transform: translateY(-2px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes hudTickBg {
+  0%   { box-shadow: inset 0 0 0 1px rgba(6, 182, 212, 0.55); }
+  100% { box-shadow: inset 0 0 0 1px rgba(6, 182, 212, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-item.just-changed,
+  .hud-item.just-changed .hud-val { animation: none; }
+  .rail-live-dot { animation: none; }
+  .run-bar-fill { transition: none; }
 }
 
 .hud-val {
   font-family: var(--font-code, monospace);
-  font-size: 18px;
+  font-size: 25px;
   font-weight: 800;
   color: var(--text, #f8fafc);
-  line-height: 1.2;
+  line-height: 1.15;
+  letter-spacing: -0.5px;
+}
+
+.hud-val .hud-unit {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--subtle);
+  margin-left: 3px;
+  letter-spacing: 0;
 }
 
 .hud-lbl {
@@ -4312,4 +4369,246 @@ pre.raw-json {
   margin-top: 6px;
   display: flex;
   justify-content: center;
+}
+
+/* Replay of a recorded stream: same canvas, same rail, no model running.
+   Coloured differently from the live state so the two are never confused. */
+.live-stage.is-replay .rail-live-dot {
+  background: var(--accent-cyan, #22d3ee);
+  animation: none;
+}
+
+.live-stage.is-replay .metric-detail-live {
+  color: var(--accent-cyan, #22d3ee);
+}
+
+.live-replay-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted, #94a3b8);
+  text-align: center;
+}
+
+/* ==========================================================================
+   Live run chrome — status pill, progress strip, metric rail
+   ==========================================================================
+   An operator watching a run needs three things at a glance: whether it is
+   still running, how far through the footage it is, and what the numbers are
+   doing. Everything below serves one of those. */
+
+.run-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
+  color: var(--bad);
+  white-space: nowrap;
+}
+
+.run-state-pill.is-replay {
+  background: var(--running-bg);
+  border-color: var(--running-border);
+  color: var(--running);
+}
+
+.run-state-pill.is-done {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+  color: var(--ok);
+}
+
+.run-state-pill.is-done .rail-live-dot,
+.run-state-pill.is-replay .rail-live-dot { animation: none; }
+.run-state-pill.is-done .rail-live-dot { background: var(--ok); }
+.run-state-pill.is-replay .rail-live-dot { background: var(--running); }
+
+/* ---- Progress / provenance strip ---- */
+.run-bar {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.run-bar-track {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.run-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-gradient);
+  transition: width 240ms ease-out;
+}
+
+.run-bar.is-done .run-bar-fill { background: var(--ok); }
+
+.run-bar-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  padding: 8px 24px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.run-fact { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.run-fact-label { text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; color: var(--subtle); }
+.run-fact b { color: var(--text-dim); font-family: var(--font-code, monospace); font-weight: 800; }
+.run-fact.is-warn b { color: var(--warn); }
+.run-fact.is-bad b { color: var(--bad); }
+
+/* Completion overlay: button above its explanation, not beside it. */
+.live-replay-action {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-replay-note { max-width: 34ch; }
+
+.metric-detail-live.is-idle-indicator { color: var(--subtle); }
+.metric-detail-live.is-idle-indicator .rail-live-dot {
+  background: var(--subtle);
+  animation: none;
+}
+
+/* ---- Overview: provenance + source integrity ---- */
+.run-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* A run that stopped watching must not look like one that finished. */
+.source-integrity {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.source-integrity.is-bad {
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
+  color: var(--bad);
+}
+
+.source-integrity.is-warn {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+}
+
+.source-integrity strong { display: block; margin-bottom: 2px; font-size: 13px; }
+.source-integrity div div { color: var(--text-dim); font-weight: 500; }
+.source-integrity-icon { font-size: 16px; line-height: 1.2; }
+
+.detail-metric-card .sub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--subtle);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Crowd composition rail (right of the footage)
+   ==========================================================================
+   Swatch colours are the model's own marker colours converted from OpenCV
+   BGR to CSS RGB — _COLOUR_RIGHT / _COLOUR_LEFT / _COLOUR_CRUSH /
+   _COLOUR_STOPPED in crowd_motion_monitor.py. They are hard-coded rather
+   than themed on purpose: they have to equal what is painted on the frame,
+   so a theme change must not drift them away from the footage. */
+:root {
+  --marker-stream-a: #00c88c;   /* BGR(140,200,0)  teal-green  — rightward   */
+  --marker-stream-b: #0050dc;   /* BGR(220,80,0)   electric blue — toward cam */
+  --marker-crush:    #ff8c00;   /* BGR(0,140,255)  orange      — crush zone  */
+  --marker-stopped:  #dc2800;   /* BGR(0,40,220)   red         — stationary  */
+}
+
+.live-rail-right {
+  flex: 0 0 220px;
+}
+
+.rail-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px;
+}
+
+.hud-lbl-unit {
+  color: var(--subtle);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.hud-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: baseline;
+  background: var(--subtle);
+}
+
+/* Tint the value and the swatch with the state's own marker colour, and
+   carry a matching edge so the card is identifiable at a glance. */
+.hud-item.swatch-stream-a .hud-swatch { background: var(--marker-stream-a); }
+.hud-item.swatch-stream-b .hud-swatch { background: var(--marker-stream-b); }
+.hud-item.swatch-crush .hud-swatch { background: var(--marker-crush); }
+.hud-item.swatch-stationary .hud-swatch { background: var(--marker-stopped); }
+
+.hud-item.swatch-stream-a .hud-val { color: var(--marker-stream-a); }
+.hud-item.swatch-stream-b .hud-val { color: #5b8dff; }  /* lifted for contrast on dark */
+.hud-item.swatch-crush .hud-val { color: var(--marker-crush); }
+.hud-item.swatch-stationary .hud-val { color: #ff5a3c; } /* lifted for contrast on dark */
+
+.hud-item.swatch-stream-a { border-left: 3px solid var(--marker-stream-a); }
+.hud-item.swatch-stream-b { border-left: 3px solid var(--marker-stream-b); }
+.hud-item.swatch-crush { border-left: 3px solid var(--marker-crush); }
+.hud-item.swatch-stationary { border-left: 3px solid var(--marker-stopped); }
+
+/* A crush-zone count above zero is the one number here that must draw the
+   eye without being looked for. */
+.hud-item.swatch-crush.is-active {
+  background: rgba(255, 140, 0, 0.14);
+  border-color: rgba(255, 140, 0, 0.55);
+  border-left-color: var(--marker-crush);
+}
+
+@media (max-width: 1280px) {
+  .live-rail-right { flex-basis: 190px; }
+}
+
+@media (max-width: 1100px) {
+  .live-stage { flex-wrap: wrap; }
+  .live-rail-right { flex: 1 1 100%; flex-direction: row; flex-wrap: wrap; }
+  .live-rail-right .hud-item { flex: 1 1 130px; }
+  .rail-divider { display: none; }
 }

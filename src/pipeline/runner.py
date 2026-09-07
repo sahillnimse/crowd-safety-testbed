@@ -327,9 +327,26 @@ class PipelineRunner:
         """
         import cv2 as _cv2
 
-        lowered = str(video_path).lower()
+        # Nothing to classify.  Answering "file" is the safe direction (the
+        # caller then retains detections and tries to export, rather than
+        # silently running in the mode that produces no artifacts), and it
+        # avoids handing None to VideoCapture -- which spends ~5 seconds
+        # probing for a camera device before giving up.
+        if video_path is None or (isinstance(video_path, str) and not video_path.strip()):
+            return False
+
+        # A device index IS a camera, and must be recognised WITHOUT opening
+        # it: probing would switch on the operator's webcam merely to ask a
+        # question about it.
+        if isinstance(video_path, int):
+            return True
+        lowered = str(video_path).strip().lower()
+        if lowered.isdigit():
+            return True
+
         if lowered.startswith(("rtsp://", "rtmp://", "http://", "https://", "udp://")):
             return True
+
         cap = _cv2.VideoCapture(video_path)
         try:
             if not cap.isOpened():

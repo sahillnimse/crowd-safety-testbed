@@ -1038,6 +1038,7 @@ class JobManager:
             fps_measured = 0.0
             positives_count = 0
             last_pacing_sleep = 0.0
+            processed_count = 0
             governor = LiveStrideGovernor(v_fps) if is_live_source else None
 
             # Bounded stand-ins for the retained detection list: _summarize
@@ -1049,8 +1050,9 @@ class JobManager:
 
             def on_live_detections(dets, frame=None, frame_index=0, timestamp_sec=0.0):
                 nonlocal last_frame_wall_time, fps_measured, positives_count
-                nonlocal last_pacing_sleep
+                nonlocal last_pacing_sleep, processed_count
                 call_start = time.time()
+                processed_count += 1
 
                 dt = call_start - last_frame_wall_time
                 last_frame_wall_time = call_start
@@ -1157,6 +1159,30 @@ class JobManager:
                 else:
                     jpeg_b64 = ""
 
+                # Crowd composition for this frame, counted straight off the
+                # labels the model emitted.  These are the same four states the
+                # markers on the video are coloured by, so the rail and the
+                # footage are describing one thing rather than two: a spike in
+                # "Stationary" is the red circles the operator can see.
+                label_counts = Counter(d.label for d in dets)
+                stream_a = label_counts.get("person_moving_stream_a", 0)
+                stream_b = label_counts.get("person_moving_stream_b", 0)
+                stationary = label_counts.get("person_stopped", 0)
+                crush_zone = label_counts.get("person_crush_zone", 0)
+
+                # Mean speed over the tracks that reported one.  Averaged over
+                # MOVING tracks only: including the stationary ones drags the
+                # figure toward zero in a dense crowd and hides the fact that
+                # whoever is still walking is walking fast.
+                moving_speeds = [
+                    float(d.extra["speed_px_frame"])
+                    for d in dets
+                    if isinstance(d.extra, dict)
+                    and "speed_px_frame" in d.extra
+                    and d.label != "person_stopped"
+                ]
+                mean_speed = (sum(moving_speeds) / len(moving_speeds)) if moving_speeds else 0.0
+
                 kpis = {
                     "person_count": p_count,
                     "flow_rate": round(flow_rate, 1),
@@ -1168,7 +1194,29 @@ class JobManager:
                     "frame_index": frame_index,
                     "timestamp_sec": round(timestamp_sec, 2),
                     "fps": fps_measured,
+                    "velocity_px_frame": round(mean_speed, 2),
+                    "stream_a": stream_a,
+                    "stream_b": stream_b,
+                    "stationary": stationary,
+                    "crush_zone": crush_zone,
                 }
+
+                # Progress travels with the frame rather than being polled
+                # separately: an operator watching a run needs to know how
+                # much of the footage is left and roughly how long that will
+                # take, and a live view that shows neither is asking them to
+                # guess whether it is nearly done or barely started.
+                #
+                # The estimate is deliberately derived from the SOURCE
+                # position, not from the count of processed frames: the
+                # stride can change mid-run against a camera, so frames
+                # processed is not proportional to footage covered.
+                elapsed_sec = time.time() - t_wall_start
+                total_src = stage.frames_total or 0
+                frac = (min(1.0, frame_index / total_src) if total_src > 0 else 0.0)
+                eta_sec = None
+                if total_src > 0 and frac > 0.02:
+                    eta_sec = max(0.0, elapsed_sec * (1.0 - frac) / frac)
 
                 LIVE_HUB.broadcast(job.id, {
                     "event": "frame",
@@ -1178,6 +1226,13 @@ class JobManager:
                     "ts": round(timestamp_sec, 2),
                     "fps": fps_measured,
                     "model_key": model_key,
+                    "progress": round(frac, 4),
+                    "source_frame": frame_index,
+                    "source_frames_total": total_src,
+                    "processed_frames": processed_count,
+                    "stride": runner.sample_every_n_frames,
+                    "elapsed_sec": round(elapsed_sec, 1),
+                    "eta_sec": None if eta_sec is None else round(eta_sec, 1),
                 })
 
                 # Pacing: never run ahead of the video's own clock.  This
@@ -1291,6 +1346,18 @@ class JobManager:
             "model_key": model_key,
             "status": "done",
             "live_source": is_live_source,
+            "elapsed_sec": round((stage.finished_at or time.time()) - (stage.started_at or time.time()), 1),
+            # Two different numbers, and conflating them overstates the work:
+            # frames_done counts frames READ from the source, while
+            # processed_count is how many were actually put through the model
+            # (the rest were skipped by the stride).
+            "processed_frames": processed_count,
+            "source_frames_read": stage.frames_done,
+            "source_frames_total": stage.frames_total,
+            "detections": stage.detections,
+            "positives": stage.positives,
+            "source_outcome": stage.source_outcome,
+            "source_detail": stage.source_detail,
             "artifacts": {
                 "annotated": stage.annotated,
                 "log_json": stage.log_json,

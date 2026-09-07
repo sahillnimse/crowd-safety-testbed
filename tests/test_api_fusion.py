@@ -1,5 +1,7 @@
 """Tests for FastAPI topology and fusion endpoints."""
 
+import textwrap
+
 import pytest
 from fastapi.testclient import TestClient
 from webapp.app import app
@@ -37,7 +39,23 @@ def isolated_generated_topology(tmp_path, monkeypatch):
     G.TOPOLOGY.reset_to_default()
 
 
-def test_api_topology_get(client):
+def test_api_topology_get(client, isolated_generated_topology):
+    """The API serves the deployment baseline when no route has been built.
+
+    Takes the isolation fixture deliberately.  Without it this test reads
+    whatever ``configs/topology.generated.yaml`` happens to be on the
+    machine, so building a two-camera route in the Route Builder -- an
+    ordinary thing to do -- made it fail while the code was entirely
+    correct.  A test that depends on local state reports the developer's
+    session, not the software.
+
+    The reset is safe here precisely because the fixture has redirected the
+    generated path into a temp dir; called without it, reset_to_default()
+    would delete the operator's real route configuration.
+    """
+    import topology.graph as G
+    G.TOPOLOGY.reset_to_default()
+
     res = client.get("/api/topology")
     assert res.status_code == 200
     data = res.json()
@@ -46,6 +64,36 @@ def test_api_topology_get(client):
     assert "CCTV1" in data["cameras"]
     assert "CCTV2" in data["cameras"]
     assert "CCTV3" in data["cameras"]
+
+
+def test_api_topology_prefers_generated_over_baseline(client, isolated_generated_topology):
+    """A route built in the UI takes precedence over the shipped baseline.
+
+    The other half of the contract above, and the behaviour that made that
+    test fail: whatever the Route Builder writes is what the fusion engine
+    then reasons over.
+    """
+    import topology.graph as G
+
+    with open(isolated_generated_topology, "w", encoding="utf-8") as f:
+        f.write(textwrap.dedent("""            staleness_threshold_sec: 5.0
+            fusion_tick_sec: 1.0
+            density_threshold: 2.5
+            cameras:
+              GATE_X:
+                name: Built By Route Builder
+                corridor_capacity_pax_min: 200.0
+                clock_offset_sec: 0.0
+                position: {x: 1.0, y: 2.0}
+            edges: []
+            """))
+
+    G.TOPOLOGY.load_from_file(isolated_generated_topology)
+    G.TOPOLOGY.config_path = isolated_generated_topology
+
+    data = client.get("/api/topology").json()
+    assert "GATE_X" in data["cameras"], "generated topology must win over the baseline"
+    assert "CCTV3" not in data["cameras"]
 
 
 def test_api_fusion_alerts(client):

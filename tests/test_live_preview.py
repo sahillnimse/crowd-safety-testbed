@@ -298,6 +298,35 @@ def test_is_live_source_video_file():
     assert PipelineRunner.is_live_source(path) is False
 
 
+def test_is_live_source_device_index_without_opening_it():
+    """A device index is a camera, and must be classified without probing.
+
+    Opening it to find out would switch on the operator's webcam merely to
+    ask a question about it -- and the answer is knowable from the value.
+    """
+    from pipeline.runner import PipelineRunner
+
+    assert PipelineRunner.is_live_source(0) is True
+    assert PipelineRunner.is_live_source("0") is True
+    assert PipelineRunner.is_live_source("1") is True
+
+
+def test_is_live_source_empty_path_is_fast_and_not_live():
+    """An absent path must not cost a five-second camera probe.
+
+    VideoCapture(None) spends ~5s looking for a capture device before giving
+    up, which would sit in the live stage's startup path for every job whose
+    source failed to resolve.
+    """
+    import time
+    from pipeline.runner import PipelineRunner
+
+    for empty in (None, "", "   "):
+        started = time.time()
+        assert PipelineRunner.is_live_source(empty) is False
+        assert time.time() - started < 1.0, f"{empty!r} took too long to classify"
+
+
 def test_is_live_source_missing_file_is_not_live():
     """An unreadable path is not a camera.
 
@@ -357,3 +386,38 @@ def test_detector_oom_classification():
     assert d._is_oom(MemoryError("out of memory"))
     assert not d._is_oom(RuntimeError("shape mismatch in forward pass"))
     assert not d._is_oom(ValueError("bad config"))
+
+
+# ---------------------------------------------------------------------------
+# Device resolution
+# ---------------------------------------------------------------------------
+
+def test_resolve_device_accepts_every_spelling_of_auto():
+    """The UI's Auto-detect posts "", and CLIs/humans write "auto".
+
+    /api/jobs normalised "" to None before calling; /api/sessions passed it
+    straight through and raised ValueError, so the same Auto-detect choice
+    worked on one endpoint and failed on the other.  Normalising in the
+    resolver fixes every caller at once.
+    """
+    from pipeline.device import resolve_device
+
+    expected = resolve_device(None)
+    for spelling in ("", "  ", "auto", "AUTO", "Default", "none"):
+        assert resolve_device(spelling) == expected, spelling
+
+
+def test_resolve_device_is_case_and_space_tolerant():
+    from pipeline.device import resolve_device
+
+    assert resolve_device(" cpu ") == "cpu"
+    assert resolve_device("CPU") == "cpu"
+
+
+def test_resolve_device_still_rejects_nonsense():
+    """Tolerance must not become "accept anything and guess"."""
+    import pytest
+    from pipeline.device import resolve_device
+
+    with pytest.raises(ValueError, match="Unrecognized device"):
+        resolve_device("gpu0")

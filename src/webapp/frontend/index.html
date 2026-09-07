@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=4.1" />
+  <link rel="stylesheet" href="/styles.css?v=4.8" />
 </head>
 <body>
 
@@ -443,6 +443,9 @@
         <h3 id="modal-title">Classification & Analytical Details</h3>
       </div>
       <div class="modal-head-actions">
+        <span class="run-state-pill hidden" id="live-state-pill" role="status">
+          <span class="rail-live-dot"></span><span id="live-state-text">Live</span>
+        </span>
         <span class="live-fps-badge hidden" id="live-fps">FPS: --</span>
         <button id="live-btn-stop" class="btn-live-stop hidden" title="Stop the running job">⏹ Stop</button>
         <button id="modal-close" class="link-btn" aria-label="Close details">✕ Close</button>
@@ -456,6 +459,15 @@
       <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="video">🎥 Annotated Video</button>
       <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="validation">✅ Validation (3 routes)</button>
       <button class="modal-tab-btn" role="tab" aria-selected="false" data-mtab="raw">💻 Raw JSON Payload</button>
+    </div>
+    <!-- Run status strip: progress while streaming, provenance afterwards.
+         Sits outside the tab body so it stays visible on every tab. -->
+    <div id="run-bar" class="run-bar hidden">
+      <div class="run-bar-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+           aria-valuenow="0" aria-label="Run progress">
+        <div class="run-bar-fill" id="run-bar-fill"></div>
+      </div>
+      <div class="run-bar-facts" id="run-bar-facts"></div>
     </div>
     <div id="modal-body" class="modal-body" role="tabpanel" tabindex="0"></div>
   </div>
@@ -570,7 +582,8 @@
         <div class="metric-detail-head">
           <span class="metric-detail-name" id="metric-detail-name">People Count</span>
           <span class="metric-detail-live" id="metric-detail-live">
-            <span class="rail-live-dot"></span> detecting
+            <span class="rail-live-dot"></span>
+            <span class="metric-detail-live-text">detecting</span>
           </span>
         </div>
         <canvas id="metric-spark" class="metric-spark" width="240" height="64"></canvas>
@@ -590,9 +603,52 @@
         <div id="live-status-msg">Starting live preview…</div>
       </div>
     </div>
+
+    <!-- Right rail: crowd composition. Each swatch is the colour the model
+         paints that state with on the footage, so the numbers and the video
+         read as one picture. -->
+    <aside class="live-metrics-rail live-rail-right" aria-label="Crowd composition">
+      <div class="rail-head"><span>Crowd Composition</span></div>
+
+      <button type="button" class="hud-item" data-metric="velocity"
+              aria-pressed="false"
+              title="Mean speed of MOVING tracks in pixels per processed frame. Uncalibrated: pixels, not metres per second.">
+        <div class="hud-val" id="live-kpi-velocity">0.00</div>
+        <div class="hud-lbl">Velocity <span class="hud-lbl-unit">px/frame</span></div>
+      </button>
+      <button type="button" class="hud-item" data-metric="density"
+              aria-pressed="false"
+              title="Persons per megapixel of IMAGE — not persons per m². This camera has no ground-plane homography, so the figure is comparable between frames of this camera and to nothing else. Do not read it against a pax/m² threshold.">
+        <div class="hud-val" id="live-kpi-density">0.0</div>
+        <div class="hud-lbl">Density <span class="hud-lbl-unit">per MP</span></div>
+      </button>
+
+      <div class="rail-divider" role="presentation"></div>
+
+      <button type="button" class="hud-item swatch-stream-a" data-metric="stream_a"
+              aria-pressed="false" title="Show live trace for Stream A">
+        <div class="hud-val" id="live-kpi-stream-a">0</div>
+        <div class="hud-lbl"><span class="hud-swatch"></span>Stream A <span class="hud-lbl-unit">rightward</span></div>
+      </button>
+      <button type="button" class="hud-item swatch-stream-b" data-metric="stream_b"
+              aria-pressed="false" title="Show live trace for Stream B">
+        <div class="hud-val" id="live-kpi-stream-b">0</div>
+        <div class="hud-lbl"><span class="hud-swatch"></span>Stream B <span class="hud-lbl-unit">toward camera</span></div>
+      </button>
+      <button type="button" class="hud-item swatch-crush" data-metric="crush_zone"
+              aria-pressed="false" title="Show live trace for Crush Zone">
+        <div class="hud-val" id="live-kpi-crush-zone">0</div>
+        <div class="hud-lbl"><span class="hud-swatch"></span>Crush Zone <span class="hud-lbl-unit">people</span></div>
+      </button>
+      <button type="button" class="hud-item swatch-stationary" data-metric="stationary"
+              aria-pressed="false" title="Show live trace for Stationary">
+        <div class="hud-val" id="live-kpi-stationary">0</div>
+        <div class="hud-lbl"><span class="hud-swatch"></span>Stationary <span class="hud-lbl-unit">people</span></div>
+      </button>
+    </aside>
   </div>
 </div>
 
-<script src="/app.js?v=4.1"></script>
+<script src="/app.js?v=4.8"></script>
 </body>
 </html>
