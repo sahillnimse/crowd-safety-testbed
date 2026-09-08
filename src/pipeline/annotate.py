@@ -73,8 +73,16 @@ COLOR_MAP = {
     # the model draws orange.
     "person_stopped":             (0, 40, 220),    # red - stationary
     "person_crush_zone":          (0, 140, 255),   # orange - crush zone
-    "person_moving_stream_a":     (140, 200, 0),   # teal-green - stream a
-    "person_moving_stream_b":     (220, 80, 0),    # electric blue - stream b
+    # The four absolute travel directions, matching _COLOUR_RIGHT / _LEFT /
+    # _TOWARD / _AWAY in crowd_motion_monitor.py.
+    "person_moving_right":        (140, 200, 0),   # teal-green
+    "person_moving_left":         (220, 80, 0),    # electric blue
+    "person_moving_toward":       (149, 45, 255),  # magenta - toward camera
+    "person_moving_away":         (0, 212, 255),   # amber - away from camera
+    # Retained so runs recorded before the switch to absolute directions still
+    # draw and legend correctly from their stored detections.
+    "person_moving_stream_a":     (140, 200, 0),   # teal-green - legacy
+    "person_moving_stream_b":     (220, 80, 0),    # electric blue - legacy
     "person_moving":              (0, 255, 0),     # bright green - moving
     # DMCountCrowdMonitor: per-head rows and rule-based alerts
     # (models/dm_count/alerts.py). Alert labels follow the same

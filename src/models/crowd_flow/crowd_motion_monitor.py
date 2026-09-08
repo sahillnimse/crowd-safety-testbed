@@ -79,8 +79,19 @@ logger = logging.getLogger(__name__)
 # ── Colour palette (BGR) ───────────────────────────────────────────────────
 # Five-state crowd-flow colour scheme.
 _COLOUR_PENDING  = ( 80,  80,  80)   # dark grey     — track not yet confirmed
+# Four absolute, screen-relative travel directions, each with its own colour.
+# BGR (OpenCV order); the CSS equivalents in styles.css are the RGB reverse of
+# these and must be kept in step, since the rail is meant to be a key to what
+# is painted on the frame.
+#
+# Chosen to stay separable against this footage (saffron, skin tones, grey
+# stone) and from each other: two greens or two blues would put "toward" and
+# "away" a glance apart, and those are the pair an operator most needs to
+# tell apart at a gate.
 _COLOUR_RIGHT    = (140, 200,   0)   # teal-green    — moving rightward
 _COLOUR_LEFT     = (220,  80,   0)   # electric blue — moving leftward
+_COLOUR_TOWARD   = (149,  45, 255)   # magenta/pink  — moving TOWARD the camera
+_COLOUR_AWAY     = (  0, 212, 255)   # amber-yellow  — moving AWAY from the camera
 _COLOUR_STOPPED  = (  0,  40, 220)   # red           — personally stationary
 _COLOUR_CRUSH    = (  0, 140, 255)   # orange        — collision / crush zone
 _COLOUR_TEXT     = (255, 255, 255)   # white         — track-id label
@@ -136,6 +147,23 @@ _APGCC_HEAD_FRAC = 0.22
 # another APGCC box, and every count downstream — people, stream A/B,
 # stationary, density, alerts — inherited the duplication.
 _APGCC_MIN_SEPARATION_FRAC = 0.32
+
+#: Human label -> short key used in detection labels, KPI fields and CSS.
+_DIRECTION_KEYS = {
+    "Rightward": "right",
+    "Leftward": "left",
+    "Toward camera": "toward",
+    "Away from camera": "away",
+}
+
+#: Marker colour per direction key, so the drawing code and the counts agree
+#: by construction rather than by two matching if-chains.
+_DIRECTION_COLOURS = {
+    "right": _COLOUR_RIGHT,
+    "left": _COLOUR_LEFT,
+    "toward": _COLOUR_TOWARD,
+    "away": _COLOUR_AWAY,
+}
 
 # Below roughly half a pixel of displacement between the two frames of a pair,
 # dense optical flow returns near-zero regardless of what actually moved: the
@@ -307,6 +335,8 @@ class CrowdMotionMonitor(BaseModelWrapper):
         self._speed_records: dict[str, list[float]] = defaultdict(list)
         self._heading_hist_bins: list[int] = [0] * 18
         self._stream_counts: Counter = Counter()
+        #: Absolute travel direction tallies over the run (right/left/toward/away).
+        self._direction_counts: Counter = Counter()
 
         # New metrics accumulators: variance, entropy, counterflow
         self._variance_records: list[float] = []
@@ -680,6 +710,21 @@ class CrowdMotionMonitor(BaseModelWrapper):
             self._stream_centre_acc[1][1] += float(stream_centres[1][1])
             self._stream_centre_n += 1
         for tr in track_records:
+            # Absolute travel direction for THIS person, from their own
+            # heading — independent of the two-stream clustering below.
+            #
+            # The clustering answers "which of the two bulk flows is this
+            # person in", which is relative and can label the same physical
+            # direction differently from frame to frame as the clusters move.
+            # An operator watching a gate needs the other question: which way
+            # is this person actually walking. Both are kept: the streams
+            # still drive counterflow, the absolute direction drives the
+            # label, the colour and the counts.
+            sdir, sang = self._screen_direction_from_vector(*tr["heading_vec"])
+            tr["screen_direction"] = sdir
+            tr["screen_direction_deg"] = sang
+            tr["direction_key"] = _DIRECTION_KEYS[sdir]
+
             tr["crowd_direction"] = self._nearest_stream(tr["heading_vec"], stream_centres)
             if tr["crowd_direction"] == "stream_a":
                 tr["stream_screen_direction"] = stream_dir_a
@@ -819,12 +864,12 @@ class CrowdMotionMonitor(BaseModelWrapper):
                 label = "person_stopped"
             elif local_crush_risk:
                 label = "person_crush_zone"
-            elif crowd_direction == "stream_a":
-                label = "person_moving_stream_a"
-            elif crowd_direction == "stream_b":
-                label = "person_moving_stream_b"
             else:
-                label = "person_moving"
+                # One of the four absolute directions. Replaces the old
+                # stream_a/stream_b labelling, which named a cluster rather
+                # than a direction, so the same person walking the same way
+                # could change label when the clusters shifted.
+                label = f"person_moving_{tr.get('direction_key', 'right')}"
 
             conf = 0.0 if p_stat else min(1.0, tr["speed"] / max(self.stationary_speed_px * 5, 1e-6))
             det = Detection(
@@ -839,6 +884,12 @@ class CrowdMotionMonitor(BaseModelWrapper):
                     "speed_px_frame":            round(tr["speed"], 4),
                     "heading_deg":               round(hdeg, 2),
                     "crowd_direction":           crowd_direction,
+                    # Absolute travel direction for this person: a stable
+                    # screen-relative fact, unlike crowd_direction which names
+                    # whichever of the two bulk clusters they fell into.
+                    "screen_direction":          tr.get("screen_direction"),
+                    "direction_key":             tr.get("direction_key"),
+                    "screen_direction_deg":      tr.get("screen_direction_deg"),
                     "stream_screen_direction":   tr.get("stream_screen_direction"),
                     "stream_angle_deg":          tr.get("stream_angle_deg"),
                     "personally_stationary":     p_stat,
@@ -865,6 +916,7 @@ class CrowdMotionMonitor(BaseModelWrapper):
 
             if tr["is_moving"]:
                 self._stream_counts[crowd_direction] += 1
+                self._direction_counts[tr.get("direction_key", "right")] += 1
                 bin_idx = int((hdeg + 180.0) / 20.0) % 18
                 self._heading_hist_bins[bin_idx] += 1
 
@@ -934,10 +986,11 @@ class CrowdMotionMonitor(BaseModelWrapper):
                     colour = _COLOUR_STOPPED
                 elif local_crush_risk:
                     colour = _COLOUR_CRUSH
-                elif crowd_direction != "stream_b":
-                    colour = _COLOUR_RIGHT
                 else:
-                    colour = _COLOUR_LEFT
+                    # Same table the label is built from, so a marker's colour
+                    # and its label can never disagree.
+                    colour = _DIRECTION_COLOURS.get(
+                        tr.get("direction_key", "right"), _COLOUR_RIGHT)
 
                 self._draw_marker(annotated, cx, cy, bw, bh, hdeg, colour, is_stationary=p_stat)
                 cv2.putText(
@@ -1316,6 +1369,22 @@ class CrowdMotionMonitor(BaseModelWrapper):
             "pct_moving_stream_a": pct_moving_stream_a,
             "pct_moving_stream_b": pct_moving_stream_b,
             "stream_counts": dict(self._stream_counts),
+            # Absolute travel directions over the whole run. Unlike the stream
+            # split above these mean the same thing in every run and on every
+            # camera, so they are comparable across both.
+            "direction_counts": {
+                k: int(self._direction_counts.get(k, 0))
+                for k in ("right", "left", "toward", "away")
+            },
+            "pct_direction": {
+                k: (round(100.0 * self._direction_counts.get(k, 0)
+                          / max(1, sum(self._direction_counts.values())), 1))
+                for k in ("right", "left", "toward", "away")
+            },
+            "dominant_direction": (
+                max(self._direction_counts, key=self._direction_counts.get)
+                if self._direction_counts else None
+            ),
             "crush_event_count": crush_events,
             "peak_crush_timestamp_sec": round(peak_crush_timestamp_sec, 2),
             "peak_crush_people_count": peak_crush_count,
